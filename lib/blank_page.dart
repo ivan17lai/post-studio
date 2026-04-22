@@ -85,7 +85,13 @@ class _BlankPageState extends State<BlankPage> {
 
   List<String> get _bottomTabs {
     if (_selectedImageElement != null) {
-      return const <String>[_tabImageSource, _tabImageSettings];
+      return const <String>[
+        _tabPage,
+        _tabTemplate,
+        _tabElements,
+        _tabImageSource,
+        _tabImageSettings,
+      ];
     }
     return const <String>[_tabPage, _tabTemplate, _tabElements];
   }
@@ -124,7 +130,14 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
+    final isImageTab = tab == _tabImageSource || tab == _tabImageSettings;
+    final shouldClearSelection =
+        _selectedImageElement != null && !isImageTab;
+
     setState(() {
+      if (shouldClearSelection) {
+        _selectedElementId = null;
+      }
       _selectedBottomTab = tab;
     });
 
@@ -136,12 +149,19 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   void _clearSelectedElement() {
+    final shouldFallbackToElements =
+        _selectedBottomTab == _tabImageSource ||
+        _selectedBottomTab == _tabImageSettings;
     setState(() {
       _selectedElementId = null;
-      _selectedBottomTab = _tabElements;
+      if (shouldFallbackToElements) {
+        _selectedBottomTab = _tabElements;
+      }
     });
     if (_bottomTabPageController.hasClients) {
-      _bottomTabPageController.jumpToPage(2);
+      _bottomTabPageController.jumpToPage(
+        shouldFallbackToElements ? 2 : _bottomTabs.indexOf(_selectedBottomTab),
+      );
     }
   }
 
@@ -177,6 +197,126 @@ class _BlankPageState extends State<BlankPage> {
         );
       } else if (_displayMode == PageDisplayMode.preview) {
         _jumpPreviewToPage(_currentPageIndex);
+      }
+      _syncBottomTab();
+    });
+  }
+
+  Future<void> _deleteCurrentPage() async {
+    if (_displayMode == PageDisplayMode.preview) {
+      return;
+    }
+
+    if (_project.pages.length <= 1) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('至少保留一頁')));
+      return;
+    }
+
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F4F4),
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Icon(
+                    Icons.delete_outline_rounded,
+                    size: 20,
+                    color: Color(0xFF6F6F6F),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  '刪除頁面',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1F1F1F),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  '確定要刪除目前頁面嗎？',
+                  style: TextStyle(
+                    fontSize: 14,
+                    height: 1.4,
+                    color: Color(0xFF6A6A6A),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: '取消',
+                        onTap: () => Navigator.of(context).pop(false),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: '刪除',
+                        isPrimary: true,
+                        onTap: () => Navigator.of(context).pop(true),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (shouldDelete != true) {
+      return;
+    }
+
+    final updatedPages = List<ProjectPage>.from(_project.pages)
+      ..removeAt(_currentPageIndex);
+    final nextIndex = _currentPageIndex >= updatedPages.length
+        ? updatedPages.length - 1
+        : _currentPageIndex;
+
+    await _saveProject(
+      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _currentPageIndex = nextIndex;
+      _selectedElementId = null;
+      _selectedBottomTab = _tabTemplate;
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_pageController.hasClients) {
+        _pageController.jumpToPage(_currentPageIndex);
       }
       _syncBottomTab();
     });
@@ -248,7 +388,7 @@ class _BlankPageState extends State<BlankPage> {
       _selectedBottomTab = _tabImageSource;
     });
     if (_bottomTabPageController.hasClients) {
-      _bottomTabPageController.jumpToPage(0);
+      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabImageSource));
     }
   }
 
@@ -281,12 +421,22 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final aspectRatio = size.width / size.height;
-    var width = selectedImage.width.clamp(0.12, 0.7);
-    var height = width / aspectRatio;
+    final hasTemplateSlot = selectedImage.data['templateSlot'] != null;
+    final hasAspectPreset = selectedImage.data['aspectPreset'] != null;
+    final shouldKeepFrame = hasTemplateSlot || hasAspectPreset;
 
-    if (height > 0.84) {
-      height = 0.84;
-      width = height * aspectRatio;
+    var width = shouldKeepFrame
+        ? selectedImage.width
+        : selectedImage.width.clamp(0.12, 0.7);
+    var height = selectedImage.height;
+
+    if (!shouldKeepFrame) {
+      height = width / aspectRatio;
+
+      if (height > 0.84) {
+        height = 0.84;
+        width = height * aspectRatio;
+      }
     }
 
     final updatedElement = selectedImage.copyWith(
@@ -295,7 +445,10 @@ class _BlankPageState extends State<BlankPage> {
       data: <String, dynamic>{
         ...selectedImage.data,
         'src': picked.path,
-        'aspectRatio': aspectRatio,
+        'aspectRatio': shouldKeepFrame
+            ? ((selectedImage.data['aspectRatio'] as num?)?.toDouble() ??
+                  aspectRatio)
+            : aspectRatio,
         'originalAspectRatio': aspectRatio,
       },
     );
@@ -310,7 +463,7 @@ class _BlankPageState extends State<BlankPage> {
       _selectedBottomTab = _tabImageSource;
     });
     if (_bottomTabPageController.hasClients) {
-      _bottomTabPageController.jumpToPage(0);
+      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabImageSource));
     }
   }
 
@@ -336,7 +489,7 @@ class _BlankPageState extends State<BlankPage> {
       _selectedBottomTab = _tabImageSource;
     });
     if (_bottomTabPageController.hasClients) {
-      _bottomTabPageController.jumpToPage(0);
+      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabImageSource));
     }
   }
 
@@ -469,6 +622,35 @@ class _BlankPageState extends State<BlankPage> {
     );
 
     await _replaceElement(updatedElement, persist: true);
+  }
+
+  Future<void> _applyTemplate(_TemplateOption option) async {
+    final currentPage = _project.pages[_currentPageIndex];
+    final templateElements = option.buildElements(currentPage.id, currentPage);
+    final updatedPage = currentPage.copyWith(
+      elements: templateElements,
+      extras: <String, dynamic>{
+        ...currentPage.extras,
+        'templateId': option.id,
+      },
+    );
+
+    final updatedPages = List<ProjectPage>.from(_project.pages);
+    updatedPages[_currentPageIndex] = updatedPage;
+
+    await _saveProject(
+      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _selectedElementId = null;
+      _selectedBottomTab = _tabElements;
+    });
+    _syncBottomTab();
   }
 
   Future<void> _deleteElement({
@@ -937,11 +1119,17 @@ class _BlankPageState extends State<BlankPage> {
                               )
                             : const SizedBox(key: ValueKey('border-empty')),
                       ),
+                      _ToolbarIconButton(
+                        icon: Icons.delete_outline_rounded,
+                        onPressed: _deleteCurrentPage,
+                        enabled: _displayMode == PageDisplayMode.single,
+                      ),
+                      const SizedBox(width: 8),
                       _ToolbarIconButton(icon: Icons.add, onPressed: _addPage),
                     ],
                   ),
                   Text(
-                    '第  /  頁',
+                    '第 ${_currentPageIndex + 1} / ${pages.length} 頁',
                     style: const TextStyle(fontSize: 13, color: Colors.black54),
                   ),
                 ],
@@ -1092,10 +1280,27 @@ class _BlankPageState extends State<BlankPage> {
                             );
                           },
                         ),
-                        const _TemplateTabPage(),
+                        _TemplateTabPage(
+                          page: currentPage,
+                          onApplyTemplate: _applyTemplate,
+                        ),
                         _ElementTabPage(onAddImage: _addImageElement),
                       ]
                     : <Widget>[
+                        _PageTabPage(
+                          page: currentPage,
+                          onAspectSelected: (width, height) {
+                            _updateCurrentPageAspect(
+                              aspectWidth: width,
+                              aspectHeight: height,
+                            );
+                          },
+                        ),
+                        _TemplateTabPage(
+                          page: currentPage,
+                          onApplyTemplate: _applyTemplate,
+                        ),
+                        _ElementTabPage(onAddImage: _addImageElement),
                         _ImageSourceTabPage(
                           onUploadImage: _pickImageForSelected,
                           imagePath:
@@ -1680,10 +1885,15 @@ class _PreviewImageElementWidgetState
 }
 
 class _ToolbarIconButton extends StatelessWidget {
-  const _ToolbarIconButton({required this.icon, required this.onPressed});
+  const _ToolbarIconButton({
+    required this.icon,
+    required this.onPressed,
+    this.enabled = true,
+  });
 
   final IconData icon;
   final VoidCallback onPressed;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -1691,14 +1901,53 @@ class _ToolbarIconButton extends StatelessWidget {
       width: 44,
       height: 32,
       decoration: BoxDecoration(
-        color: const Color(0xFFD8D8D8),
+        color: enabled ? const Color(0xFFD8D8D8) : const Color(0xFFE2E2E2),
         borderRadius: BorderRadius.circular(999),
       ),
       child: IconButton(
-        onPressed: onPressed,
+        onPressed: enabled ? onPressed : null,
         padding: EdgeInsets.zero,
         splashRadius: 18,
-        icon: Icon(icon, size: 16, color: Colors.black87),
+        icon: Icon(
+          icon,
+          size: 16,
+          color: enabled ? Colors.black87 : Colors.black38,
+        ),
+      ),
+    );
+  }
+}
+
+class _DialogActionButton extends StatelessWidget {
+  const _DialogActionButton({
+    required this.label,
+    required this.onTap,
+    this.isPrimary = false,
+  });
+
+  final String label;
+  final VoidCallback onTap;
+  final bool isPrimary;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 42,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: isPrimary ? const Color(0xFFD8D8D8) : Colors.white,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: const Color(0xFF1F1F1F),
+          ),
+        ),
       ),
     );
   }
@@ -1849,11 +2098,106 @@ class _PageTabPage extends StatelessWidget {
 }
 
 class _TemplateTabPage extends StatelessWidget {
-  const _TemplateTabPage();
+  const _TemplateTabPage({
+    required this.page,
+    required this.onApplyTemplate,
+  });
+
+  final ProjectPage page;
+  final ValueChanged<_TemplateOption> onApplyTemplate;
+
+  static final List<_TemplateOption> _allTemplates = <_TemplateOption>[
+    _TemplateOption(
+      id: 'page_fill',
+      label: '填滿',
+      buildElements: (pageId, page) {
+        return <CanvasElement>[
+          CanvasElement.image(pageId: pageId).copyWith(
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            allowCrossPage: false,
+            data: <String, dynamic>{
+              'src': '',
+              'aspectRatio': page.aspectWidth / page.aspectHeight,
+              'originalAspectRatio': page.aspectWidth / page.aspectHeight,
+              'aspectPreset': '${page.aspectWidth}:${page.aspectHeight}',
+              'templateSlot': 'fill',
+            },
+          ),
+        ];
+      },
+    ),
+    _TemplateOption(
+      id: 'page_3_4_two_images_3_2_vertical',
+      label: '上下雙圖',
+      pageAspectWidth: 3,
+      pageAspectHeight: 4,
+      buildElements: (pageId, page) {
+        CanvasElement buildSlot({
+          required String slot,
+          required double x,
+          required double y,
+        }) {
+          return CanvasElement.image(pageId: pageId).copyWith(
+            x: x,
+            y: y,
+            width: 1,
+            height: 0.5,
+            allowCrossPage: false,
+            data: <String, dynamic>{
+              'src': '',
+              'aspectRatio': 3 / 2,
+              'originalAspectRatio': 3 / 2,
+              'aspectPreset': '3:2',
+              'templateSlot': slot,
+            },
+          );
+        }
+
+        return <CanvasElement>[
+          buildSlot(slot: 'top', x: 0, y: 0),
+          buildSlot(slot: 'bottom', x: 0, y: 0.5),
+        ];
+      },
+    ),
+  ];
 
   @override
   Widget build(BuildContext context) {
-    return const SizedBox.expand();
+    final templates = _allTemplates
+        .where(
+          (template) =>
+              (template.pageAspectWidth == null &&
+                  template.pageAspectHeight == null) ||
+              (template.pageAspectWidth == page.aspectWidth &&
+                  template.pageAspectHeight == page.aspectHeight),
+        )
+        .toList();
+
+    if (templates.isEmpty) {
+      return const SizedBox.expand();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (var i = 0; i < templates.length; i++) ...[
+              _TemplateCard(
+                option: templates[i],
+                onTap: () => onApplyTemplate(templates[i]),
+              ),
+              if (i != templates.length - 1) const SizedBox(width: 12),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -2013,6 +2357,23 @@ class _ImageAspectOption {
   }
 }
 
+class _TemplateOption {
+  const _TemplateOption({
+    required this.id,
+    required this.label,
+    this.pageAspectWidth,
+    this.pageAspectHeight,
+    required this.buildElements,
+  });
+
+  final String id;
+  final String label;
+  final double? pageAspectWidth;
+  final double? pageAspectHeight;
+  final List<CanvasElement> Function(String pageId, ProjectPage page)
+  buildElements;
+}
+
 class _PageAspectOption {
   const _PageAspectOption({
     required this.label,
@@ -2023,6 +2384,81 @@ class _PageAspectOption {
   final String label;
   final double width;
   final double height;
+}
+
+class _TemplateCard extends StatelessWidget {
+  const _TemplateCard({required this.option, required this.onTap});
+
+  final _TemplateOption option;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 120,
+        height: 96,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Align(
+              alignment: Alignment.topRight,
+              child: Container(
+                width: 42,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF2F2F2),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 4,
+                  ),
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFD8D8D8),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Expanded(
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFD8D8D8),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const Spacer(),
+            Text(
+              option.label,
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1F1F1F),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _PageAspectCard extends StatelessWidget {
