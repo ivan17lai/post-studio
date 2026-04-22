@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +12,131 @@ import 'package:image_picker/image_picker.dart';
 import 'project_record.dart';
 
 enum PageDisplayMode { single, preview }
+
+Uint8List _renderPageJpgBytes(Map<String, dynamic> payload) {
+  const defaultWidth = 2400;
+  const maxWidth = 6000;
+  var exportWidth = defaultWidth;
+  final imageBytesMap =
+      (payload['images'] as Map<dynamic, dynamic>? ?? const {}).map(
+        (key, value) => MapEntry(key as String, value as Uint8List),
+      );
+
+  final elements = (payload['elements'] as List<dynamic>)
+      .cast<Map<String, dynamic>>();
+
+  for (final element in elements) {
+    if ((element['type'] as String?) != 'image') {
+      continue;
+    }
+
+    final src = element['src'] as String? ?? '';
+    final width = (element['width'] as num?)?.toDouble() ?? 0;
+    if (src.isEmpty || width <= 0) {
+      continue;
+    }
+
+    final imageBytes = imageBytesMap[src];
+    if (imageBytes == null) {
+      continue;
+    }
+
+    final sourceImage = img.decodeImage(imageBytes);
+    if (sourceImage == null) {
+      continue;
+    }
+
+    final candidateWidth = (sourceImage.width / width).ceil();
+    if (candidateWidth > exportWidth) {
+      exportWidth = candidateWidth;
+    }
+  }
+
+  exportWidth = exportWidth.clamp(defaultWidth, maxWidth);
+  final aspectWidth = (payload['aspectWidth'] as num).toDouble();
+  final aspectHeight = (payload['aspectHeight'] as num).toDouble();
+  final exportHeight = (exportWidth * (aspectHeight / aspectWidth)).round();
+  final canvas = img.Image(width: exportWidth, height: exportHeight);
+  img.fill(canvas, color: img.ColorRgb8(255, 255, 255));
+
+  for (final element in elements) {
+    if ((element['type'] as String?) != 'image') {
+      continue;
+    }
+
+    final src = element['src'] as String? ?? '';
+    if (src.isEmpty) {
+      continue;
+    }
+
+    final imageBytes = imageBytesMap[src];
+    if (imageBytes == null) {
+      continue;
+    }
+
+    final sourceImage = img.decodeImage(imageBytes);
+    if (sourceImage == null) {
+      continue;
+    }
+
+    final frameAspectRatio =
+        ((element['aspectRatio'] as num?)?.toDouble()) ??
+        (sourceImage.width / sourceImage.height);
+    final targetWidth =
+        (((element['width'] as num?)?.toDouble() ?? 0) * exportWidth)
+            .round()
+            .clamp(1, 20000);
+    final targetHeight = (targetWidth / frameAspectRatio).round().clamp(
+      1,
+      20000,
+    );
+    final targetX = (((element['x'] as num?)?.toDouble() ?? 0) * exportWidth)
+        .round();
+    final targetY = (((element['y'] as num?)?.toDouble() ?? 0) * exportHeight)
+        .round();
+    final sourceAspectRatio = sourceImage.width / sourceImage.height;
+
+    img.Image croppedSource;
+    if (sourceAspectRatio > frameAspectRatio) {
+      final cropWidth = (sourceImage.height * frameAspectRatio).round().clamp(
+        1,
+        sourceImage.width,
+      );
+      final offsetX = ((sourceImage.width - cropWidth) / 2).round();
+      croppedSource = img.copyCrop(
+        sourceImage,
+        x: offsetX,
+        y: 0,
+        width: cropWidth,
+        height: sourceImage.height,
+      );
+    } else {
+      final cropHeight = (sourceImage.width / frameAspectRatio).round().clamp(
+        1,
+        sourceImage.height,
+      );
+      final offsetY = ((sourceImage.height - cropHeight) / 2).round();
+      croppedSource = img.copyCrop(
+        sourceImage,
+        x: 0,
+        y: offsetY,
+        width: sourceImage.width,
+        height: cropHeight,
+      );
+    }
+
+    final resizedImage = img.copyResize(
+      croppedSource,
+      width: targetWidth,
+      height: targetHeight,
+      interpolation: img.Interpolation.cubic,
+    );
+
+    img.compositeImage(canvas, resizedImage, dstX: targetX, dstY: targetY);
+  }
+
+  return Uint8List.fromList(img.encodeJpg(canvas, quality: 100));
+}
 
 class BlankPage extends StatefulWidget {
   const BlankPage({
@@ -55,6 +181,8 @@ class _BlankPageState extends State<BlankPage> {
   late ProjectRecord _project;
   bool _showPageBorder = false;
   bool _isExporting = false;
+  double _exportProgress = 0;
+  String _exportProgressLabel = '';
   PageDisplayMode _displayMode = PageDisplayMode.single;
   String _selectedBottomTab = _tabTemplate;
   String? _selectedElementId;
@@ -63,6 +191,7 @@ class _BlankPageState extends State<BlankPage> {
   final ScrollController _previewScrollController = ScrollController();
   final ImagePicker _imagePicker = ImagePicker();
   final GlobalKey _exportRepaintKey = GlobalKey();
+  final Map<String, Uint8List> _exportImageBytesCache = <String, Uint8List>{};
   _EditorSnapshot? _lastSnapshot;
   bool _hasPendingElementUndoSnapshot = false;
 
@@ -99,6 +228,17 @@ class _BlankPageState extends State<BlankPage> {
     await _persistProject(updatedProject);
   }
 
+  void _setExportProgress({required double progress, required String label}) {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _exportProgress = progress.clamp(0, 1);
+      _exportProgressLabel = label;
+    });
+  }
+
   void _storeUndoSnapshot() {
     _hasPendingElementUndoSnapshot = false;
     _lastSnapshot = _EditorSnapshot(
@@ -130,7 +270,9 @@ class _BlankPageState extends State<BlankPage> {
 
     _lastSnapshot = null;
     _hasPendingElementUndoSnapshot = false;
-    _project = snapshot.project.copyWith(pageCount: snapshot.project.pages.length);
+    _project = snapshot.project.copyWith(
+      pageCount: snapshot.project.pages.length,
+    );
     _currentPageIndex = snapshot.currentPageIndex.clamp(
       0,
       _project.pages.length - 1,
@@ -146,7 +288,8 @@ class _BlankPageState extends State<BlankPage> {
     await widget.onProjectChanged(_project);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_displayMode == PageDisplayMode.single && _pageController.hasClients) {
+      if (_displayMode == PageDisplayMode.single &&
+          _pageController.hasClients) {
         _pageController.jumpToPage(_currentPageIndex);
       } else if (_displayMode == PageDisplayMode.preview) {
         _jumpPreviewToPage(_currentPageIndex);
@@ -210,8 +353,7 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final isImageTab = tab == _tabImageSource || tab == _tabImageSettings;
-    final shouldClearSelection =
-        _selectedImageElement != null && !isImageTab;
+    final shouldClearSelection = _selectedImageElement != null && !isImageTab;
 
     setState(() {
       if (shouldClearSelection) {
@@ -729,10 +871,7 @@ class _BlankPageState extends State<BlankPage> {
     final templateElements = option.buildElements(currentPage.id, currentPage);
     final updatedPage = currentPage.copyWith(
       elements: templateElements,
-      extras: <String, dynamic>{
-        ...currentPage.extras,
-        'templateId': option.id,
-      },
+      extras: <String, dynamic>{...currentPage.extras, 'templateId': option.id},
     );
 
     final updatedPages = List<ProjectPage>.from(_project.pages);
@@ -969,8 +1108,8 @@ class _BlankPageState extends State<BlankPage> {
 
   Future<img.Image> _renderProjectPageForGallery(ProjectPage page) async {
     final exportWidth = await _computePageExportWidth(page);
-    final exportHeight =
-        (exportWidth * (page.aspectHeight / page.aspectWidth)).round();
+    final exportHeight = (exportWidth * (page.aspectHeight / page.aspectWidth))
+        .round();
     final canvas = img.Image(width: exportWidth, height: exportHeight);
     img.fill(canvas, color: img.ColorRgb8(255, 255, 255));
 
@@ -1034,12 +1173,7 @@ class _BlankPageState extends State<BlankPage> {
         interpolation: img.Interpolation.cubic,
       );
 
-      img.compositeImage(
-        canvas,
-        resizedImage,
-        dstX: targetX,
-        dstY: targetY,
-      );
+      img.compositeImage(canvas, resizedImage, dstX: targetX, dstY: targetY);
     }
 
     return canvas;
@@ -1056,6 +1190,91 @@ class _BlankPageState extends State<BlankPage> {
     return result ?? false;
   }
 
+  Future<void> _primeExportImageCache() async {
+    final imagePaths = <String>{};
+    for (final page in _project.pages) {
+      for (final element in page.elements) {
+        if (element.type != 'image') {
+          continue;
+        }
+
+        final src = element.data['src'] as String? ?? '';
+        if (src.isNotEmpty) {
+          imagePaths.add(src);
+        }
+      }
+    }
+
+    if (imagePaths.isEmpty) {
+      return;
+    }
+
+    final missingPaths = imagePaths
+        .where((path) => !_exportImageBytesCache.containsKey(path))
+        .toList();
+    if (missingPaths.isEmpty) {
+      return;
+    }
+
+    for (var i = 0; i < missingPaths.length; i++) {
+      final path = missingPaths[i];
+      _setExportProgress(
+        progress: missingPaths.isEmpty ? 0 : (i / missingPaths.length) * 0.2,
+        label: '準備圖片 ${i + 1}/${missingPaths.length}',
+      );
+
+      final file = File(path);
+      if (!await file.exists()) {
+        continue;
+      }
+
+      try {
+        _exportImageBytesCache[path] = await file.readAsBytes();
+      } catch (_) {
+        // Skip unreadable files so export can continue for the rest.
+      }
+    }
+
+    _setExportProgress(progress: 0.2, label: '圖片準備完成');
+  }
+
+  Future<Uint8List> _renderProjectPageBytesForGallery(ProjectPage page) {
+    final payload = <String, dynamic>{
+      'aspectWidth': page.aspectWidth,
+      'aspectHeight': page.aspectHeight,
+      'images': <String, Uint8List>{
+        for (final element in page.elements)
+          if (element.type == 'image')
+            ...() {
+              final src = element.data['src'] as String? ?? '';
+              if (src.isEmpty) {
+                return const <String, Uint8List>{};
+              }
+              final bytes = _exportImageBytesCache[src];
+              if (bytes == null) {
+                return const <String, Uint8List>{};
+              }
+              return <String, Uint8List>{src: bytes};
+            }(),
+      },
+      'elements': page.elements
+          .map(
+            (element) => <String, dynamic>{
+              'type': element.type,
+              'x': element.x,
+              'y': element.y,
+              'width': element.width,
+              'height': element.height,
+              'src': element.data['src'] as String? ?? '',
+              'aspectRatio': (element.data['aspectRatio'] as num?)?.toDouble(),
+            },
+          )
+          .toList(),
+    };
+
+    return compute(_renderPageJpgBytes, payload);
+  }
+
   Future<void> _exportAllPagesToGallery() async {
     if (_isExporting) {
       return;
@@ -1064,15 +1283,23 @@ class _BlankPageState extends State<BlankPage> {
     FocusScope.of(context).unfocus();
     setState(() {
       _isExporting = true;
+      _exportProgress = 0;
+      _exportProgressLabel = '\u6e96\u5099\u532f\u51fa';
     });
 
     try {
+      await _primeExportImageCache();
       var successCount = 0;
+      final totalPages = _project.pages.length;
 
-      for (var i = 0; i < _project.pages.length; i++) {
-        final pageImage = await _renderProjectPageForGallery(_project.pages[i]);
-        final jpgBytes = Uint8List.fromList(
-          img.encodeJpg(pageImage, quality: 100),
+      for (var i = totalPages - 1; i >= 0; i--) {
+        final exportIndex = totalPages - i;
+        _setExportProgress(
+          progress: 0.2 + ((exportIndex - 1) / totalPages) * 0.75,
+          label: '\u532f\u51fa\u7b2c $exportIndex/$totalPages \u9801',
+        );
+        final jpgBytes = await _renderProjectPageBytesForGallery(
+          _project.pages[i],
         );
 
         final isSuccess = await _saveImageToGallery(
@@ -1082,6 +1309,12 @@ class _BlankPageState extends State<BlankPage> {
         if (isSuccess) {
           successCount += 1;
         }
+
+        _setExportProgress(
+          progress: 0.2 + (exportIndex / totalPages) * 0.75,
+          label: '\u5df2\u5b8c\u6210 $exportIndex/$totalPages \u9801',
+        );
+        await Future<void>.delayed(Duration.zero);
       }
 
       if (!mounted) {
@@ -1089,9 +1322,9 @@ class _BlankPageState extends State<BlankPage> {
       }
 
       if (successCount == _project.pages.length) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已儲存 ${successCount} 張到手機相簿')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('已儲存 ${successCount} 張到手機相簿')));
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('已儲存 ${successCount} 張，部分頁面匯出失敗')),
@@ -1102,13 +1335,15 @@ class _BlankPageState extends State<BlankPage> {
         return;
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('匯出失敗，請再試一次。')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('匯出失敗，請再試一次。')));
     } finally {
       if (mounted) {
         setState(() {
           _isExporting = false;
+          _exportProgress = 0;
+          _exportProgressLabel = '';
         });
       }
     }
@@ -1199,277 +1434,335 @@ class _BlankPageState extends State<BlankPage> {
           ],
         ),
         backgroundColor: const Color(0xFFEAEAEA),
-        body: Column(
+        body: Stack(
           children: [
-            const SizedBox(height: 10),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  Row(
+            Column(
+              children: [
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+                  child: Stack(
+                    alignment: Alignment.center,
                     children: [
-                      _SlideSwitch(
-                        value: _displayMode == PageDisplayMode.preview,
-                        onChanged: (value) {
-                          _changeDisplayMode(
-                            value
-                                ? PageDisplayMode.preview
-                                : PageDisplayMode.single,
-                          );
-                        },
-                      ),
-                      const Spacer(),
-                      AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 220),
-                        switchInCurve: Curves.easeOut,
-                        switchOutCurve: Curves.easeIn,
-                        transitionBuilder: (child, animation) {
-                          return FadeTransition(
-                            opacity: animation,
-                            child: SizeTransition(
-                              sizeFactor: animation,
-                              axis: Axis.horizontal,
-                              child: child,
+                      Row(
+                        children: [
+                          _SlideSwitch(
+                            value: _displayMode == PageDisplayMode.preview,
+                            onChanged: (value) {
+                              _changeDisplayMode(
+                                value
+                                    ? PageDisplayMode.preview
+                                    : PageDisplayMode.single,
+                              );
+                            },
+                          ),
+                          const Spacer(),
+                          AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 220),
+                            switchInCurve: Curves.easeOut,
+                            switchOutCurve: Curves.easeIn,
+                            transitionBuilder: (child, animation) {
+                              return FadeTransition(
+                                opacity: animation,
+                                child: SizeTransition(
+                                  sizeFactor: animation,
+                                  axis: Axis.horizontal,
+                                  child: child,
+                                ),
+                              );
+                            },
+                            child: _displayMode == PageDisplayMode.preview
+                                ? Row(
+                                    key: const ValueKey('border-button'),
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      _ToolbarIconButton(
+                                        icon: _showPageBorder
+                                            ? Icons.border_outer_rounded
+                                            : Icons.crop_square_rounded,
+                                        onPressed: () {
+                                          setState(() {
+                                            _showPageBorder = !_showPageBorder;
+                                          });
+                                        },
+                                      ),
+                                      const SizedBox(width: 8),
+                                    ],
+                                  )
+                                : const SizedBox(key: ValueKey('border-empty')),
+                          ),
+                          if (_displayMode == PageDisplayMode.single) ...[
+                            _ToolbarIconButton(
+                              icon: Icons.delete_outline_rounded,
+                              onPressed: _deleteCurrentPage,
                             ),
-                          );
-                        },
-                        child: _displayMode == PageDisplayMode.preview
-                            ? Row(
-                                key: const ValueKey('border-button'),
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  _ToolbarIconButton(
-                                    icon: _showPageBorder
-                                        ? Icons.border_outer_rounded
-                                        : Icons.crop_square_rounded,
-                                    onPressed: () {
-                                      setState(() {
-                                        _showPageBorder = !_showPageBorder;
-                                      });
-                                    },
-                                  ),
-                                  const SizedBox(width: 8),
-                                ],
-                              )
-                            : const SizedBox(key: ValueKey('border-empty')),
+                            const SizedBox(width: 8),
+                          ],
+                          _ToolbarIconButton(
+                            icon: Icons.add,
+                            onPressed: _addPage,
+                          ),
+                        ],
                       ),
-                      if (_displayMode == PageDisplayMode.single) ...[
-                        _ToolbarIconButton(
-                          icon: Icons.delete_outline_rounded,
-                          onPressed: _deleteCurrentPage,
-                        ),
-                        const SizedBox(width: 8),
-                      ],
-                      _ToolbarIconButton(icon: Icons.add, onPressed: _addPage),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _PageChangeButton(
+                            icon: Icons.chevron_left_rounded,
+                            enabled: _currentPageIndex > 0,
+                            onTap: () => _goToPage(_currentPageIndex - 1),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '第 ${_currentPageIndex + 1} / ${pages.length} 頁',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: Colors.black54,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          _PageChangeButton(
+                            icon: Icons.chevron_right_rounded,
+                            enabled: _currentPageIndex < pages.length - 1,
+                            onTap: () => _goToPage(_currentPageIndex + 1),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+                ),
+                const SizedBox(height: 10),
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 240),
+                  curve: Curves.easeOutCubic,
+                  height: canvasHeight,
+                  alignment: Alignment.center,
+                  child: _displayMode == PageDisplayMode.single
+                      ? PageView.builder(
+                          controller: _pageController,
+                          padEnds: false,
+                          physics: _selectedElementId == null
+                              ? const PageScrollPhysics()
+                              : const NeverScrollableScrollPhysics(),
+                          itemCount: pages.length,
+                          onPageChanged: (index) {
+                            setState(() {
+                              _currentPageIndex = index;
+                              _selectedElementId = null;
+                              _selectedBottomTab = _tabElements;
+                            });
+                            WidgetsBinding.instance.addPostFrameCallback(
+                              (_) => _syncBottomTab(),
+                            );
+                          },
+                          itemBuilder: (context, index) {
+                            final page = pages[index];
+                            return _CanvasViewport(
+                              page: page,
+                              viewportWidth: singleCanvasWidth,
+                              viewportHeight: singleCanvasHeight,
+                              repaintKey: index == _currentPageIndex
+                                  ? _exportRepaintKey
+                                  : null,
+                              showBorder: _showPageBorder,
+                              selectedElementId: _selectedElementId,
+                              onTapCanvas: _clearSelectedElement,
+                              onTapElement: _selectElement,
+                              onMoveElement: (elementId, x, y, persist) {
+                                _updateElementPosition(
+                                  pageId: page.id,
+                                  elementId: elementId,
+                                  x: x,
+                                  y: y,
+                                  persist: persist,
+                                );
+                              },
+                              onResizeElement: (elementId, width, persist) {
+                                _updateElementSize(
+                                  pageId: page.id,
+                                  elementId: elementId,
+                                  width: width,
+                                  persist: persist,
+                                );
+                              },
+                              onDeleteElement: (elementId) {
+                                _deleteElement(
+                                  pageId: page.id,
+                                  elementId: elementId,
+                                );
+                              },
+                            );
+                          },
+                        )
+                      : NotificationListener<ScrollNotification>(
+                          onNotification: (notification) {
+                            _syncPreviewPageIndex();
+                            return false;
+                          },
+                          child: SingleChildScrollView(
+                            controller: _previewScrollController,
+                            scrollDirection: Axis.horizontal,
+                            physics: _selectedElementId == null
+                                ? const BouncingScrollPhysics()
+                                : const NeverScrollableScrollPhysics(),
+                            child: _PreviewCanvasStrip(
+                              pages: pages,
+                              viewportWidth: previewCanvasWidth,
+                              viewportHeight: previewCanvasHeight,
+                              exportPageId: currentPage.id,
+                              exportRepaintKey: _exportRepaintKey,
+                              showBorder: _showPageBorder,
+                              selectedElementId: _selectedElementId,
+                              onTapCanvas: _clearSelectedElement,
+                              onTapElement: _selectElement,
+                              onMoveElement:
+                                  (pageId, elementId, x, y, persist) {
+                                    _updateElementPosition(
+                                      pageId: pageId,
+                                      elementId: elementId,
+                                      x: x,
+                                      y: y,
+                                      persist: persist,
+                                    );
+                                  },
+                              onResizeElement:
+                                  (pageId, elementId, width, persist) {
+                                    _updateElementSize(
+                                      pageId: pageId,
+                                      elementId: elementId,
+                                      width: width,
+                                      persist: persist,
+                                    );
+                                  },
+                              onDeleteElement: (pageId, elementId) {
+                                _deleteElement(
+                                  pageId: pageId,
+                                  elementId: elementId,
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                ),
+                const SizedBox(height: 20),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
                     children: [
-                      _PageChangeButton(
-                        icon: Icons.chevron_left_rounded,
-                        enabled: _currentPageIndex > 0,
-                        onTap: () => _goToPage(_currentPageIndex - 1),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '第 ${_currentPageIndex + 1} / ${pages.length} 頁',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          color: Colors.black54,
+                      for (var i = 0; i < bottomTabs.length; i++) ...[
+                        _BottomTab(
+                          label: bottomTabs[i],
+                          selected: _selectedBottomTab == bottomTabs[i],
+                          onTap: () => _changeBottomTab(bottomTabs[i]),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      _PageChangeButton(
-                        icon: Icons.chevron_right_rounded,
-                        enabled: _currentPageIndex < pages.length - 1,
-                        onTap: () => _goToPage(_currentPageIndex + 1),
-                      ),
+                        if (i != bottomTabs.length - 1)
+                          const SizedBox(width: 18),
+                      ],
                     ],
                   ),
-                ],
-              ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 180,
+                  child: PageView(
+                    key: ValueKey(bottomTabs.join('|')),
+                    controller: _bottomTabPageController,
+                    physics: const NeverScrollableScrollPhysics(),
+                    children: _selectedImageElement == null
+                        ? <Widget>[
+                            _PageTabPage(
+                              page: currentPage,
+                              onAspectSelected: (width, height) {
+                                _updateCurrentPageAspect(
+                                  aspectWidth: width,
+                                  aspectHeight: height,
+                                );
+                              },
+                            ),
+                            _TemplateTabPage(
+                              page: currentPage,
+                              onApplyTemplate: _applyTemplate,
+                            ),
+                            _ElementTabPage(onAddImage: _addImageElement),
+                          ]
+                        : <Widget>[
+                            _PageTabPage(
+                              page: currentPage,
+                              onAspectSelected: (width, height) {
+                                _updateCurrentPageAspect(
+                                  aspectWidth: width,
+                                  aspectHeight: height,
+                                );
+                              },
+                            ),
+                            _TemplateTabPage(
+                              page: currentPage,
+                              onApplyTemplate: _applyTemplate,
+                            ),
+                            _ElementTabPage(onAddImage: _addImageElement),
+                            _ImageSourceTabPage(
+                              onUploadImage: _pickImageForSelected,
+                              imagePath:
+                                  _selectedImageElement?.data['src']
+                                      as String? ??
+                                  '',
+                            ),
+                            _ImageSettingsTabPage(
+                              selectedElement: _selectedImageElement!,
+                              onAspectSelected: _updateSelectedImageAspect,
+                            ),
+                          ],
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 10),
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 240),
-              curve: Curves.easeOutCubic,
-              height: canvasHeight,
-              alignment: Alignment.center,
-              child: _displayMode == PageDisplayMode.single
-                  ? PageView.builder(
-                      controller: _pageController,
-                      padEnds: false,
-                      physics: _selectedElementId == null
-                          ? const PageScrollPhysics()
-                          : const NeverScrollableScrollPhysics(),
-                      itemCount: pages.length,
-                      onPageChanged: (index) {
-                        setState(() {
-                          _currentPageIndex = index;
-                          _selectedElementId = null;
-                          _selectedBottomTab = _tabElements;
-                        });
-                        WidgetsBinding.instance.addPostFrameCallback(
-                          (_) => _syncBottomTab(),
-                        );
-                      },
-                      itemBuilder: (context, index) {
-                        final page = pages[index];
-                        return _CanvasViewport(
-                          page: page,
-                          viewportWidth: singleCanvasWidth,
-                          viewportHeight: singleCanvasHeight,
-                          repaintKey: index == _currentPageIndex
-                              ? _exportRepaintKey
-                              : null,
-                          showBorder: _showPageBorder,
-                          selectedElementId: _selectedElementId,
-                          onTapCanvas: _clearSelectedElement,
-                          onTapElement: _selectElement,
-                          onMoveElement: (elementId, x, y, persist) {
-                            _updateElementPosition(
-                              pageId: page.id,
-                              elementId: elementId,
-                              x: x,
-                              y: y,
-                              persist: persist,
-                            );
-                          },
-                          onResizeElement: (elementId, width, persist) {
-                            _updateElementSize(
-                              pageId: page.id,
-                              elementId: elementId,
-                              width: width,
-                              persist: persist,
-                            );
-                          },
-                          onDeleteElement: (elementId) {
-                            _deleteElement(
-                              pageId: page.id,
-                              elementId: elementId,
-                            );
-                          },
-                        );
-                      },
-                    )
-                  : NotificationListener<ScrollNotification>(
-                      onNotification: (notification) {
-                        _syncPreviewPageIndex();
-                        return false;
-                      },
-                      child: SingleChildScrollView(
-                        controller: _previewScrollController,
-                        scrollDirection: Axis.horizontal,
-                        physics: _selectedElementId == null
-                            ? const BouncingScrollPhysics()
-                            : const NeverScrollableScrollPhysics(),
-                        child: _PreviewCanvasStrip(
-                          pages: pages,
-                          viewportWidth: previewCanvasWidth,
-                          viewportHeight: previewCanvasHeight,
-                          exportPageId: currentPage.id,
-                          exportRepaintKey: _exportRepaintKey,
-                          showBorder: _showPageBorder,
-                          selectedElementId: _selectedElementId,
-                          onTapCanvas: _clearSelectedElement,
-                          onTapElement: _selectElement,
-                          onMoveElement: (pageId, elementId, x, y, persist) {
-                            _updateElementPosition(
-                              pageId: pageId,
-                              elementId: elementId,
-                              x: x,
-                              y: y,
-                              persist: persist,
-                            );
-                          },
-                          onResizeElement: (pageId, elementId, width, persist) {
-                            _updateElementSize(
-                              pageId: pageId,
-                              elementId: elementId,
-                              width: width,
-                              persist: persist,
-                            );
-                          },
-                          onDeleteElement: (pageId, elementId) {
-                            _deleteElement(
-                              pageId: pageId,
-                              elementId: elementId,
-                            );
-                          },
-                        ),
+            if (_isExporting)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Container(
+                    color: Colors.black.withValues(alpha: 0.06),
+                    alignment: Alignment.center,
+                    child: Container(
+                      width: 220,
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _exportProgressLabel.isEmpty
+                                ? '\u532f\u51fa\u4e2d'
+                                : _exportProgressLabel,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.black87,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(999),
+                            child: LinearProgressIndicator(
+                              minHeight: 6,
+                              value: _exportProgress <= 0
+                                  ? null
+                                  : _exportProgress,
+                              backgroundColor: const Color(0xFFE6E6E6),
+                              valueColor: const AlwaysStoppedAnimation<Color>(
+                                Color(0xFF8F8F8F),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-            ),
-            const SizedBox(height: 20),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  for (var i = 0; i < bottomTabs.length; i++) ...[
-                    _BottomTab(
-                      label: bottomTabs[i],
-                      selected: _selectedBottomTab == bottomTabs[i],
-                      onTap: () => _changeBottomTab(bottomTabs[i]),
-                    ),
-                    if (i != bottomTabs.length - 1) const SizedBox(width: 18),
-                  ],
-                ],
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(height: 10),
-            SizedBox(
-              height: 180,
-              child: PageView(
-                key: ValueKey(bottomTabs.join('|')),
-                controller: _bottomTabPageController,
-                physics: const NeverScrollableScrollPhysics(),
-                children: _selectedImageElement == null
-                    ? <Widget>[
-                        _PageTabPage(
-                          page: currentPage,
-                          onAspectSelected: (width, height) {
-                            _updateCurrentPageAspect(
-                              aspectWidth: width,
-                              aspectHeight: height,
-                            );
-                          },
-                        ),
-                        _TemplateTabPage(
-                          page: currentPage,
-                          onApplyTemplate: _applyTemplate,
-                        ),
-                        _ElementTabPage(onAddImage: _addImageElement),
-                      ]
-                    : <Widget>[
-                        _PageTabPage(
-                          page: currentPage,
-                          onAspectSelected: (width, height) {
-                            _updateCurrentPageAspect(
-                              aspectWidth: width,
-                              aspectHeight: height,
-                            );
-                          },
-                        ),
-                        _TemplateTabPage(
-                          page: currentPage,
-                          onApplyTemplate: _applyTemplate,
-                        ),
-                        _ElementTabPage(onAddImage: _addImageElement),
-                        _ImageSourceTabPage(
-                          onUploadImage: _pickImageForSelected,
-                          imagePath:
-                              _selectedImageElement?.data['src'] as String? ??
-                              '',
-                        ),
-                        _ImageSettingsTabPage(
-                          selectedElement: _selectedImageElement!,
-                          onAspectSelected: _updateSelectedImageAspect,
-                        ),
-                      ],
-              ),
-            ),
           ],
         ),
       ),
@@ -2286,10 +2579,7 @@ class _PageTabPage extends StatelessWidget {
 }
 
 class _TemplateTabPage extends StatelessWidget {
-  const _TemplateTabPage({
-    required this.page,
-    required this.onApplyTemplate,
-  });
+  const _TemplateTabPage({required this.page, required this.onApplyTemplate});
 
   final ProjectPage page;
   final ValueChanged<_TemplateOption> onApplyTemplate;
@@ -2786,10 +3076,7 @@ class _ImageAspectCard extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: Colors.transparent,
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(
-                    color: const Color(0xFFB8B8B8),
-                    width: 2,
-                  ),
+                  border: Border.all(color: const Color(0xFFB8B8B8), width: 2),
                 ),
               ),
             ),
