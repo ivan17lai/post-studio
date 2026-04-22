@@ -140,6 +140,114 @@ Uint8List _renderPageJpgBytes(Map<String, dynamic> payload) {
   return Uint8List.fromList(img.encodeJpg(canvas, quality: 100));
 }
 
+List<Uint8List> _renderAllPagesJpgBytes(Map<String, dynamic> payload) {
+  const defaultWidth = 2400;
+  const maxWidth = 6000;
+  final exportWidth =
+      ((payload['exportWidth'] as num?)?.round() ?? defaultWidth).clamp(
+        defaultWidth,
+        maxWidth,
+      );
+  final imageBytesMap =
+      (payload['images'] as Map<dynamic, dynamic>? ?? const {}).map(
+        (key, value) => MapEntry(key as String, value as Uint8List),
+      );
+  final decodedImageMap = <String, img.Image>{};
+
+  for (final entry in imageBytesMap.entries) {
+    final decoded = img.decodeImage(entry.value);
+    if (decoded != null) {
+      decodedImageMap[entry.key] = decoded;
+    }
+  }
+
+  final pages = (payload['pages'] as List<dynamic>)
+      .cast<Map<String, dynamic>>();
+
+  return pages.map((pagePayload) {
+    final aspectWidth = (pagePayload['aspectWidth'] as num).toDouble();
+    final aspectHeight = (pagePayload['aspectHeight'] as num).toDouble();
+    final exportHeight = (exportWidth * (aspectHeight / aspectWidth)).round();
+    final canvas = img.Image(width: exportWidth, height: exportHeight);
+    img.fill(canvas, color: img.ColorRgb8(255, 255, 255));
+    final elements = (pagePayload['elements'] as List<dynamic>)
+        .cast<Map<String, dynamic>>();
+
+    for (final element in elements) {
+      if ((element['type'] as String?) != 'image') {
+        continue;
+      }
+
+      final src = element['src'] as String? ?? '';
+      if (src.isEmpty) {
+        continue;
+      }
+
+      final sourceImage = decodedImageMap[src];
+      if (sourceImage == null) {
+        continue;
+      }
+
+      final frameAspectRatio =
+          ((element['aspectRatio'] as num?)?.toDouble()) ??
+          (sourceImage.width / sourceImage.height);
+      final targetWidth =
+          (((element['width'] as num?)?.toDouble() ?? 0) * exportWidth)
+              .round()
+              .clamp(1, 20000);
+      final targetHeight = (targetWidth / frameAspectRatio).round().clamp(
+        1,
+        20000,
+      );
+      final targetX = (((element['x'] as num?)?.toDouble() ?? 0) * exportWidth)
+          .round();
+      final targetY = (((element['y'] as num?)?.toDouble() ?? 0) * exportHeight)
+          .round();
+      final sourceAspectRatio = sourceImage.width / sourceImage.height;
+
+      img.Image croppedSource;
+      if (sourceAspectRatio > frameAspectRatio) {
+        final cropWidth = (sourceImage.height * frameAspectRatio).round().clamp(
+          1,
+          sourceImage.width,
+        );
+        final offsetX = ((sourceImage.width - cropWidth) / 2).round();
+        croppedSource = img.copyCrop(
+          sourceImage,
+          x: offsetX,
+          y: 0,
+          width: cropWidth,
+          height: sourceImage.height,
+        );
+      } else {
+        final cropHeight = (sourceImage.width / frameAspectRatio).round().clamp(
+          1,
+          sourceImage.height,
+        );
+        final offsetY = ((sourceImage.height - cropHeight) / 2).round();
+        croppedSource = img.copyCrop(
+          sourceImage,
+          x: 0,
+          y: offsetY,
+          width: sourceImage.width,
+          height: cropHeight,
+        );
+      }
+
+      final resizedImage = img.copyResize(
+        croppedSource,
+        width: targetWidth,
+        height: targetHeight,
+        interpolation: img.Interpolation.linear,
+      );
+
+      img.compositeImage(canvas, resizedImage, dstX: targetX, dstY: targetY);
+    }
+
+    return Uint8List.fromList(img.encodeJpg(canvas, quality: 100));
+  }).toList();
+}
+
 class BlankPage extends StatefulWidget {
   const BlankPage({
     super.key,
@@ -1312,6 +1420,43 @@ class _BlankPageState extends State<BlankPage> {
     return compute(_renderPageJpgBytes, payload);
   }
 
+  Future<List<Uint8List>> _renderAllProjectPagesBytesForGallery({
+    required int exportWidth,
+    required List<int> pageIndexes,
+  }) {
+    final payload = <String, dynamic>{
+      'exportWidth': exportWidth,
+      'images': <String, Uint8List>{
+        for (final entry in _exportImageBytesCache.entries)
+          entry.key: entry.value,
+      },
+      'pages': pageIndexes
+          .map(
+            (pageIndex) => <String, dynamic>{
+              'aspectWidth': _project.pages[pageIndex].aspectWidth,
+              'aspectHeight': _project.pages[pageIndex].aspectHeight,
+              'elements': _project.pages[pageIndex].elements
+                  .map(
+                    (element) => <String, dynamic>{
+                      'type': element.type,
+                      'x': element.x,
+                      'y': element.y,
+                      'width': element.width,
+                      'height': element.height,
+                      'src': element.data['src'] as String? ?? '',
+                      'aspectRatio': (element.data['aspectRatio'] as num?)
+                          ?.toDouble(),
+                    },
+                  )
+                  .toList(),
+            },
+          )
+          .toList(),
+    };
+
+    return compute(_renderAllPagesJpgBytes, payload);
+  }
+
   Future<void> _exportAllPagesToGallery() async {
     if (_isExporting) {
       return;
@@ -1329,28 +1474,36 @@ class _BlankPageState extends State<BlankPage> {
       var successCount = 0;
       final totalPages = _project.pages.length;
       final exportWidth = _computeVisibleExportWidth();
+      final pageIndexes = <int>[for (var i = totalPages - 1; i >= 0; i--) i];
 
-      for (var i = totalPages - 1; i >= 0; i--) {
-        final exportIndex = totalPages - i;
+      _setExportProgress(
+        progress: 0.25,
+        label: '\u6b63\u5728\u5408\u6210\u9801\u9762',
+      );
+      final renderedPages = await _renderAllProjectPagesBytesForGallery(
+        exportWidth: exportWidth,
+        pageIndexes: pageIndexes,
+      );
+
+      for (var listIndex = 0; listIndex < pageIndexes.length; listIndex++) {
+        final pageIndex = pageIndexes[listIndex];
+        final exportIndex = listIndex + 1;
         _setExportProgress(
-          progress: 0.2 + ((exportIndex - 1) / totalPages) * 0.75,
+          progress: 0.55 + ((exportIndex - 1) / totalPages) * 0.45,
           label: '\u532f\u51fa\u7b2c $exportIndex/$totalPages \u9801',
         );
-        final jpgBytes = await _renderProjectPageBytesForGallery(
-          _project.pages[i],
-          exportWidth: exportWidth,
-        );
+        final jpgBytes = renderedPages[listIndex];
 
         final isSuccess = await _saveImageToGallery(
           bytes: jpgBytes,
-          name: _buildGalleryExportName(i),
+          name: _buildGalleryExportName(pageIndex),
         );
         if (isSuccess) {
           successCount += 1;
         }
 
         _setExportProgress(
-          progress: 0.2 + (exportIndex / totalPages) * 0.75,
+          progress: 0.55 + (exportIndex / totalPages) * 0.45,
           label: '\u5df2\u5b8c\u6210 $exportIndex/$totalPages \u9801',
         );
         await Future<void>.delayed(Duration.zero);
@@ -1364,7 +1517,7 @@ class _BlankPageState extends State<BlankPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '\u5df2\u5132\u5b58  \u5f35\u5230\u624b\u6a5f\u76f8\u7c3f',
+              '\u5df2\u532f\u51fa\u5230\u624b\u6a5f\u76f8\u7c3f',
             ),
           ),
         );
@@ -1372,7 +1525,7 @@ class _BlankPageState extends State<BlankPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '\u5df2\u5132\u5b58  \u5f35\uff0c\u90e8\u5206\u9801\u9762\u532f\u51fa\u5931\u6557',
+              '\u90e8\u5206\u9801\u9762\u532f\u51fa\u5931\u6557',
             ),
           ),
         );
@@ -1567,7 +1720,7 @@ class _BlankPageState extends State<BlankPage> {
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            '\u7b2c  /  \u9801',
+                            '\u7b2c ${_currentPageIndex + 1} / ${pages.length} \u9801',
                             style: const TextStyle(
                               fontSize: 13,
                               color: Colors.black54,
