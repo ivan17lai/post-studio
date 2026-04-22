@@ -686,9 +686,39 @@ class _BlankPageState extends State<BlankPage> {
       final targetHeight = (targetWidth / aspectRatio).round().clamp(1, 20000);
       final targetX = (element.x * exportWidth).round();
       final targetY = (element.y * exportHeight).round();
+      final sourceAspectRatio = sourceImage.width / sourceImage.height;
+
+      img.Image croppedSource;
+      if (sourceAspectRatio > aspectRatio) {
+        final cropWidth = (sourceImage.height * aspectRatio).round().clamp(
+          1,
+          sourceImage.width,
+        );
+        final offsetX = ((sourceImage.width - cropWidth) / 2).round();
+        croppedSource = img.copyCrop(
+          sourceImage,
+          x: offsetX,
+          y: 0,
+          width: cropWidth,
+          height: sourceImage.height,
+        );
+      } else {
+        final cropHeight = (sourceImage.width / aspectRatio).round().clamp(
+          1,
+          sourceImage.height,
+        );
+        final offsetY = ((sourceImage.height - cropHeight) / 2).round();
+        croppedSource = img.copyCrop(
+          sourceImage,
+          x: 0,
+          y: offsetY,
+          width: sourceImage.width,
+          height: cropHeight,
+        );
+      }
 
       final resizedImage = img.copyResize(
-        sourceImage,
+        croppedSource,
         width: targetWidth,
         height: targetHeight,
         interpolation: img.Interpolation.cubic,
@@ -1379,7 +1409,7 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                         size: 24,
                       ),
                     )
-                  : Image.file(File(src), fit: BoxFit.contain),
+                  : Image.file(File(src), fit: BoxFit.cover),
             ),
             if (widget.isSelected)
               Positioned(
@@ -1565,7 +1595,7 @@ class _PreviewImageElementWidgetState
                         size: 24,
                       ),
                     )
-                  : Image.file(File(src), fit: BoxFit.contain),
+                  : Image.file(File(src), fit: BoxFit.cover),
             ),
             if (widget.isSelected)
               Positioned(
