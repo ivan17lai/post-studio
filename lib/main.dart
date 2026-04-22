@@ -96,7 +96,7 @@ class _MainPageState extends State<MainPage> {
   Future<void> _showCreateProjectDialog() async {
     final name = await showDialog<String>(
       context: context,
-      builder: (_) => const _CreateProjectDialog(),
+      builder: (_) => const _StyledCreateProjectDialog(),
     );
 
     if (!mounted || name == null || name.isEmpty) {
@@ -108,7 +108,9 @@ class _MainPageState extends State<MainPage> {
       name: name,
       createdAt: DateTime.now(),
       pageCount: 1,
-      pages: <ProjectPage>[ProjectPage.initial()],
+      pages: <ProjectPage>[
+        ProjectPage.initial().copyWith(aspectWidth: 3, aspectHeight: 4),
+      ],
       extras: const <String, dynamic>{},
     );
 
@@ -117,6 +119,12 @@ class _MainPageState extends State<MainPage> {
     });
 
     await _persistProjects();
+
+    if (!mounted) {
+      return;
+    }
+
+    await _openProject(project);
   }
 
   Future<void> _openProject(ProjectRecord project) async {
@@ -311,6 +319,151 @@ class _CreateProjectDialogState extends State<_CreateProjectDialog> {
         ),
         FilledButton(onPressed: _submit, child: const Text('建立')),
       ],
+    );
+  }
+}
+
+class _StyledCreateProjectDialog extends StatefulWidget {
+  const _StyledCreateProjectDialog();
+
+  @override
+  State<_StyledCreateProjectDialog> createState() =>
+      _StyledCreateProjectDialogState();
+}
+
+class _StyledCreateProjectDialogState
+    extends State<_StyledCreateProjectDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    FocusScope.of(context).unfocus();
+    Navigator.of(context).pop(_controller.text.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF4F4F4),
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: const Icon(
+                Icons.create_new_folder_outlined,
+                size: 20,
+                color: Color(0xFF6F6F6F),
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text(
+              '新增專案',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1F1F1F),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: TextField(
+                controller: _controller,
+                autofocus: true,
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) => _submit(),
+                decoration: const InputDecoration(
+                  hintText: '輸入專案名稱',
+                  border: InputBorder.none,
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                Expanded(
+                  child: _DialogActionButton(
+                    label: '取消',
+                    onTap: () => Navigator.of(context).pop(),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _DialogActionButton(
+                    label: '建立',
+                    isPrimary: true,
+                    onTap: _submit,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DialogActionButton extends StatelessWidget {
+  const _DialogActionButton({
+    required this.label,
+    required this.onTap,
+    this.isPrimary = false,
+  });
+
+  final String label;
+  final VoidCallback onTap;
+  final bool isPrimary;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 42,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: isPrimary ? const Color(0xFFD8D8D8) : Colors.white,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF1F1F1F),
+          ),
+        ),
+      ),
     );
   }
 }

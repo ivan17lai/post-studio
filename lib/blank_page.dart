@@ -26,6 +26,24 @@ class BlankPage extends StatefulWidget {
   State<BlankPage> createState() => _BlankPageState();
 }
 
+class _EditorSnapshot {
+  const _EditorSnapshot({
+    required this.project,
+    required this.currentPageIndex,
+    required this.selectedBottomTab,
+    required this.selectedElementId,
+    required this.displayMode,
+    required this.showPageBorder,
+  });
+
+  final ProjectRecord project;
+  final int currentPageIndex;
+  final String selectedBottomTab;
+  final String? selectedElementId;
+  final PageDisplayMode displayMode;
+  final bool showPageBorder;
+}
+
 class _BlankPageState extends State<BlankPage> {
   static const MethodChannel _galleryChannel = MethodChannel('igapp/gallery');
   static const String _tabPage = '頁面';
@@ -45,6 +63,8 @@ class _BlankPageState extends State<BlankPage> {
   final ScrollController _previewScrollController = ScrollController();
   final ImagePicker _imagePicker = ImagePicker();
   final GlobalKey _exportRepaintKey = GlobalKey();
+  _EditorSnapshot? _lastSnapshot;
+  bool _hasPendingElementUndoSnapshot = false;
 
   @override
   void initState() {
@@ -77,6 +97,65 @@ class _BlankPageState extends State<BlankPage> {
 
   Future<void> _saveProject(ProjectRecord updatedProject) async {
     await _persistProject(updatedProject);
+  }
+
+  void _storeUndoSnapshot() {
+    _hasPendingElementUndoSnapshot = false;
+    _lastSnapshot = _EditorSnapshot(
+      project: _project,
+      currentPageIndex: _currentPageIndex,
+      selectedBottomTab: _selectedBottomTab,
+      selectedElementId: _selectedElementId,
+      displayMode: _displayMode,
+      showPageBorder: _showPageBorder,
+    );
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _restoreLastStep() async {
+    final snapshot = _lastSnapshot;
+    if (snapshot == null) {
+      return;
+    }
+
+    final oldController = _pageController;
+    final needsNewController = snapshot.displayMode != _displayMode;
+
+    if (needsNewController) {
+      _displayMode = snapshot.displayMode;
+      _pageController = _buildPageController();
+    }
+
+    _lastSnapshot = null;
+    _hasPendingElementUndoSnapshot = false;
+    _project = snapshot.project.copyWith(pageCount: snapshot.project.pages.length);
+    _currentPageIndex = snapshot.currentPageIndex.clamp(
+      0,
+      _project.pages.length - 1,
+    );
+    _selectedBottomTab = snapshot.selectedBottomTab;
+    _selectedElementId = snapshot.selectedElementId;
+    _showPageBorder = snapshot.showPageBorder;
+
+    if (mounted) {
+      setState(() {});
+    }
+
+    await widget.onProjectChanged(_project);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_displayMode == PageDisplayMode.single && _pageController.hasClients) {
+        _pageController.jumpToPage(_currentPageIndex);
+      } else if (_displayMode == PageDisplayMode.preview) {
+        _jumpPreviewToPage(_currentPageIndex);
+      }
+      _syncBottomTab();
+      if (needsNewController) {
+        oldController.dispose();
+      }
+    });
   }
 
   Future<void> _handleBack() async {
@@ -166,9 +245,18 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   Future<void> _addPage() async {
+    _storeUndoSnapshot();
     final nextIndex = _project.pages.length + 1;
+    final referencePage = _project.pages.isNotEmpty
+        ? _project.pages[_currentPageIndex]
+        : ProjectPage.initial();
     final newPages = List<ProjectPage>.from(_project.pages)
-      ..add(ProjectPage.initial(nextIndex));
+      ..add(
+        ProjectPage.initial(nextIndex).copyWith(
+          aspectWidth: referencePage.aspectWidth,
+          aspectHeight: referencePage.aspectHeight,
+        ),
+      );
 
     final updatedProject = _project.copyWith(
       pages: newPages,
@@ -294,6 +382,7 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
+    _storeUndoSnapshot();
     final updatedPages = List<ProjectPage>.from(_project.pages)
       ..removeAt(_currentPageIndex);
     final nextIndex = _currentPageIndex >= updatedPages.length
@@ -326,6 +415,7 @@ class _BlankPageState extends State<BlankPage> {
     required double aspectWidth,
     required double aspectHeight,
   }) async {
+    _storeUndoSnapshot();
     final updatedPages = _project.pages
         .map(
           (page) => page.copyWith(
@@ -528,6 +618,7 @@ class _BlankPageState extends State<BlankPage> {
     });
 
     if (persist) {
+      _hasPendingElementUndoSnapshot = false;
       await _saveProject(updatedProject);
     }
   }
@@ -539,6 +630,10 @@ class _BlankPageState extends State<BlankPage> {
     required double y,
     required bool persist,
   }) {
+    if (!persist && !_hasPendingElementUndoSnapshot) {
+      _storeUndoSnapshot();
+      _hasPendingElementUndoSnapshot = true;
+    }
     final pageIndex = _project.pages.indexWhere((page) => page.id == pageId);
     if (pageIndex == -1) {
       return;
@@ -564,6 +659,10 @@ class _BlankPageState extends State<BlankPage> {
     required double width,
     required bool persist,
   }) {
+    if (!persist && !_hasPendingElementUndoSnapshot) {
+      _storeUndoSnapshot();
+      _hasPendingElementUndoSnapshot = true;
+    }
     final pageIndex = _project.pages.indexWhere((page) => page.id == pageId);
     if (pageIndex == -1) {
       return;
@@ -625,6 +724,7 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   Future<void> _applyTemplate(_TemplateOption option) async {
+    _storeUndoSnapshot();
     final currentPage = _project.pages[_currentPageIndex];
     final templateElements = option.buildElements(currentPage.id, currentPage);
     final updatedPage = currentPage.copyWith(
@@ -698,6 +798,34 @@ class _BlankPageState extends State<BlankPage> {
     final screenWidth = MediaQuery.of(context).size.width;
     final pageWidth = screenWidth * 0.78;
     _previewScrollController.jumpTo(pageWidth * pageIndex);
+  }
+
+  void _goToPage(int pageIndex) {
+    if (pageIndex < 0 || pageIndex >= _project.pages.length) {
+      return;
+    }
+
+    setState(() {
+      _currentPageIndex = pageIndex;
+      _selectedElementId = null;
+      _selectedBottomTab = _tabElements;
+    });
+
+    if (_displayMode == PageDisplayMode.single) {
+      if (_pageController.hasClients) {
+        _pageController.animateToPage(
+          pageIndex,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+        );
+      }
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _jumpPreviewToPage(pageIndex);
+      });
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncBottomTab());
   }
 
   void _syncPreviewPageIndex() {
@@ -1048,6 +1176,13 @@ class _BlankPageState extends State<BlankPage> {
           ),
           actions: [
             IconButton(
+              onPressed: _lastSnapshot == null ? null : _restoreLastStep,
+              icon: Icon(
+                Icons.undo_rounded,
+                color: _lastSnapshot == null ? Colors.black26 : Colors.black54,
+              ),
+            ),
+            IconButton(
               onPressed: _isExporting ? null : _exportAllPagesToGallery,
               icon: _isExporting
                   ? const SizedBox(
@@ -1119,18 +1254,39 @@ class _BlankPageState extends State<BlankPage> {
                               )
                             : const SizedBox(key: ValueKey('border-empty')),
                       ),
-                      _ToolbarIconButton(
-                        icon: Icons.delete_outline_rounded,
-                        onPressed: _deleteCurrentPage,
-                        enabled: _displayMode == PageDisplayMode.single,
-                      ),
-                      const SizedBox(width: 8),
+                      if (_displayMode == PageDisplayMode.single) ...[
+                        _ToolbarIconButton(
+                          icon: Icons.delete_outline_rounded,
+                          onPressed: _deleteCurrentPage,
+                        ),
+                        const SizedBox(width: 8),
+                      ],
                       _ToolbarIconButton(icon: Icons.add, onPressed: _addPage),
                     ],
                   ),
-                  Text(
-                    '第 ${_currentPageIndex + 1} / ${pages.length} 頁',
-                    style: const TextStyle(fontSize: 13, color: Colors.black54),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _PageChangeButton(
+                        icon: Icons.chevron_left_rounded,
+                        enabled: _currentPageIndex > 0,
+                        onTap: () => _goToPage(_currentPageIndex - 1),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '第 ${_currentPageIndex + 1} / ${pages.length} 頁',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: Colors.black54,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      _PageChangeButton(
+                        icon: Icons.chevron_right_rounded,
+                        enabled: _currentPageIndex < pages.length - 1,
+                        onTap: () => _goToPage(_currentPageIndex + 1),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -1953,6 +2109,38 @@ class _DialogActionButton extends StatelessWidget {
   }
 }
 
+class _PageChangeButton extends StatelessWidget {
+  const _PageChangeButton({
+    required this.icon,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: Container(
+        width: 24,
+        height: 24,
+        decoration: BoxDecoration(
+          color: enabled ? const Color(0xFFD8D8D8) : const Color(0xFFE2E2E2),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Icon(
+          icon,
+          size: 16,
+          color: enabled ? Colors.black87 : Colors.black38,
+        ),
+      ),
+    );
+  }
+}
+
 class _SlideSwitch extends StatelessWidget {
   const _SlideSwitch({required this.value, required this.onChanged});
 
@@ -2190,6 +2378,7 @@ class _TemplateTabPage extends StatelessWidget {
             for (var i = 0; i < templates.length; i++) ...[
               _TemplateCard(
                 option: templates[i],
+                page: page,
                 onTap: () => onApplyTemplate(templates[i]),
               ),
               if (i != templates.length - 1) const SizedBox(width: 12),
@@ -2387,9 +2576,14 @@ class _PageAspectOption {
 }
 
 class _TemplateCard extends StatelessWidget {
-  const _TemplateCard({required this.option, required this.onTap});
+  const _TemplateCard({
+    required this.option,
+    required this.page,
+    required this.onTap,
+  });
 
   final _TemplateOption option;
+  final ProjectPage page;
   final VoidCallback onTap;
 
   @override
@@ -2409,41 +2603,7 @@ class _TemplateCard extends StatelessWidget {
           children: [
             Align(
               alignment: Alignment.topRight,
-              child: Container(
-                width: 42,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF2F2F2),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 5,
-                    vertical: 4,
-                  ),
-                  child: Column(
-                    children: [
-                      Expanded(
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFD8D8D8),
-                            borderRadius: BorderRadius.circular(2),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Expanded(
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFD8D8D8),
-                            borderRadius: BorderRadius.circular(2),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+              child: _TemplatePreview(option: option, page: page),
             ),
             const Spacer(),
             Text(
@@ -2455,6 +2615,80 @@ class _TemplateCard extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TemplatePreview extends StatelessWidget {
+  const _TemplatePreview({required this.option, required this.page});
+
+  final _TemplateOption option;
+  final ProjectPage page;
+
+  @override
+  Widget build(BuildContext context) {
+    final previewAspectWidth = option.pageAspectWidth ?? page.aspectWidth;
+    final previewAspectHeight = option.pageAspectHeight ?? page.aspectHeight;
+    const outerWidth = 42.0;
+    const outerHeight = 32.0;
+    final previewAspectRatio = previewAspectWidth / previewAspectHeight;
+
+    double innerWidth = outerWidth - 10;
+    double innerHeight = innerWidth / previewAspectRatio;
+
+    if (innerHeight > outerHeight - 8) {
+      innerHeight = outerHeight - 8;
+      innerWidth = innerHeight * previewAspectRatio;
+    }
+
+    return Container(
+      width: outerWidth,
+      height: outerHeight,
+      decoration: BoxDecoration(
+        color: const Color(0xFFF2F2F2),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Center(
+        child: SizedBox(
+          width: innerWidth,
+          height: innerHeight,
+          child: switch (option.id) {
+            'page_fill' => Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFFD8D8D8),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            'page_3_4_two_images_3_2_vertical' => Column(
+              children: [
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD8D8D8),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD8D8D8),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            _ => Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFFD8D8D8),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          },
         ),
       ),
     );
