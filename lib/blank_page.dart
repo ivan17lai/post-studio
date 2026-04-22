@@ -16,7 +16,7 @@ enum PageDisplayMode { single, preview }
 Uint8List _renderPageJpgBytes(Map<String, dynamic> payload) {
   const defaultWidth = 2400;
   const maxWidth = 6000;
-  var exportWidth = defaultWidth;
+  var exportWidth = (payload['exportWidth'] as num?)?.round() ?? defaultWidth;
   final imageBytesMap =
       (payload['images'] as Map<dynamic, dynamic>? ?? const {}).map(
         (key, value) => MapEntry(key as String, value as Uint8List),
@@ -25,30 +25,32 @@ Uint8List _renderPageJpgBytes(Map<String, dynamic> payload) {
   final elements = (payload['elements'] as List<dynamic>)
       .cast<Map<String, dynamic>>();
 
-  for (final element in elements) {
-    if ((element['type'] as String?) != 'image') {
-      continue;
-    }
+  if (!payload.containsKey('exportWidth')) {
+    for (final element in elements) {
+      if ((element['type'] as String?) != 'image') {
+        continue;
+      }
 
-    final src = element['src'] as String? ?? '';
-    final width = (element['width'] as num?)?.toDouble() ?? 0;
-    if (src.isEmpty || width <= 0) {
-      continue;
-    }
+      final src = element['src'] as String? ?? '';
+      final width = (element['width'] as num?)?.toDouble() ?? 0;
+      if (src.isEmpty || width <= 0) {
+        continue;
+      }
 
-    final imageBytes = imageBytesMap[src];
-    if (imageBytes == null) {
-      continue;
-    }
+      final imageBytes = imageBytesMap[src];
+      if (imageBytes == null) {
+        continue;
+      }
 
-    final sourceImage = img.decodeImage(imageBytes);
-    if (sourceImage == null) {
-      continue;
-    }
+      final sourceImage = img.decodeImage(imageBytes);
+      if (sourceImage == null) {
+        continue;
+      }
 
-    final candidateWidth = (sourceImage.width / width).ceil();
-    if (candidateWidth > exportWidth) {
-      exportWidth = candidateWidth;
+      final candidateWidth = (sourceImage.width / width).ceil();
+      if (candidateWidth > exportWidth) {
+        exportWidth = candidateWidth;
+      }
     }
   }
 
@@ -172,15 +174,16 @@ class _EditorSnapshot {
 
 class _BlankPageState extends State<BlankPage> {
   static const MethodChannel _galleryChannel = MethodChannel('igapp/gallery');
-  static const String _tabPage = '頁面';
-  static const String _tabTemplate = '模板';
-  static const String _tabElements = '元素';
-  static const String _tabImageSource = '圖片來源';
-  static const String _tabImageSettings = '圖片設置';
+  static const String _tabPage = '\u9801\u9762';
+  static const String _tabTemplate = '\u6a21\u677f';
+  static const String _tabElements = '\u5143\u7d20';
+  static const String _tabImageSource = '\u5716\u7247\u4f86\u6e90';
+  static const String _tabImageSettings = '\u5716\u7247\u8a2d\u5b9a';
   int _currentPageIndex = 0;
   late ProjectRecord _project;
   bool _showPageBorder = false;
   bool _isExporting = false;
+  int _savingRequestCount = 0;
   double _exportProgress = 0;
   String _exportProgressLabel = '';
   PageDisplayMode _displayMode = PageDisplayMode.single;
@@ -219,9 +222,19 @@ class _BlankPageState extends State<BlankPage> {
   Future<void> _persistProject(ProjectRecord updatedProject) async {
     _project = updatedProject.copyWith(pageCount: updatedProject.pages.length);
     if (mounted) {
-      setState(() {});
+      setState(() {
+        _savingRequestCount += 1;
+      });
     }
-    await widget.onProjectChanged(_project);
+    try {
+      await widget.onProjectChanged(_project);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _savingRequestCount = (_savingRequestCount - 1).clamp(0, 999999);
+        });
+      }
+    }
   }
 
   Future<void> _saveProject(ProjectRecord updatedProject) async {
@@ -441,9 +454,9 @@ class _BlankPageState extends State<BlankPage> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('至少保留一頁')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('\u81f3\u5c11\u4fdd\u7559\u4e00\u9801')),
+      );
       return;
     }
 
@@ -478,7 +491,7 @@ class _BlankPageState extends State<BlankPage> {
                 ),
                 const SizedBox(height: 14),
                 const Text(
-                  '刪除頁面',
+                  '\u522a\u9664\u9801\u9762',
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
@@ -487,7 +500,7 @@ class _BlankPageState extends State<BlankPage> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  '確定要刪除目前頁面嗎？',
+                  '\u78ba\u5b9a\u8981\u522a\u9664\u76ee\u524d\u9801\u9762\u55ce\uff1f',
                   style: TextStyle(
                     fontSize: 14,
                     height: 1.4,
@@ -499,14 +512,14 @@ class _BlankPageState extends State<BlankPage> {
                   children: [
                     Expanded(
                       child: _DialogActionButton(
-                        label: '取消',
+                        label: '\u53d6\u6d88',
                         onTap: () => Navigator.of(context).pop(false),
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: _DialogActionButton(
-                        label: '刪除',
+                        label: '\u522a\u9664',
                         isPrimary: true,
                         onTap: () => Navigator.of(context).pop(true),
                       ),
@@ -638,7 +651,11 @@ class _BlankPageState extends State<BlankPage> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('圖片選擇器尚未載入，請完整重啟 App 後再試一次。')),
+        const SnackBar(
+          content: Text(
+            '\u5716\u7247\u9078\u64c7\u5668\u5c1a\u672a\u8f09\u5165\uff0c\u8acb\u5b8c\u6574\u91cd\u555f App \u5f8c\u518d\u8a66\u4e00\u6b21\u3002',
+          ),
+        ),
       );
       return;
     }
@@ -1004,19 +1021,21 @@ class _BlankPageState extends State<BlankPage> {
           _exportRepaintKey.currentContext?.findRenderObject()
               as RenderRepaintBoundary?;
       if (boundary == null) {
-        throw Exception('找不到可匯出的畫布');
+        throw Exception(
+          '\u627e\u4e0d\u5230\u53ef\u532f\u51fa\u7684\u756b\u5e03',
+        );
       }
 
       final uiImage = await boundary.toImage(pixelRatio: 6);
       final byteData = await uiImage.toByteData(format: ui.ImageByteFormat.png);
       if (byteData == null) {
-        throw Exception('畫布轉換失敗');
+        throw Exception('\u756b\u5e03\u8f49\u63db\u5931\u6557');
       }
 
       final pngBytes = byteData.buffer.asUint8List();
       final decodedImage = img.decodeImage(pngBytes);
       if (decodedImage == null) {
-        throw Exception('圖片編碼失敗');
+        throw Exception('\u5716\u7247\u89e3\u78bc\u5931\u6557');
       }
 
       final jpgBytes = Uint8List.fromList(
@@ -1042,15 +1061,19 @@ class _BlankPageState extends State<BlankPage> {
 
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('已匯出 JPG：${file.path}')));
+      ).showSnackBar(SnackBar(content: Text('\u5df2\u532f\u51fa JPG\uff1a')));
     } catch (_) {
       if (!mounted) {
         return;
       }
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('匯出失敗，請再試一次。')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            '\u532f\u51fa\u5931\u6557\uff0c\u8acb\u518d\u8a66\u4e00\u6b21\u3002',
+          ),
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -1220,7 +1243,7 @@ class _BlankPageState extends State<BlankPage> {
       final path = missingPaths[i];
       _setExportProgress(
         progress: missingPaths.isEmpty ? 0 : (i / missingPaths.length) * 0.2,
-        label: '準備圖片 ${i + 1}/${missingPaths.length}',
+        label: '\u6e96\u5099\u5716\u7247 /',
       );
 
       final file = File(path);
@@ -1235,11 +1258,25 @@ class _BlankPageState extends State<BlankPage> {
       }
     }
 
-    _setExportProgress(progress: 0.2, label: '圖片準備完成');
+    _setExportProgress(
+      progress: 0.2,
+      label: '\u5716\u7247\u6e96\u5099\u5b8c\u6210',
+    );
   }
 
-  Future<Uint8List> _renderProjectPageBytesForGallery(ProjectPage page) {
+  int _computeVisibleExportWidth() {
+    final mediaQuery = MediaQuery.of(context);
+    final visibleWidth = mediaQuery.size.width - 24;
+    final pixelRatio = mediaQuery.devicePixelRatio.clamp(1.0, 3.0);
+    return (visibleWidth * pixelRatio).round().clamp(1080, 1440);
+  }
+
+  Future<Uint8List> _renderProjectPageBytesForGallery(
+    ProjectPage page, {
+    required int exportWidth,
+  }) {
     final payload = <String, dynamic>{
+      'exportWidth': exportWidth,
       'aspectWidth': page.aspectWidth,
       'aspectHeight': page.aspectHeight,
       'images': <String, Uint8List>{
@@ -1291,6 +1328,7 @@ class _BlankPageState extends State<BlankPage> {
       await _primeExportImageCache();
       var successCount = 0;
       final totalPages = _project.pages.length;
+      final exportWidth = _computeVisibleExportWidth();
 
       for (var i = totalPages - 1; i >= 0; i--) {
         final exportIndex = totalPages - i;
@@ -1300,6 +1338,7 @@ class _BlankPageState extends State<BlankPage> {
         );
         final jpgBytes = await _renderProjectPageBytesForGallery(
           _project.pages[i],
+          exportWidth: exportWidth,
         );
 
         final isSuccess = await _saveImageToGallery(
@@ -1322,12 +1361,20 @@ class _BlankPageState extends State<BlankPage> {
       }
 
       if (successCount == _project.pages.length) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('已儲存 ${successCount} 張到手機相簿')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '\u5df2\u5132\u5b58  \u5f35\u5230\u624b\u6a5f\u76f8\u7c3f',
+            ),
+          ),
+        );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已儲存 ${successCount} 張，部分頁面匯出失敗')),
+          SnackBar(
+            content: Text(
+              '\u5df2\u5132\u5b58  \u5f35\uff0c\u90e8\u5206\u9801\u9762\u532f\u51fa\u5931\u6557',
+            ),
+          ),
         );
       }
     } catch (_) {
@@ -1335,9 +1382,13 @@ class _BlankPageState extends State<BlankPage> {
         return;
       }
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('匯出失敗，請再試一次。')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            '\u532f\u51fa\u5931\u6557\uff0c\u8acb\u518d\u8a66\u4e00\u6b21\u3002',
+          ),
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -1402,7 +1453,9 @@ class _BlankPageState extends State<BlankPage> {
                 ),
               ),
               Text(
-                '建立時間  ・ 總頁數 ',
+                _savingRequestCount > 0
+                    ? '\u5132\u5b58\u4e2d'
+                    : '\u5df2\u5132\u5b58',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 12, color: Colors.black54),
@@ -1514,7 +1567,7 @@ class _BlankPageState extends State<BlankPage> {
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            '第 ${_currentPageIndex + 1} / ${pages.length} 頁',
+                            '\u7b2c  /  \u9801',
                             style: const TextStyle(
                               fontSize: 13,
                               color: Colors.black54,
@@ -1718,9 +1771,10 @@ class _BlankPageState extends State<BlankPage> {
             ),
             if (_isExporting)
               Positioned.fill(
-                child: IgnorePointer(
+                child: AbsorbPointer(
+                  absorbing: true,
                   child: Container(
-                    color: Colors.black.withValues(alpha: 0.06),
+                    color: Colors.black.withValues(alpha: 0.14),
                     alignment: Alignment.center,
                     child: Container(
                       width: 220,
@@ -2587,7 +2641,7 @@ class _TemplateTabPage extends StatelessWidget {
   static final List<_TemplateOption> _allTemplates = <_TemplateOption>[
     _TemplateOption(
       id: 'page_fill',
-      label: '填滿',
+      label: '\u586b\u6eff',
       buildElements: (pageId, page) {
         return <CanvasElement>[
           CanvasElement.image(pageId: pageId).copyWith(
@@ -2609,7 +2663,7 @@ class _TemplateTabPage extends StatelessWidget {
     ),
     _TemplateOption(
       id: 'page_3_4_two_images_3_2_vertical',
-      label: '上下雙圖',
+      label: '\u4e0a\u4e0b\u96d9\u5716',
       pageAspectWidth: 3,
       pageAspectHeight: 4,
       buildElements: (pageId, page) {
@@ -2699,7 +2753,7 @@ class _ElementTabPage extends StatelessWidget {
               onTap: onAddImage,
               child: const _ElementOptionCard(
                 icon: Icons.image_outlined,
-                label: '圖片',
+                label: '\u5716\u7247',
               ),
             ),
           ),
@@ -2708,7 +2762,7 @@ class _ElementTabPage extends StatelessWidget {
             width: 100,
             child: _ElementOptionCard(
               icon: Icons.text_fields_rounded,
-              label: '文字',
+              label: '\u6587\u5b57',
             ),
           ),
         ],
@@ -2740,7 +2794,9 @@ class _ImageSourceTabPage extends StatelessWidget {
               onTap: onUploadImage,
               child: _ElementOptionCard(
                 icon: Icons.upload_rounded,
-                label: imagePath.isEmpty ? '上傳照片' : '更換圖片',
+                label: imagePath.isEmpty
+                    ? '\u4e0a\u50b3\u7167\u7247'
+                    : '\u66f4\u63db\u5716\u7247',
               ),
             ),
           ),
@@ -2775,7 +2831,7 @@ class _ImageSettingsTabPage extends StatelessWidget {
   final ValueChanged<_ImageAspectOption> onAspectSelected;
 
   static const List<_ImageAspectOption> _options = <_ImageAspectOption>[
-    _ImageAspectOption(key: 'original', label: '原始尺寸'),
+    _ImageAspectOption(key: 'original', label: '\u539f\u59cb\u5c3a\u5bf8'),
     _ImageAspectOption(key: '1:1', label: '1:1', width: 1, height: 1),
     _ImageAspectOption(key: '5:4', label: '5:4', width: 5, height: 4),
     _ImageAspectOption(key: '4:5', label: '4:5', width: 4, height: 5),
