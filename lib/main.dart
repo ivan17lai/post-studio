@@ -1,10 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'app_strings.dart';
 import 'blank_page.dart';
 import 'project_record.dart';
+import 'theme_constants.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,29 +36,39 @@ class MainPage extends StatefulWidget {
 
 class _MainPageState extends State<MainPage> {
   static const String _projectsStorageKey = 'projects_v1';
+  static const MethodChannel _shareChannel = MethodChannel('igapp/share');
 
-  final List<ProjectRecord> _projects = [];
+  final List<ProjectRecord> _projects = <ProjectRecord>[];
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
+    _shareChannel.setMethodCallHandler(_handleShareMethodCall);
     _loadProjects();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_consumePendingSharedImages());
+    });
+  }
+
+  @override
+  void dispose() {
+    _shareChannel.setMethodCallHandler(null);
+    super.dispose();
   }
 
   Future<void> _loadProjects() async {
     final prefs = await SharedPreferences.getInstance();
     final rawList = prefs.getStringList(_projectsStorageKey) ?? <String>[];
 
-    final projects =
-        rawList
-            .map(
-              (item) => ProjectRecord.fromJson(
-                jsonDecode(item) as Map<String, dynamic>,
-              ),
-            )
-            .toList()
-          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final projects = rawList
+        .map(
+          (item) => ProjectRecord.fromJson(
+            jsonDecode(item) as Map<String, dynamic>,
+          ),
+        )
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
     if (!mounted) {
       return;
@@ -93,10 +107,127 @@ class _MainPageState extends State<MainPage> {
     await _persistProjects();
   }
 
+  Future<void> _deleteProject(ProjectRecord project) async {
+    final strings = AppStrings.of(context);
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F4F4),
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Icon(
+                    Icons.delete_outline_rounded,
+                    size: 20,
+                    color: Color(0xFF6F6F6F),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  strings.t('deleteProject'),
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1F1F1F),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  strings.t('confirmDeleteCurrentProject'),
+                  style: const TextStyle(
+                    fontSize: 14,
+                    height: 1.4,
+                    color: Color(0xFF6A6A6A),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: strings.t('cancel'),
+                        onTap: () => Navigator.of(context).pop(false),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: strings.t('deleteProject'),
+                        isPrimary: true,
+                        onTap: () => Navigator.of(context).pop(true),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (shouldDelete != true) {
+      return;
+    }
+
+    setState(() {
+      _projects.removeWhere((item) => item.id == project.id);
+    });
+    await _persistProjects();
+  }
+
   Future<void> _showCreateProjectDialog() async {
+    await _showCreateProjectDialogWithImportedImages();
+  }
+
+  Future<dynamic> _handleShareMethodCall(MethodCall call) async {
+    if (call.method != 'sharedImagesReceived') {
+      return null;
+    }
+    final paths = (call.arguments as List<dynamic>? ?? const <dynamic>[])
+        .whereType<String>()
+        .where((item) => item.isNotEmpty)
+        .toList();
+    await _showCreateProjectDialogWithImportedImages(paths);
+    return null;
+  }
+
+  Future<void> _consumePendingSharedImages() async {
+    final pending = await _shareChannel.invokeListMethod<dynamic>(
+          'getPendingSharedImages',
+        ) ??
+        const <dynamic>[];
+    final paths = pending.whereType<String>().where((item) => item.isNotEmpty).toList();
+    if (paths.isEmpty) {
+      return;
+    }
+    await _showCreateProjectDialogWithImportedImages(paths);
+  }
+
+  Future<void> _showCreateProjectDialogWithImportedImages([
+    List<String> initialImportedSourcePaths = const <String>[],
+  ]) async {
     final name = await showDialog<String>(
       context: context,
-      builder: (_) => const _StyledCreateProjectDialog(),
+      builder: (_) => _StyledCreateProjectDialog(
+        attachedPhotoCount: initialImportedSourcePaths.length,
+      ),
     );
 
     if (!mounted || name == null || name.isEmpty) {
@@ -124,21 +255,31 @@ class _MainPageState extends State<MainPage> {
       return;
     }
 
-    await _openProject(project);
+    await _openProject(
+      project,
+      initialImportedSourcePaths: initialImportedSourcePaths,
+    );
   }
 
-  Future<void> _openProject(ProjectRecord project) async {
+  Future<void> _openProject(
+    ProjectRecord project, {
+    List<String> initialImportedSourcePaths = const <String>[],
+  }) async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
-        builder: (_) =>
-            BlankPage(project: project, onProjectChanged: _upsertProject),
+        builder: (_) => BlankPage(
+          project: project,
+          onProjectChanged: _upsertProject,
+          initialImportedSourcePaths: initialImportedSourcePaths,
+        ),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final double width = MediaQuery.of(context).size.width;
+    final width = MediaQuery.of(context).size.width;
+    final strings = AppStrings.of(context);
 
     return Scaffold(
       appBar: AppBar(backgroundColor: const Color(0xFFEAEAEA)),
@@ -153,8 +294,8 @@ class _MainPageState extends State<MainPage> {
       body: SafeArea(
         child: Column(
           children: [
-            const Padding(
-              padding: EdgeInsets.only(
+            Padding(
+              padding: const EdgeInsets.only(
                 top: 20,
                 left: 26,
                 bottom: 20,
@@ -163,9 +304,12 @@ class _MainPageState extends State<MainPage> {
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  '所有專案',
+                  strings.t('allProjects'),
                   textAlign: TextAlign.left,
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ),
@@ -183,6 +327,7 @@ class _MainPageState extends State<MainPage> {
                           width: width,
                           project: project,
                           onPressed: () => _openProject(project),
+                          onLongPress: () => _deleteProject(project),
                         );
                       },
                     ),
@@ -200,14 +345,18 @@ class _ProjectCard extends StatelessWidget {
     required this.width,
     required this.project,
     required this.onPressed,
+    required this.onLongPress,
   });
 
   final double width;
   final ProjectRecord project;
   final VoidCallback onPressed;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
+
     return Center(
       child: SizedBox(
         width: width * 0.9,
@@ -218,6 +367,7 @@ class _ProjectCard extends StatelessWidget {
           child: InkWell(
             borderRadius: BorderRadius.circular(16),
             onTap: onPressed,
+            onLongPress: onLongPress,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
               child: Row(
@@ -252,7 +402,13 @@ class _ProjectCard extends StatelessWidget {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          '建立時間 ${formatProjectDate(project.createdAt)} ・ 總頁數 ${project.pageCount}',
+                          strings.t(
+                            'projectMeta',
+                            args: <String, String>{
+                              'date': formatProjectDate(project.createdAt),
+                              'count': '${project.pageCount}',
+                            },
+                          ),
                           style: const TextStyle(
                             fontSize: 13,
                             color: Colors.black54,
@@ -300,31 +456,35 @@ class _CreateProjectDialogState extends State<_CreateProjectDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
+
     return AlertDialog(
-      title: const Text('新增專案'),
+      title: Text(strings.t('createProject')),
       content: TextField(
         controller: _controller,
         autofocus: true,
         textInputAction: TextInputAction.done,
         onSubmitted: (_) => _submit(),
-        decoration: const InputDecoration(
-          hintText: '輸入專案名稱',
-          border: OutlineInputBorder(),
+        decoration: InputDecoration(
+          hintText: strings.t('enterProjectName'),
+          border: const OutlineInputBorder(),
         ),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
+          child: Text(strings.t('cancel')),
         ),
-        FilledButton(onPressed: _submit, child: const Text('建立')),
+        FilledButton(onPressed: _submit, child: Text(strings.t('create'))),
       ],
     );
   }
 }
 
 class _StyledCreateProjectDialog extends StatefulWidget {
-  const _StyledCreateProjectDialog();
+  const _StyledCreateProjectDialog({this.attachedPhotoCount = 0});
+
+  final int attachedPhotoCount;
 
   @override
   State<_StyledCreateProjectDialog> createState() =>
@@ -354,6 +514,8 @@ class _StyledCreateProjectDialogState
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
+
     return Dialog(
       backgroundColor: Colors.transparent,
       insetPadding: const EdgeInsets.symmetric(horizontal: 28),
@@ -381,14 +543,29 @@ class _StyledCreateProjectDialogState
               ),
             ),
             const SizedBox(height: 14),
-            const Text(
-              '新增專案',
-              style: TextStyle(
+            Text(
+              strings.t('createProject'),
+              style: const TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w700,
                 color: Color(0xFF1F1F1F),
               ),
             ),
+            if (widget.attachedPhotoCount > 0) ...[
+              const SizedBox(height: 6),
+              Text(
+                strings.t(
+                  'attachedPhotos',
+                  args: <String, String>{
+                    'count': '${widget.attachedPhotoCount}',
+                  },
+                ),
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: Color(0xFF6A6A6A),
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             Container(
               decoration: BoxDecoration(
@@ -401,8 +578,8 @@ class _StyledCreateProjectDialogState
                 autofocus: true,
                 textInputAction: TextInputAction.done,
                 onSubmitted: (_) => _submit(),
-                decoration: const InputDecoration(
-                  hintText: '輸入專案名稱',
+                decoration: InputDecoration(
+                  hintText: strings.t('enterProjectName'),
                   border: InputBorder.none,
                 ),
               ),
@@ -412,14 +589,14 @@ class _StyledCreateProjectDialogState
               children: [
                 Expanded(
                   child: _DialogActionButton(
-                    label: '取消',
+                    label: strings.t('cancel'),
                     onTap: () => Navigator.of(context).pop(),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: _DialogActionButton(
-                    label: '建立',
+                    label: strings.t('create'),
                     isPrimary: true,
                     onTap: _submit,
                   ),
@@ -452,7 +629,7 @@ class _DialogActionButton extends StatelessWidget {
         height: 42,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: isPrimary ? const Color(0xFFD8D8D8) : Colors.white,
+          color: isPrimary ? kPrimaryAccentColor : Colors.white,
           borderRadius: BorderRadius.circular(999),
         ),
         child: Text(

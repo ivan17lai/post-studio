@@ -1,3 +1,5 @@
+import 'app_strings.dart';
+
 class ProjectRecord {
   const ProjectRecord({
     required this.id,
@@ -88,7 +90,10 @@ class ProjectPage {
   factory ProjectPage.initial([int index = 1]) {
     return ProjectPage(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
-      title: '第 $index 頁',
+      title: AppStrings.system.t(
+        'pageTitle',
+        args: <String, String>{'index': '$index'},
+      ),
       type: 'page',
       aspectWidth: 4,
       aspectHeight: 5,
