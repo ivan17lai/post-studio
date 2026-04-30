@@ -15,7 +15,7 @@ import 'theme_constants.dart';
 
 enum PageDisplayMode { single, preview }
 
-enum ExportQualityMode { original, standard2400 }
+enum ExportQualityMode { igStandard1080, high2400 }
 
 Color _pageBackgroundColorFromExtras(Map<String, dynamic> extras) {
   final colorValue =
@@ -444,6 +444,13 @@ class _EditorSnapshot {
   final bool showPageBorder;
 }
 
+class _CompletedExportPage {
+  const _CompletedExportPage({required this.pageNumber, required this.bytes});
+
+  final int pageNumber;
+  final Uint8List bytes;
+}
+
 class _BlankPageState extends State<BlankPage> {
   static const MethodChannel _galleryChannel = MethodChannel('igapp/gallery');
   static const String _tabPage = 'page';
@@ -461,8 +468,6 @@ class _BlankPageState extends State<BlankPage> {
   bool _isExporting = false;
   bool _isPreparingImage = false;
   int _savingRequestCount = 0;
-  double _exportProgress = 0;
-  String _exportProgressLabel = '';
   PageDisplayMode _displayMode = PageDisplayMode.single;
   String _selectedBottomTab = _tabTemplate;
   String? _selectedElementId;
@@ -695,15 +700,13 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
-  void _setExportProgress({required double progress, required String label}) {
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _exportProgress = progress.clamp(0, 1);
-      _exportProgressLabel = label;
-    });
+  void _setExportProgress({
+    required double progress,
+    required String label,
+    void Function(double progress, String label)? onProgress,
+  }) {
+    final clampedProgress = progress.clamp(0, 1).toDouble();
+    onProgress?.call(clampedProgress, label);
   }
 
   void _storeUndoSnapshot() {
@@ -2846,7 +2849,9 @@ class _BlankPageState extends State<BlankPage> {
     return result ?? false;
   }
 
-  Future<void> _primeExportImageCache() async {
+  Future<void> _primeExportImageCache({
+    void Function(double progress, String label)? onProgress,
+  }) async {
     final strings = AppStrings.of(context);
     final imagePaths = <String>{};
     for (final page in _project.pages) {
@@ -2887,6 +2892,7 @@ class _BlankPageState extends State<BlankPage> {
             'total': '${missingPaths.length}',
           },
         ),
+        onProgress: onProgress,
       );
 
       final file = File(path);
@@ -2901,7 +2907,11 @@ class _BlankPageState extends State<BlankPage> {
       }
     }
 
-    _setExportProgress(progress: 0.2, label: strings.t('prepareImagesDone'));
+    _setExportProgress(
+      progress: 0.2,
+      label: strings.t('prepareImagesDone'),
+      onProgress: onProgress,
+    );
   }
 
   int _computeVisibleExportWidth() {
@@ -2909,45 +2919,6 @@ class _BlankPageState extends State<BlankPage> {
     final visibleWidth = mediaQuery.size.width - 24;
     final pixelRatio = mediaQuery.devicePixelRatio.clamp(1.0, 3.0);
     return (visibleWidth * pixelRatio).round().clamp(1080, 1440);
-  }
-
-  int _computeOriginalExportWidth() {
-    const defaultWidth = 2400;
-    const maxWidth = 6000;
-    var exportWidth = defaultWidth;
-
-    for (final page in _project.pages) {
-      for (final element in page.elements) {
-        if (element.type != 'image') {
-          continue;
-        }
-
-        final src =
-            element.data['originalSrc'] as String? ??
-            element.data['src'] as String? ??
-            '';
-        if (src.isEmpty || element.width <= 0) {
-          continue;
-        }
-
-        final sourceBytes = _exportImageBytesCache[src];
-        if (sourceBytes == null) {
-          continue;
-        }
-
-        final sourceImage = img.decodeImage(sourceBytes);
-        if (sourceImage == null) {
-          continue;
-        }
-
-        final candidateWidth = (sourceImage.width / element.width).ceil();
-        if (candidateWidth > exportWidth) {
-          exportWidth = candidateWidth;
-        }
-      }
-    }
-
-    return exportWidth.clamp(defaultWidth, maxWidth);
   }
 
   Future<Uint8List> _renderProjectPageBytesForGallery(
@@ -3094,6 +3065,8 @@ class _BlankPageState extends State<BlankPage> {
   Future<void> _exportAllPagesToGallery({
     required bool reverseOrder,
     required ExportQualityMode qualityMode,
+    void Function(double progress, String label)? onProgress,
+    ValueChanged<_CompletedExportPage>? onCompletedPage,
   }) async {
     final strings = AppStrings.of(context);
     if (_isExporting) {
@@ -3103,17 +3076,15 @@ class _BlankPageState extends State<BlankPage> {
     FocusScope.of(context).unfocus();
     setState(() {
       _isExporting = true;
-      _exportProgress = 0;
-      _exportProgressLabel = strings.t('prepareExport');
     });
 
     try {
-      await _primeExportImageCache();
+      await _primeExportImageCache(onProgress: onProgress);
       var successCount = 0;
       final totalPages = _project.pages.length;
       final exportWidth = switch (qualityMode) {
-        ExportQualityMode.original => _computeOriginalExportWidth(),
-        ExportQualityMode.standard2400 => 2400,
+        ExportQualityMode.igStandard1080 => 1080,
+        ExportQualityMode.high2400 => 2400,
       };
       final pageIndexes = reverseOrder
           ? <int>[for (var i = totalPages - 1; i >= 0; i--) i]
@@ -3125,6 +3096,7 @@ class _BlankPageState extends State<BlankPage> {
         _setExportProgress(
           progress: 0.25 + ((exportIndex - 1) / totalPages) * 0.3,
           label: strings.t('renderPages'),
+          onProgress: onProgress,
         );
         final jpgBytes = await _renderProjectPageInSetBytesForGallery(
           exportWidth: exportWidth,
@@ -3141,6 +3113,7 @@ class _BlankPageState extends State<BlankPage> {
               'total': '$totalPages',
             },
           ),
+          onProgress: onProgress,
         );
 
         final isSuccess = await _saveImageToGallery(
@@ -3149,6 +3122,11 @@ class _BlankPageState extends State<BlankPage> {
         );
         if (isSuccess) {
           successCount += 1;
+          final completedPage = _CompletedExportPage(
+            pageNumber: pageIndex + 1,
+            bytes: jpgBytes,
+          );
+          onCompletedPage?.call(completedPage);
         }
 
         _setExportProgress(
@@ -3160,6 +3138,7 @@ class _BlankPageState extends State<BlankPage> {
               'total': '$totalPages',
             },
           ),
+          onProgress: onProgress,
         );
         await Future<void>.delayed(Duration.zero);
       }
@@ -3189,8 +3168,6 @@ class _BlankPageState extends State<BlankPage> {
       if (mounted) {
         setState(() {
           _isExporting = false;
-          _exportProgress = 0;
-          _exportProgressLabel = '';
         });
       }
     }
@@ -3201,97 +3178,250 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
+    final strings = AppStrings.of(context);
     var reverseOrder = true;
-    final result = await showDialog<(bool, ExportQualityMode)>(
+    var qualityMode = ExportQualityMode.igStandard1080;
+    var exportStarted = false;
+    var exportRunning = false;
+    var exportDone = false;
+    var dialogProgress = 0.0;
+    var dialogProgressLabel = strings.t('prepareExport');
+    var dialogCompletedPages = <_CompletedExportPage>[];
+
+    Future<void> startExport(
+      StateSetter setDialogState,
+      BuildContext dialogContext,
+    ) async {
+      if (exportRunning) {
+        return;
+      }
+
+      setDialogState(() {
+        exportStarted = true;
+        exportRunning = true;
+        exportDone = false;
+        dialogProgress = 0;
+        dialogProgressLabel = strings.t('prepareExport');
+        dialogCompletedPages = <_CompletedExportPage>[];
+      });
+
+      await _exportAllPagesToGallery(
+        reverseOrder: reverseOrder,
+        qualityMode: qualityMode,
+        onProgress: (progress, label) {
+          if (!dialogContext.mounted) {
+            return;
+          }
+
+          setDialogState(() {
+            dialogProgress = progress;
+            dialogProgressLabel = label;
+          });
+        },
+        onCompletedPage: (page) {
+          if (!dialogContext.mounted) {
+            return;
+          }
+
+          setDialogState(() {
+            dialogCompletedPages = <_CompletedExportPage>[
+              ...dialogCompletedPages,
+              page,
+            ];
+          });
+        },
+      );
+
+      if (!dialogContext.mounted) {
+        return;
+      }
+
+      setDialogState(() {
+        exportRunning = false;
+        exportDone = true;
+        if (dialogProgress <= 0) {
+          dialogProgress = 1;
+        }
+      });
+    }
+
+    await showDialog<void>(
       context: context,
+      barrierDismissible: false,
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
-            return Dialog(
-              backgroundColor: Colors.transparent,
-              insetPadding: const EdgeInsets.symmetric(horizontal: 28),
-              child: Container(
-                padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF4F4F4),
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      '匯出',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF1F1F1F),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        _ExportReverseSwitch(
-                          value: reverseOrder,
-                          onChanged: (value) {
-                            setDialogState(() {
-                              reverseOrder = value;
-                            });
-                          },
+            return PopScope(
+              canPop: !exportRunning,
+              child: Dialog(
+                backgroundColor: Colors.transparent,
+                insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF4F4F4),
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '匯出',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF1F1F1F),
                         ),
-                        const SizedBox(width: 8),
-                        const Expanded(
-                          child: Text(
-                            '從最後一頁反向輸出',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFF1F1F1F),
-                            ),
+                      ),
+                      const SizedBox(height: 16),
+                      IgnorePointer(
+                        ignoring: exportStarted,
+                        child: AnimatedOpacity(
+                          duration: const Duration(milliseconds: 180),
+                          curve: Curves.easeInOut,
+                          opacity: exportStarted ? 0.54 : 1,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                '畫質',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF6A6A6A),
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: _ExportQualityButton(
+                                      label: 'IG標準',
+                                      detail: '1080',
+                                      selected:
+                                          qualityMode ==
+                                          ExportQualityMode.igStandard1080,
+                                      onTap: () {
+                                        setDialogState(() {
+                                          qualityMode =
+                                              ExportQualityMode.igStandard1080;
+                                        });
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: _ExportQualityButton(
+                                      label: '高畫質',
+                                      detail: '2.4K',
+                                      selected:
+                                          qualityMode ==
+                                          ExportQualityMode.high2400,
+                                      onTap: () {
+                                        setDialogState(() {
+                                          qualityMode =
+                                              ExportQualityMode.high2400;
+                                        });
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 14),
+                              Row(
+                                children: [
+                                  _ExportReverseSwitch(
+                                    value: reverseOrder,
+                                    onChanged: (value) {
+                                      setDialogState(() {
+                                        reverseOrder = value;
+                                      });
+                                    },
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Expanded(
+                                    child: Text(
+                                      '從最後一頁反向輸出',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF1F1F1F),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ),
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 18),
-                    Row(
-                      children: [
-                        Expanded(
+                      ),
+                      AnimatedSize(
+                        duration: const Duration(milliseconds: 220),
+                        curve: Curves.easeInOut,
+                        child: exportStarted
+                            ? Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const SizedBox(height: 14),
+                                  Text(
+                                    dialogProgressLabel,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF4A4A4A),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  _ExportProgressPanel(
+                                    progress: dialogProgress,
+                                    completedPages: dialogCompletedPages,
+                                  ),
+                                ],
+                              )
+                            : const SizedBox.shrink(),
+                      ),
+                      const SizedBox(height: 18),
+                      if (!exportStarted)
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _DialogActionButton(
+                                label: '取消',
+                                onTap: () => Navigator.of(context).pop(),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: _DialogIconActionButton(
+                                icon: Icons.ios_share_rounded,
+                                isPrimary: true,
+                                onTap: () {
+                                  unawaited(
+                                    startExport(setDialogState, context),
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      if (exportStarted && exportDone && !exportRunning)
+                        SizedBox(
+                          width: double.infinity,
                           child: _DialogActionButton(
-                            label: '取消',
+                            label: '完成',
+                            isPrimary: true,
                             onTap: () => Navigator.of(context).pop(),
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _DialogIconActionButton(
-                            icon: Icons.ios_share_rounded,
-                            isPrimary: true,
-                            onTap: () {
-                              Navigator.of(context).pop((
-                                reverseOrder,
-                                ExportQualityMode.standard2400,
-                              ));
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             );
           },
         );
       },
-    );
-
-    if (result == null) {
-      return;
-    }
-
-    await _exportAllPagesToGallery(
-      reverseOrder: result.$1,
-      qualityMode: result.$2,
     );
   }
 
@@ -3890,54 +4020,6 @@ class _BlankPageState extends State<BlankPage> {
                             color: Color(0xFF8F8F8F),
                           ),
                         ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            if (_isExporting)
-              Positioned.fill(
-                child: AbsorbPointer(
-                  absorbing: true,
-                  child: Container(
-                    color: Colors.black.withValues(alpha: 0.14),
-                    alignment: Alignment.center,
-                    child: Container(
-                      width: 220,
-                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(18),
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            _exportProgressLabel.isEmpty
-                                ? strings.t('prepareExport')
-                                : _exportProgressLabel,
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.black87,
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(999),
-                            child: LinearProgressIndicator(
-                              minHeight: 6,
-                              value: _exportProgress <= 0
-                                  ? null
-                                  : _exportProgress,
-                              backgroundColor: const Color(0xFFE6E6E6),
-                              valueColor: const AlwaysStoppedAnimation<Color>(
-                                Color(0xFF8F8F8F),
-                              ),
-                            ),
-                          ),
-                        ],
                       ),
                     ),
                   ),
@@ -5040,6 +5122,145 @@ class _DeleteConfirmButton extends StatelessWidget {
   }
 }
 
+class _ExportProgressPanel extends StatelessWidget {
+  const _ExportProgressPanel({
+    required this.progress,
+    required this.completedPages,
+  });
+
+  final double progress;
+  final List<_CompletedExportPage> completedPages;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeInOut,
+      width: double.infinity,
+      padding: EdgeInsets.fromLTRB(10, 10, 10, completedPages.isEmpty ? 10 : 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF6F6F6),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE5E5E5)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              minHeight: 6,
+              value: progress <= 0 ? null : progress,
+              backgroundColor: const Color(0xFFE1E1E1),
+              valueColor: const AlwaysStoppedAnimation<Color>(
+                Color(0xFF8F8F8F),
+              ),
+            ),
+          ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeInOut,
+            child: completedPages.isEmpty
+                ? const SizedBox.shrink()
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 10),
+                      _CompletedExportPagesStrip(pages: completedPages),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompletedExportPagesStrip extends StatelessWidget {
+  const _CompletedExportPagesStrip({required this.pages});
+
+  final List<_CompletedExportPage> pages;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 76,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: pages.length,
+        separatorBuilder: (context, index) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final page = pages[index];
+          return _CompletedExportPageTile(page: page);
+        },
+      ),
+    );
+  }
+}
+
+class _CompletedExportPageTile extends StatelessWidget {
+  const _CompletedExportPageTile({required this.page});
+
+  final _CompletedExportPage page;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedScale(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeInOut,
+      scale: 1,
+      child: Container(
+        width: 54,
+        height: 76,
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF7F7F7),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFFE0E0E0)),
+        ),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: Image.memory(
+                  page.bytes,
+                  fit: BoxFit.contain,
+                  cacheHeight: 144,
+                  filterQuality: FilterQuality.low,
+                  gaplessPlayback: true,
+                ),
+              ),
+            ),
+            Positioned(
+              right: 2,
+              bottom: 2,
+              child: Container(
+                height: 18,
+                constraints: const BoxConstraints(minWidth: 18),
+                alignment: Alignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.68),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '${page.pageNumber}',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PressableScale extends StatefulWidget {
   const _PressableScale({
     required this.child,
@@ -5342,6 +5563,73 @@ class _ExportReverseSwitch extends StatelessWidget {
               shape: BoxShape.circle,
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ExportQualityButton extends StatelessWidget {
+  const _ExportQualityButton({
+    required this.label,
+    required this.detail,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final String detail;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return _PressableScale(
+      onTap: onTap,
+      pressedScale: 0.97,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeInOut,
+        height: 52,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: selected ? kPrimaryAccentColor : const Color(0xFFE2E2E2),
+            width: selected ? 2 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: AnimatedDefaultTextStyle(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeInOut,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                  color: const Color(0xFF1F1F1F),
+                ),
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            AnimatedDefaultTextStyle(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeInOut,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: selected ? kPrimaryAccentColor : const Color(0xFF7A7A7A),
+              ),
+              child: Text(detail),
+            ),
+          ],
         ),
       ),
     );
