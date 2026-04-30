@@ -364,6 +364,30 @@ bool _snapFlagForElement(CanvasElement element, String key) {
   return element.data[key] as bool? ?? true;
 }
 
+bool _truthyBool(Object? value) => value == true || value == 'true';
+
+bool _elementUsesUltraHdr(CanvasElement element) {
+  return _truthyBool(element.data['wasUltraHdr']);
+}
+
+bool _projectUsesUltraHdr(ProjectRecord project) {
+  for (final page in project.pages) {
+    for (final element in page.elements) {
+      if (_elementUsesUltraHdr(element)) {
+        return true;
+      }
+    }
+  }
+
+  final importedImages = project.extras['importedImages'] as List<dynamic>?;
+  if (importedImages == null) {
+    return false;
+  }
+  return importedImages.any(
+    (item) => item is Map && _truthyBool(item['wasUltraHdr']),
+  );
+}
+
 enum _SnapGuideAxis { vertical, horizontal }
 
 const Color _selectionChromeColor = Color(0xFFBDBDBD);
@@ -495,6 +519,7 @@ class _BlankPageState extends State<BlankPage> {
         : widget.project.copyWith(pageCount: widget.project.pages.length);
     _pageController = _buildPageController();
     _bottomTabPageController = PageController();
+    unawaited(_syncUltraHdrWindowMode());
     unawaited(_persistProject(_project));
     if (widget.initialImportedSourcePaths.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -555,8 +580,78 @@ class _BlankPageState extends State<BlankPage> {
     });
   }
 
+  bool get _hasUltraHdrContent => _projectUsesUltraHdr(_project);
+
+  bool _hdrViewEnabledForProject(ProjectRecord project) {
+    final hasUltraHdr = _projectUsesUltraHdr(project);
+    return hasUltraHdr &&
+        ((project.extras['hdrViewEnabled'] as bool?) ?? hasUltraHdr);
+  }
+
+  bool _hdrExportEnabledForProject(ProjectRecord project) {
+    final hasUltraHdr = _projectUsesUltraHdr(project);
+    return hasUltraHdr &&
+        ((project.extras['hdrExportEnabled'] as bool?) ?? hasUltraHdr);
+  }
+
+  bool get _hdrViewEnabled => _hdrViewEnabledForProject(_project);
+
+  bool get _hdrExportEnabled => _hdrExportEnabledForProject(_project);
+
+  Map<String, dynamic> _extrasWithUltraHdrDefaults(
+    Map<String, dynamic> extras, {
+    required bool enableHdr,
+  }) {
+    if (!enableHdr) {
+      return extras;
+    }
+    return <String, dynamic>{
+      ...extras,
+      'hdrViewEnabled': true,
+      'hdrExportEnabled': true,
+    };
+  }
+
+  Future<void> _setHdrViewEnabled(bool enabled) async {
+    if (!_hasUltraHdrContent) {
+      return;
+    }
+    await _saveProjectExtras(<String, dynamic>{
+      ..._project.extras,
+      'hdrViewEnabled': enabled,
+    });
+  }
+
+  Future<void> _setHdrExportEnabled(bool enabled) async {
+    if (!_hasUltraHdrContent) {
+      return;
+    }
+    await _saveProjectExtras(<String, dynamic>{
+      ..._project.extras,
+      'hdrExportEnabled': enabled,
+    });
+  }
+
+  Future<void> _syncUltraHdrWindowMode([ProjectRecord? project]) async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    final resolvedProject = project ?? _project;
+    try {
+      await _galleryChannel.invokeMethod<bool>(
+        'setUltraHdrMode',
+        <String, dynamic>{
+          'enabled': _hdrViewEnabledForProject(resolvedProject),
+        },
+      );
+    } catch (_) {
+      // Older Android builds simply keep the normal SDR window.
+    }
+  }
+
   Future<void> _persistProject(ProjectRecord updatedProject) async {
     _project = updatedProject.copyWith(pageCount: updatedProject.pages.length);
+    unawaited(_syncUltraHdrWindowMode(_project));
     if (mounted) {
       setState(() {
         _savingRequestCount += 1;
@@ -661,9 +756,8 @@ class _BlankPageState extends State<BlankPage> {
     return displayPath;
   }
 
-  Future<({String displayPath, String originalPath})> _prepareImageAsset(
-    String sourcePath,
-  ) async {
+  Future<({String displayPath, String originalPath, bool wasUltraHdr})>
+  _prepareImageAsset(String sourcePath) async {
     if (mounted) {
       setState(() {
         _isPreparingImage = true;
@@ -690,7 +784,11 @@ class _BlankPageState extends State<BlankPage> {
           result['originalPath'] as String? ??
           result['displayPath'] as String? ??
           sourcePath;
-      return (displayPath: displayPath, originalPath: originalPath);
+      return (
+        displayPath: displayPath,
+        originalPath: originalPath,
+        wasUltraHdr: _truthyBool(result['wasUltraHdr']),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -698,6 +796,14 @@ class _BlankPageState extends State<BlankPage> {
         });
       }
     }
+  }
+
+  Future<Uint8List?> _readImageBytesForExport(String path) async {
+    final file = File(path);
+    if (!await file.exists()) {
+      return null;
+    }
+    return file.readAsBytes();
   }
 
   void _setExportProgress({
@@ -1458,6 +1564,7 @@ class _BlankPageState extends State<BlankPage> {
       data: <String, dynamic>{
         'src': preparedImage.displayPath,
         'originalSrc': preparedImage.originalPath,
+        'wasUltraHdr': preparedImage.wasUltraHdr,
         'aspectRatio': aspectRatio,
         'originalAspectRatio': aspectRatio,
       },
@@ -1470,7 +1577,14 @@ class _BlankPageState extends State<BlankPage> {
     updatedPages[_currentPageIndex] = updatedPage;
 
     await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      _project.copyWith(
+        pages: updatedPages,
+        pageCount: updatedPages.length,
+        extras: _extrasWithUltraHdrDefaults(
+          _project.extras,
+          enableHdr: preparedImage.wasUltraHdr,
+        ),
+      ),
     );
 
     if (!mounted) {
@@ -1497,18 +1611,22 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final importedImages = <Map<String, String>>[];
+    final importedImages = <Map<String, dynamic>>[];
     for (final path in sourcePaths) {
       final preparedImage = await _prepareImageAsset(path);
-      importedImages.add(<String, String>{
+      importedImages.add(<String, dynamic>{
         'src': preparedImage.displayPath,
         'originalSrc': preparedImage.originalPath,
+        'wasUltraHdr': preparedImage.wasUltraHdr,
       });
     }
     final merged = <dynamic>[
       ...(_project.extras['importedImages'] as List<dynamic>? ?? const []),
       ...importedImages,
     ];
+    final importedHasUltraHdr = importedImages.any(
+      (item) => _truthyBool(item['wasUltraHdr']),
+    );
     final deduped = <dynamic>[];
     final seenOriginalPaths = <String>{};
     for (final item in merged) {
@@ -1528,6 +1646,10 @@ class _BlankPageState extends State<BlankPage> {
     await _saveProjectExtras(<String, dynamic>{
       ..._project.extras,
       'importedImages': deduped,
+      ..._extrasWithUltraHdrDefaults(
+        const <String, dynamic>{},
+        enableHdr: importedHasUltraHdr,
+      ),
     });
   }
 
@@ -1621,6 +1743,7 @@ class _BlankPageState extends State<BlankPage> {
         ...selectedImage.data,
         'src': preparedImage.displayPath,
         'originalSrc': preparedImage.originalPath,
+        'wasUltraHdr': preparedImage.wasUltraHdr,
         'aspectRatio': shouldKeepFrame
             ? ((selectedImage.data['aspectRatio'] as num?)?.toDouble() ??
                   aspectRatio)
@@ -1630,6 +1753,11 @@ class _BlankPageState extends State<BlankPage> {
     );
 
     await _replaceElement(updatedElement, persist: true);
+    if (preparedImage.wasUltraHdr) {
+      await _saveProjectExtras(
+        _extrasWithUltraHdrDefaults(_project.extras, enableHdr: true),
+      );
+    }
 
     if (!mounted) {
       return;
@@ -2895,13 +3023,11 @@ class _BlankPageState extends State<BlankPage> {
         onProgress: onProgress,
       );
 
-      final file = File(path);
-      if (!await file.exists()) {
-        continue;
-      }
-
       try {
-        _exportImageBytesCache[path] = await file.readAsBytes();
+        final bytes = await _readImageBytesForExport(path);
+        if (bytes != null && bytes.isNotEmpty) {
+          _exportImageBytesCache[path] = bytes;
+        }
       } catch (_) {
         // Skip unreadable files so export can continue for the rest.
       }
@@ -2975,7 +3101,8 @@ class _BlankPageState extends State<BlankPage> {
     required int exportWidth,
     required List<int> pageIndexes,
     required int targetListIndex,
-  }) {
+    required bool hdrExportEnabled,
+  }) async {
     final targetOriginalIndex = pageIndexes[targetListIndex];
     final usedImagePaths = <String>{};
 
@@ -3019,44 +3146,67 @@ class _BlankPageState extends State<BlankPage> {
       }
     }
 
+    final pagePayloads = pageIndexes
+        .map(
+          (pageIndex) => <String, dynamic>{
+            'aspectWidth': _project.pages[pageIndex].aspectWidth,
+            'aspectHeight': _project.pages[pageIndex].aspectHeight,
+            'backgroundColor':
+                (_project.pages[pageIndex].extras['backgroundColorValue']
+                        as num?)
+                    ?.toInt() ??
+                Colors.white.value,
+            'originalIndex': pageIndex,
+            'elements': _project.pages[pageIndex].elements
+                .map(
+                  (element) => <String, dynamic>{
+                    'type': element.type,
+                    'x': element.x,
+                    'y': element.y,
+                    'width': element.width,
+                    'height': element.height,
+                    'allowCrossPage': element.allowCrossPage,
+                    'src':
+                        element.data['originalSrc'] as String? ??
+                        element.data['src'] as String? ??
+                        '',
+                    'aspectRatio': (element.data['aspectRatio'] as num?)
+                        ?.toDouble(),
+                    'wasUltraHdr': _elementUsesUltraHdr(element),
+                  },
+                )
+                .toList(),
+          },
+        )
+        .toList();
+
+    if (Platform.isAndroid &&
+        hdrExportEnabled &&
+        _projectUsesUltraHdr(_project)) {
+      try {
+        final bytes = await _galleryChannel.invokeMethod<Uint8List>(
+          'renderUltraHdrPageForExport',
+          <String, dynamic>{
+            'exportWidth': exportWidth,
+            'targetPageIndex': targetListIndex,
+            'pages': pagePayloads,
+          },
+        );
+        if (bytes != null && bytes.isNotEmpty) {
+          return bytes;
+        }
+      } catch (_) {
+        // Fall back to the SDR renderer if native HDR export is unavailable.
+      }
+    }
+
     final payload = <String, dynamic>{
       'exportWidth': exportWidth,
       'targetPageIndex': targetListIndex,
       'images': <String, Uint8List>{
         for (final path in usedImagePaths) path: _exportImageBytesCache[path]!,
       },
-      'pages': pageIndexes
-          .map(
-            (pageIndex) => <String, dynamic>{
-              'aspectWidth': _project.pages[pageIndex].aspectWidth,
-              'aspectHeight': _project.pages[pageIndex].aspectHeight,
-              'backgroundColor':
-                  (_project.pages[pageIndex].extras['backgroundColorValue']
-                          as num?)
-                      ?.toInt() ??
-                  Colors.white.value,
-              'originalIndex': pageIndex,
-              'elements': _project.pages[pageIndex].elements
-                  .map(
-                    (element) => <String, dynamic>{
-                      'type': element.type,
-                      'x': element.x,
-                      'y': element.y,
-                      'width': element.width,
-                      'height': element.height,
-                      'allowCrossPage': element.allowCrossPage,
-                      'src':
-                          element.data['originalSrc'] as String? ??
-                          element.data['src'] as String? ??
-                          '',
-                      'aspectRatio': (element.data['aspectRatio'] as num?)
-                          ?.toDouble(),
-                    },
-                  )
-                  .toList(),
-            },
-          )
-          .toList(),
+      'pages': pagePayloads,
     };
 
     return compute(_renderSelectedPageJpgBytes, payload);
@@ -3065,6 +3215,7 @@ class _BlankPageState extends State<BlankPage> {
   Future<void> _exportAllPagesToGallery({
     required bool reverseOrder,
     required ExportQualityMode qualityMode,
+    required bool hdrExportEnabled,
     void Function(double progress, String label)? onProgress,
     ValueChanged<_CompletedExportPage>? onCompletedPage,
   }) async {
@@ -3102,6 +3253,7 @@ class _BlankPageState extends State<BlankPage> {
           exportWidth: exportWidth,
           pageIndexes: pageIndexes,
           targetListIndex: listIndex,
+          hdrExportEnabled: hdrExportEnabled,
         );
 
         _setExportProgress(
@@ -3179,8 +3331,10 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final strings = AppStrings.of(context);
+    final hasUltraHdrContent = _hasUltraHdrContent;
     var reverseOrder = true;
     var qualityMode = ExportQualityMode.igStandard1080;
+    var hdrExportEnabled = _hdrExportEnabled;
     var exportStarted = false;
     var exportRunning = false;
     var exportDone = false;
@@ -3208,6 +3362,7 @@ class _BlankPageState extends State<BlankPage> {
       await _exportAllPagesToGallery(
         reverseOrder: reverseOrder,
         qualityMode: qualityMode,
+        hdrExportEnabled: hdrExportEnabled && hasUltraHdrContent,
         onProgress: (progress, label) {
           if (!dialogContext.mounted) {
             return;
@@ -3352,6 +3507,42 @@ class _BlankPageState extends State<BlankPage> {
                                   ),
                                 ],
                               ),
+                              if (hasUltraHdrContent) ...[
+                                const SizedBox(height: 10),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: _ExportQualityButton(
+                                        label: 'SDR',
+                                        detail: '',
+                                        selected: !hdrExportEnabled,
+                                        onTap: () {
+                                          setDialogState(() {
+                                            hdrExportEnabled = false;
+                                          });
+                                          unawaited(
+                                            _setHdrExportEnabled(false),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: _ExportQualityButton(
+                                        label: 'HDR',
+                                        detail: '',
+                                        selected: hdrExportEnabled,
+                                        onTap: () {
+                                          setDialogState(() {
+                                            hdrExportEnabled = true;
+                                          });
+                                          unawaited(_setHdrExportEnabled(true));
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -3430,6 +3621,15 @@ class _BlankPageState extends State<BlankPage> {
     _pageController.dispose();
     _bottomTabPageController.dispose();
     _previewScrollController.dispose();
+    if (Platform.isAndroid) {
+      unawaited(
+        _galleryChannel
+            .invokeMethod<bool>('setUltraHdrMode', <String, dynamic>{
+              'enabled': false,
+            })
+            .catchError((_) => false),
+      );
+    }
     super.dispose();
   }
 
@@ -3464,6 +3664,8 @@ class _BlankPageState extends State<BlankPage> {
         ? 248.0
         : 180.0;
     final bottomTabs = _bottomTabs;
+    final hasUltraHdrContent = _hasUltraHdrContent;
+    final hdrViewEnabled = _hdrViewEnabled;
     WidgetsBinding.instance.addPostFrameCallback((_) => _syncBottomTab());
 
     return PopScope(
@@ -3541,15 +3743,40 @@ class _BlankPageState extends State<BlankPage> {
                     children: [
                       Row(
                         children: [
-                          _SlideSwitch(
-                            value: _displayMode == PageDisplayMode.preview,
-                            onChanged: (value) {
-                              _changeDisplayMode(
-                                value
-                                    ? PageDisplayMode.preview
-                                    : PageDisplayMode.single,
-                              );
-                            },
+                          Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _SlideSwitch(
+                                value: _displayMode == PageDisplayMode.preview,
+                                onChanged: (value) {
+                                  _changeDisplayMode(
+                                    value
+                                        ? PageDisplayMode.preview
+                                        : PageDisplayMode.single,
+                                  );
+                                },
+                              ),
+                              AnimatedSize(
+                                duration: const Duration(milliseconds: 180),
+                                curve: Curves.easeInOut,
+                                child: hasUltraHdrContent
+                                    ? Padding(
+                                        padding: const EdgeInsets.only(top: 6),
+                                        child: _HdrMiniButton(
+                                          selected: hdrViewEnabled,
+                                          onTap: () {
+                                            unawaited(
+                                              _setHdrViewEnabled(
+                                                !hdrViewEnabled,
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                      )
+                                    : const SizedBox.shrink(),
+                              ),
+                            ],
                           ),
                           const Spacer(),
                           AnimatedSwitcher(
@@ -3735,6 +3962,8 @@ class _BlankPageState extends State<BlankPage> {
                                                   showBorder: _showPageBorder,
                                                   showPageDivider:
                                                       _showSinglePageDivider,
+                                                  hdrViewEnabled:
+                                                      hdrViewEnabled,
                                                   selectedElementId:
                                                       _selectedElementId,
                                                   deleteArmedElementId:
@@ -3829,6 +4058,7 @@ class _BlankPageState extends State<BlankPage> {
                                               exportRepaintKey:
                                                   _exportRepaintKey,
                                               showBorder: _showPageBorder,
+                                              hdrViewEnabled: hdrViewEnabled,
                                               selectedElementId:
                                                   _selectedElementId,
                                               deleteArmedElementId:
@@ -4042,6 +4272,7 @@ class _CanvasViewport extends StatelessWidget {
     required this.repaintKey,
     required this.showBorder,
     required this.showPageDivider,
+    required this.hdrViewEnabled,
     required this.selectedElementId,
     required this.deleteArmedElementId,
     required this.snapGuides,
@@ -4063,6 +4294,7 @@ class _CanvasViewport extends StatelessWidget {
   final GlobalKey? repaintKey;
   final bool showBorder;
   final bool showPageDivider;
+  final bool hdrViewEnabled;
   final String? selectedElementId;
   final String? deleteArmedElementId;
   final List<_SnapGuide> snapGuides;
@@ -4135,6 +4367,7 @@ class _CanvasViewport extends StatelessWidget {
                                             element: element,
                                             isSelected: false,
                                             isDeleteArmed: false,
+                                            hdrViewEnabled: hdrViewEnabled,
                                             pageWidth: constraints.maxWidth,
                                             pageHeight: constraints.maxHeight,
                                             pageOffsetX:
@@ -4160,6 +4393,7 @@ class _CanvasViewport extends StatelessWidget {
                                   isSelected: selectedElementId == element.id,
                                   isDeleteArmed:
                                       deleteArmedElementId == element.id,
+                                  hdrViewEnabled: hdrViewEnabled,
                                   canvasWidth: constraints.maxWidth,
                                   canvasHeight: constraints.maxHeight,
                                   onTap: () => onTapElement(element.id),
@@ -4220,6 +4454,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
     required this.exportPageId,
     required this.exportRepaintKey,
     required this.showBorder,
+    required this.hdrViewEnabled,
     required this.selectedElementId,
     required this.deleteArmedElementId,
     required this.snapGuides,
@@ -4239,6 +4474,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
   final String exportPageId;
   final GlobalKey exportRepaintKey;
   final bool showBorder;
+  final bool hdrViewEnabled;
   final String? selectedElementId;
   final String? deleteArmedElementId;
   final List<_SnapGuide> snapGuides;
@@ -4320,6 +4556,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
                                         element: element,
                                         isSelected: false,
                                         isDeleteArmed: false,
+                                        hdrViewEnabled: hdrViewEnabled,
                                         pageWidth: constraints.maxWidth,
                                         pageHeight: constraints.maxHeight,
                                         pageOffsetX:
@@ -4352,6 +4589,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
                   element: element,
                   isSelected: selectedElementId == element.id,
                   isDeleteArmed: deleteArmedElementId == element.id,
+                  hdrViewEnabled: hdrViewEnabled,
                   pageWidth: viewportWidth,
                   pageHeight:
                       viewportWidth *
@@ -4577,11 +4815,41 @@ class _DashedGuidePainter extends CustomPainter {
   }
 }
 
+class _UltraHdrImageView extends StatelessWidget {
+  const _UltraHdrImageView({
+    required this.path,
+    required this.logicalWidth,
+    required this.logicalHeight,
+  });
+
+  final String path;
+  final double logicalWidth;
+  final double logicalHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    final pixelRatio = MediaQuery.devicePixelRatioOf(context).clamp(1.0, 3.0);
+    return AndroidView(
+      key: ValueKey<String>(
+        'ultra_hdr_image_${path}_${logicalWidth.round()}_${logicalHeight.round()}',
+      ),
+      viewType: 'igapp/ultra_hdr_image',
+      creationParamsCodec: const StandardMessageCodec(),
+      creationParams: <String, dynamic>{
+        'path': path,
+        'targetWidth': (logicalWidth * pixelRatio).round().clamp(1, 4096),
+        'targetHeight': (logicalHeight * pixelRatio).round().clamp(1, 4096),
+      },
+    );
+  }
+}
+
 class _ImageElementWidget extends StatefulWidget {
   const _ImageElementWidget({
     required this.element,
     required this.isSelected,
     required this.isDeleteArmed,
+    required this.hdrViewEnabled,
     required this.canvasWidth,
     required this.canvasHeight,
     required this.onTap,
@@ -4596,6 +4864,7 @@ class _ImageElementWidget extends StatefulWidget {
   final CanvasElement element;
   final bool isSelected;
   final bool isDeleteArmed;
+  final bool hdrViewEnabled;
   final double canvasWidth;
   final double canvasHeight;
   final VoidCallback onTap;
@@ -4697,6 +4966,14 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                         color: Color(0xFF8A8A8A),
                         size: 24,
                       ),
+                    )
+                  : widget.hdrViewEnabled &&
+                        _elementUsesUltraHdr(widget.element) &&
+                        Platform.isAndroid
+                  ? _UltraHdrImageView(
+                      path: src,
+                      logicalWidth: width,
+                      logicalHeight: height,
                     )
                   : Image.file(
                       File(src),
@@ -4824,6 +5101,7 @@ class _PreviewImageElementWidget extends StatefulWidget {
     required this.element,
     required this.isSelected,
     required this.isDeleteArmed,
+    required this.hdrViewEnabled,
     required this.pageWidth,
     required this.pageHeight,
     required this.pageOffsetX,
@@ -4840,6 +5118,7 @@ class _PreviewImageElementWidget extends StatefulWidget {
   final CanvasElement element;
   final bool isSelected;
   final bool isDeleteArmed;
+  final bool hdrViewEnabled;
   final double pageWidth;
   final double pageHeight;
   final double pageOffsetX;
@@ -4945,6 +5224,14 @@ class _PreviewImageElementWidgetState
                         color: Color(0xFF8A8A8A),
                         size: 24,
                       ),
+                    )
+                  : widget.hdrViewEnabled &&
+                        _elementUsesUltraHdr(widget.element) &&
+                        Platform.isAndroid
+                  ? _UltraHdrImageView(
+                      path: src,
+                      logicalWidth: width,
+                      logicalHeight: height,
                     )
                   : Image.file(
                       File(src),
@@ -5353,6 +5640,36 @@ class _ToolbarIconButton extends StatelessWidget {
   }
 }
 
+class _HdrMiniButton extends StatelessWidget {
+  const _HdrMiniButton({required this.selected, required this.onTap});
+
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return _PressableScale(
+      onTap: onTap,
+      pressedScale: 0.94,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeInOut,
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: selected ? kPrimaryAccentColor : const Color(0xFFD8D8D8),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(
+          selected ? Icons.hdr_on_rounded : Icons.hdr_off_rounded,
+          size: 20,
+          color: const Color(0xFF1F1F1F),
+        ),
+      ),
+    );
+  }
+}
+
 class _DialogActionButton extends StatelessWidget {
   const _DialogActionButton({
     required this.label,
@@ -5618,17 +5935,21 @@ class _ExportQualityButton extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(width: 6),
-            AnimatedDefaultTextStyle(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeInOut,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                color: selected ? kPrimaryAccentColor : const Color(0xFF7A7A7A),
+            if (detail.isNotEmpty) ...[
+              const SizedBox(width: 6),
+              AnimatedDefaultTextStyle(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeInOut,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: selected
+                      ? kPrimaryAccentColor
+                      : const Color(0xFF7A7A7A),
+                ),
+                child: Text(detail),
               ),
-              child: Text(detail),
-            ),
+            ],
           ],
         ),
       ),
