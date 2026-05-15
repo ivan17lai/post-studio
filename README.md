@@ -1,16 +1,21 @@
 # igapp
+自製的 IG 貼文編輯 App，以簡潔操作為核心設計理念。
+支援多頁貼文排版、自訂背景色彩，以及針對 IG 優化的匯出選項。
+目前正在開發 Ultra HDR 編輯與輸出支援。
 
-A new Flutter project.
+<img width="3840" height="2160" alt="簡潔的製作IG貼文" src="https://github.com/user-attachments/assets/a44f09ff-3755-4700-bcd0-10c853921b19" />
 
-## Getting Started
+## 主要功能
 
-This project is a starting point for a Flutter application.
+- 多種頁面比例選擇（4:5、3:4、4:3、5:4）
+- 多頁貼文跨頁編輯
+- 背景色彩自訂
+- 匯出解析度選擇（IG 標準 1080 / 高畫質 2.4K）
+- 從最後一頁反向輸出，方便發文時的照片選擇
 
-A few resources to get you started if this is your first Flutter project:
+## 開發狀態
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+- [x] 基本排版與圖片匯入
+- [x] 多頁編輯
+- [x] 匯出功能
+- [ ] Ultra HDR 編輯與輸出（開發中）
