@@ -23,6 +23,26 @@ Color _pageBackgroundColorFromExtras(Map<String, dynamic> extras) {
   return Color(colorValue);
 }
 
+double _cropScaleFromData(Map<String, dynamic> data) {
+  final value = (data['cropScale'] as num?)?.toDouble() ?? 1.0;
+  return value < 1 ? 1.0 : value;
+}
+
+double _cropOffsetXFromData(Map<String, dynamic> data) {
+  return (data['cropOffsetX'] as num?)?.toDouble() ?? 0.0;
+}
+
+double _cropOffsetYFromData(Map<String, dynamic> data) {
+  return (data['cropOffsetY'] as num?)?.toDouble() ?? 0.0;
+}
+
+double _clampCropImageOffset(double value, double min, double max) {
+  if (min >= max) {
+    return 0;
+  }
+  return value.clamp(min, max).toDouble();
+}
+
 Uint8List _renderPageJpgBytes(Map<String, dynamic> payload) {
   const defaultWidth = 2400;
   const maxWidth = 6000;
@@ -125,6 +145,9 @@ Uint8List _renderPageJpgBytes(Map<String, dynamic> payload) {
       targetWidth: targetWidth,
       targetHeight: targetHeight,
       interpolation: img.Interpolation.cubic,
+      cropOffsetX: (element['cropOffsetX'] as num?)?.toDouble() ?? 0,
+      cropOffsetY: (element['cropOffsetY'] as num?)?.toDouble() ?? 0,
+      cropScale: (element['cropScale'] as num?)?.toDouble() ?? 1,
     );
   }
 
@@ -134,34 +157,76 @@ Uint8List _renderPageJpgBytes(Map<String, dynamic> payload) {
 img.Image _cropSourceToFrame({
   required img.Image sourceImage,
   required double frameAspectRatio,
+  double cropOffsetX = 0,
+  double cropOffsetY = 0,
+  double cropScale = 1,
 }) {
-  final sourceAspectRatio = sourceImage.width / sourceImage.height;
-  if (sourceAspectRatio > frameAspectRatio) {
-    final cropWidth = (sourceImage.height * frameAspectRatio).round().clamp(
-      1,
-      sourceImage.width,
-    );
-    final offsetX = ((sourceImage.width - cropWidth) / 2).round();
-    return img.copyCrop(
-      sourceImage,
-      x: offsetX,
-      y: 0,
-      width: cropWidth,
-      height: sourceImage.height,
-    );
-  }
-
-  final cropHeight = (sourceImage.width / frameAspectRatio).round().clamp(
-    1,
-    sourceImage.height,
+  final cropRect = _sourceCropRectForFrame(
+    sourceWidth: sourceImage.width,
+    sourceHeight: sourceImage.height,
+    frameAspectRatio: frameAspectRatio,
+    cropOffsetX: cropOffsetX,
+    cropOffsetY: cropOffsetY,
+    cropScale: cropScale,
   );
-  final offsetY = ((sourceImage.height - cropHeight) / 2).round();
   return img.copyCrop(
     sourceImage,
-    x: 0,
-    y: offsetY,
-    width: sourceImage.width,
-    height: cropHeight,
+    x: cropRect.x,
+    y: cropRect.y,
+    width: cropRect.width,
+    height: cropRect.height,
+  );
+}
+
+({int x, int y, int width, int height}) _sourceCropRectForFrame({
+  required int sourceWidth,
+  required int sourceHeight,
+  required double frameAspectRatio,
+  required double cropOffsetX,
+  required double cropOffsetY,
+  required double cropScale,
+}) {
+  final safeFrameAspectRatio = frameAspectRatio <= 0 ? 1.0 : frameAspectRatio;
+  final sourceAspectRatio = sourceWidth / sourceHeight;
+  final safeScale = cropScale < 1 ? 1.0 : cropScale;
+  const frameHeight = 1.0;
+  final frameWidth = safeFrameAspectRatio;
+  var imageWidth = frameWidth;
+  var imageHeight = frameHeight;
+
+  if (sourceAspectRatio > safeFrameAspectRatio) {
+    imageHeight = frameHeight;
+    imageWidth = imageHeight * sourceAspectRatio;
+  } else {
+    imageWidth = frameWidth;
+    imageHeight = imageWidth / sourceAspectRatio;
+  }
+
+  imageWidth *= safeScale;
+  imageHeight *= safeScale;
+  final left = _clampCropImageOffset(
+    ((frameWidth - imageWidth) / 2) + (cropOffsetX * frameWidth),
+    frameWidth - imageWidth,
+    0,
+  );
+  final top = _clampCropImageOffset(
+    ((frameHeight - imageHeight) / 2) + (cropOffsetY * frameHeight),
+    frameHeight - imageHeight,
+    0,
+  );
+
+  final cropX = ((-left / imageWidth) * sourceWidth).round();
+  final cropY = ((-top / imageHeight) * sourceHeight).round();
+  final cropWidth = ((frameWidth / imageWidth) * sourceWidth).round();
+  final cropHeight = ((frameHeight / imageHeight) * sourceHeight).round();
+
+  final safeCropWidth = cropWidth.clamp(1, sourceWidth);
+  final safeCropHeight = cropHeight.clamp(1, sourceHeight);
+  return (
+    x: cropX.clamp(0, sourceWidth - safeCropWidth),
+    y: cropY.clamp(0, sourceHeight - safeCropHeight),
+    width: safeCropWidth,
+    height: safeCropHeight,
   );
 }
 
@@ -174,6 +239,9 @@ void _compositeClippedImage({
   required int targetWidth,
   required int targetHeight,
   required img.Interpolation interpolation,
+  double cropOffsetX = 0,
+  double cropOffsetY = 0,
+  double cropScale = 1,
 }) {
   if (targetWidth <= 0 || targetHeight <= 0) {
     return;
@@ -193,6 +261,9 @@ void _compositeClippedImage({
   final croppedSource = _cropSourceToFrame(
     sourceImage: sourceImage,
     frameAspectRatio: frameAspectRatio,
+    cropOffsetX: cropOffsetX,
+    cropOffsetY: cropOffsetY,
+    cropScale: cropScale,
   );
   final resizedImage = img.copyResize(
     croppedSource,
@@ -314,6 +385,9 @@ Uint8List _renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
         targetWidth: targetWidth,
         targetHeight: targetHeight,
         interpolation: img.Interpolation.linear,
+        cropOffsetX: (element['cropOffsetX'] as num?)?.toDouble() ?? 0,
+        cropOffsetY: (element['cropOffsetY'] as num?)?.toDouble() ?? 0,
+        cropScale: (element['cropScale'] as num?)?.toDouble() ?? 1,
       );
     }
   }
@@ -471,6 +545,7 @@ class _BlankPageState extends State<BlankPage> {
   PageDisplayMode _displayMode = PageDisplayMode.single;
   String _selectedBottomTab = _tabTemplate;
   String? _selectedElementId;
+  String? _croppingElementId;
   String? _deleteArmedElementId;
   late PageController _pageController;
   late final PageController _bottomTabPageController;
@@ -582,10 +657,13 @@ class _BlankPageState extends State<BlankPage> {
     return switch (tabKey) {
       _tabPage => strings.t('page'),
       _tabTemplate => strings.t('template'),
-      _tabElements => strings.t('image'),
+      _tabElements =>
+        _selectedImageElement == null
+            ? strings.t('image')
+            : '\u66f4\u63db\u5716\u7247',
       _tabImageSource => strings.t('imageSource'),
       _tabImagePosition => '\u5716\u7247\u4f4d\u7f6e',
-      _tabImageSettings => strings.t('imageSettings'),
+      _tabImageSettings => '\u5716\u7247\u8a2d\u5b9a',
       _tabImageSnap => strings.t('imageSnap'),
       _ => tabKey,
     };
@@ -643,6 +721,52 @@ class _BlankPageState extends State<BlankPage> {
     return element.height;
   }
 
+  double _sourceAspectRatioForElement(CanvasElement element) {
+    return (element.data['originalAspectRatio'] as num?)?.toDouble() ??
+        (element.data['aspectRatio'] as num?)?.toDouble() ??
+        (element.width / element.height);
+  }
+
+  ({double x, double y}) _clampedCropOffsetForElement(
+    CanvasElement element, {
+    required double x,
+    required double y,
+    double? scale,
+  }) {
+    final frameAspectRatio =
+        (element.data['aspectRatio'] as num?)?.toDouble() ??
+        (element.width / element.height);
+    final rawSourceAspectRatio = _sourceAspectRatioForElement(element);
+    final sourceAspectRatio = rawSourceAspectRatio <= 0
+        ? frameAspectRatio
+        : rawSourceAspectRatio;
+    final cropScale = scale ?? _cropScaleFromData(element.data);
+    const frameHeight = 1.0;
+    final frameWidth = frameAspectRatio <= 0 ? 1.0 : frameAspectRatio;
+    var imageWidth = frameWidth;
+    var imageHeight = frameHeight;
+
+    if (sourceAspectRatio > frameWidth) {
+      imageHeight = frameHeight;
+      imageWidth = imageHeight * sourceAspectRatio;
+    } else {
+      imageWidth = frameWidth;
+      imageHeight = imageWidth / sourceAspectRatio;
+    }
+
+    imageWidth *= cropScale < 1 ? 1.0 : cropScale;
+    imageHeight *= cropScale < 1 ? 1.0 : cropScale;
+    final minX = (frameWidth - imageWidth) / (2 * frameWidth);
+    final maxX = -minX;
+    final minY = (frameHeight - imageHeight) / (2 * frameHeight);
+    final maxY = -minY;
+
+    return (
+      x: minX >= maxX ? 0.0 : x.clamp(minX, maxX).toDouble(),
+      y: minY >= maxY ? 0.0 : y.clamp(minY, maxY).toDouble(),
+    );
+  }
+
   String _importedImageOriginalPath(String displayPath) {
     final rawList = _project.extras['importedImages'] as List<dynamic>?;
     if (rawList == null) {
@@ -659,6 +783,50 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     return displayPath;
+  }
+
+  List<dynamic> _mergedImportedImages(Iterable<dynamic> additions) {
+    final merged = <dynamic>[
+      ...(_project.extras['importedImages'] as List<dynamic>? ?? const []),
+      ...additions,
+    ];
+    final deduped = <dynamic>[];
+    final seenOriginalPaths = <String>{};
+    for (final item in merged) {
+      if (item is String) {
+        if (seenOriginalPaths.add(item)) {
+          deduped.add(item);
+        }
+      } else if (item is Map) {
+        final originalSrc =
+            (item['originalSrc'] as String?) ?? (item['src'] as String?) ?? '';
+        if (originalSrc.isNotEmpty && seenOriginalPaths.add(originalSrc)) {
+          deduped.add(item);
+        }
+      }
+    }
+    return deduped;
+  }
+
+  Future<void> _rememberPreparedImages(
+    Iterable<({String displayPath, String originalPath})> preparedImages,
+  ) async {
+    final additions = preparedImages
+        .map(
+          (image) => <String, dynamic>{
+            'src': image.displayPath,
+            'originalSrc': image.originalPath,
+          },
+        )
+        .toList();
+    if (additions.isEmpty) {
+      return;
+    }
+
+    await _saveProjectExtras(<String, dynamic>{
+      ..._project.extras,
+      'importedImages': _mergedImportedImages(additions),
+    });
   }
 
   Future<({String displayPath, String originalPath})> _prepareImageAsset(
@@ -751,6 +919,7 @@ class _BlankPageState extends State<BlankPage> {
     );
     _selectedBottomTab = snapshot.selectedBottomTab;
     _selectedElementId = snapshot.selectedElementId;
+    _croppingElementId = null;
     _deleteArmedElementId = null;
     _displayMode = snapshot.displayMode;
     _showPageBorder = snapshot.showPageBorder;
@@ -868,6 +1037,7 @@ class _BlankPageState extends State<BlankPage> {
         _selectedBottomTab == _tabImageSnap;
     setState(() {
       _selectedElementId = null;
+      _croppingElementId = null;
       _deleteArmedElementId = null;
       if (shouldFallbackToElements) {
         _selectedBottomTab = _tabElements;
@@ -909,6 +1079,7 @@ class _BlankPageState extends State<BlankPage> {
     setState(() {
       _currentPageIndex = newPages.length - 1;
       _selectedElementId = null;
+      _croppingElementId = null;
       _deleteArmedElementId = null;
       _selectedBottomTab = _tabTemplate;
       _refreshPageControllerViewportIfNeeded();
@@ -1040,6 +1211,7 @@ class _BlankPageState extends State<BlankPage> {
     setState(() {
       _currentPageIndex = nextIndex;
       _selectedElementId = null;
+      _croppingElementId = null;
       _deleteArmedElementId = null;
       _selectedBottomTab = _tabTemplate;
       _refreshPageControllerViewportIfNeeded();
@@ -1436,6 +1608,7 @@ class _BlankPageState extends State<BlankPage> {
 
     setState(() {
       _selectedElementId = newElement.id;
+      _croppingElementId = null;
       _deleteArmedElementId = null;
       _selectedBottomTab = _tabElements;
     });
@@ -1453,6 +1626,7 @@ class _BlankPageState extends State<BlankPage> {
     final preparedImage = await _prepareImageAsset(
       _importedImageOriginalPath(path),
     );
+    await _rememberPreparedImages([preparedImage]);
 
     final size = await _decodeImageSize(preparedImage.displayPath);
     if (size == null || size.height == 0) {
@@ -1487,6 +1661,7 @@ class _BlankPageState extends State<BlankPage> {
 
     setState(() {
       _selectedElementId = newElement.id;
+      _croppingElementId = null;
       _deleteArmedElementId = null;
       _selectedBottomTab = _tabElements;
     });
@@ -1513,29 +1688,10 @@ class _BlankPageState extends State<BlankPage> {
         'originalSrc': preparedImage.originalPath,
       });
     }
-    final merged = <dynamic>[
-      ...(_project.extras['importedImages'] as List<dynamic>? ?? const []),
-      ...importedImages,
-    ];
-    final deduped = <dynamic>[];
-    final seenOriginalPaths = <String>{};
-    for (final item in merged) {
-      if (item is String) {
-        if (seenOriginalPaths.add(item)) {
-          deduped.add(item);
-        }
-      } else if (item is Map) {
-        final originalSrc =
-            (item['originalSrc'] as String?) ?? (item['src'] as String?) ?? '';
-        if (originalSrc.isNotEmpty && seenOriginalPaths.add(originalSrc)) {
-          deduped.add(item);
-        }
-      }
-    }
 
     await _saveProjectExtras(<String, dynamic>{
       ..._project.extras,
-      'importedImages': deduped,
+      'importedImages': _mergedImportedImages(importedImages),
     });
   }
 
@@ -1597,6 +1753,7 @@ class _BlankPageState extends State<BlankPage> {
     final preparedImage = await _prepareImageAsset(
       _importedImageOriginalPath(path),
     );
+    await _rememberPreparedImages([preparedImage]);
 
     final size = await _decodeImageSize(preparedImage.displayPath);
     if (size == null || size.height == 0) {
@@ -1629,6 +1786,9 @@ class _BlankPageState extends State<BlankPage> {
         ...selectedImage.data,
         'src': preparedImage.displayPath,
         'originalSrc': preparedImage.originalPath,
+        'cropOffsetX': 0.0,
+        'cropOffsetY': 0.0,
+        'cropScale': 1.0,
         'aspectRatio': shouldKeepFrame
             ? ((selectedImage.data['aspectRatio'] as num?)?.toDouble() ??
                   aspectRatio)
@@ -1662,6 +1822,37 @@ class _BlankPageState extends State<BlankPage> {
     return completer.future;
   }
 
+  void _showImportedImagePreview(String imagePath) {
+    if (imagePath.isEmpty) {
+      return;
+    }
+
+    showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+      barrierColor: Colors.black.withValues(alpha: 0.58),
+      transitionDuration: const Duration(milliseconds: 240),
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return _ImagePathPreviewDialog(imagePath: imagePath);
+      },
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        final curved = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutBack,
+          reverseCurve: Curves.easeInCubic,
+        );
+        return FadeTransition(
+          opacity: animation,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.86, end: 1).animate(curved),
+            child: child,
+          ),
+        );
+      },
+    );
+  }
+
   bool _elementCrossesPageBoundary(CanvasElement element) {
     return element.allowCrossPage &&
         (element.x < 0 || (element.x + element.width) > 1);
@@ -1672,12 +1863,26 @@ class _BlankPageState extends State<BlankPage> {
       _clearSelectedElement();
       return;
     }
+    if (_selectedElementId == elementId) {
+      _clearSelectedElement();
+      return;
+    }
 
     CanvasElement? selectedElement;
-    for (final page in _project.pages) {
-      for (final element in page.elements) {
+    var selectedPageIndex = -1;
+    var selectedElementIndex = -1;
+    for (var pageIndex = 0; pageIndex < _project.pages.length; pageIndex++) {
+      final page = _project.pages[pageIndex];
+      for (
+        var elementIndex = 0;
+        elementIndex < page.elements.length;
+        elementIndex++
+      ) {
+        final element = page.elements[elementIndex];
         if (element.id == elementId) {
           selectedElement = element;
+          selectedPageIndex = pageIndex;
+          selectedElementIndex = elementIndex;
           break;
         }
       }
@@ -1686,7 +1891,34 @@ class _BlankPageState extends State<BlankPage> {
       }
     }
 
+    ProjectRecord? reorderedProject;
+    if (selectedElement != null &&
+        selectedElement.type == 'image' &&
+        selectedPageIndex != -1) {
+      final selectedPage = _project.pages[selectedPageIndex];
+      final isAlreadyTop =
+          selectedElementIndex == selectedPage.elements.length - 1;
+      if (!isAlreadyTop) {
+        final updatedElements = List<CanvasElement>.from(selectedPage.elements);
+        final movedElement = updatedElements.removeAt(selectedElementIndex);
+        updatedElements.add(movedElement);
+
+        final updatedPages = List<ProjectPage>.from(_project.pages);
+        updatedPages[selectedPageIndex] = selectedPage.copyWith(
+          elements: updatedElements,
+        );
+        reorderedProject = _project.copyWith(
+          pages: updatedPages,
+          pageCount: updatedPages.length,
+        );
+      }
+    }
+
+    final projectToSave = reorderedProject;
     setState(() {
+      if (projectToSave != null) {
+        _project = projectToSave;
+      }
       if (selectedElement != null &&
           _elementCrossesPageBoundary(selectedElement) &&
           _displayMode != PageDisplayMode.preview) {
@@ -1697,11 +1929,17 @@ class _BlankPageState extends State<BlankPage> {
       if (_deleteArmedElementId != elementId) {
         _deleteArmedElementId = null;
       }
+      if (_croppingElementId != null && _croppingElementId != elementId) {
+        _croppingElementId = null;
+      }
       if (_selectedBottomTab != _tabPage && !_isImageTab(_selectedBottomTab)) {
         _selectedBottomTab = _tabElements;
       }
       _refreshPageControllerViewportIfNeeded();
     });
+    if (projectToSave != null) {
+      unawaited(_saveProject(projectToSave));
+    }
     if (selectedElement != null &&
         _elementCrossesPageBoundary(selectedElement)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2357,6 +2595,92 @@ class _BlankPageState extends State<BlankPage> {
     );
   }
 
+  void _startCroppingSelectedImage() {
+    final selectedImage = _selectedImageElement;
+    if (selectedImage == null) {
+      return;
+    }
+
+    setState(() {
+      _croppingElementId = selectedImage.id;
+      _deleteArmedElementId = null;
+      _selectedBottomTab = _tabImageSettings;
+    });
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.jumpToPage(
+        _bottomTabs.indexOf(_tabImageSettings),
+      );
+    }
+  }
+
+  void _finishCroppingSelectedImage() {
+    if (_croppingElementId == null) {
+      return;
+    }
+    setState(() {
+      _croppingElementId = null;
+    });
+  }
+
+  void _updateImageCropOffset({
+    required String elementId,
+    required double x,
+    required double y,
+    required bool persist,
+  }) {
+    if (!persist && !_hasPendingElementUndoSnapshot) {
+      _storeUndoSnapshot();
+      _hasPendingElementUndoSnapshot = true;
+    }
+    final element = _selectedImageElement;
+    if (element == null || element.id != elementId) {
+      return;
+    }
+    final clamped = _clampedCropOffsetForElement(element, x: x, y: y);
+    final updatedElement = element.copyWith(
+      data: <String, dynamic>{
+        ...element.data,
+        'cropOffsetX': clamped.x,
+        'cropOffsetY': clamped.y,
+        'cropScale': _cropScaleFromData(element.data),
+      },
+    );
+
+    unawaited(_replaceElement(updatedElement, persist: persist));
+  }
+
+  void _updateImageCropScale({
+    required String elementId,
+    required double scale,
+    required bool persist,
+  }) {
+    if (!persist && !_hasPendingElementUndoSnapshot) {
+      _storeUndoSnapshot();
+      _hasPendingElementUndoSnapshot = true;
+    }
+    final element = _selectedImageElement;
+    if (element == null || element.id != elementId) {
+      return;
+    }
+    final nextScale = scale.clamp(1.0, 8.0).toDouble();
+    final clamped = _clampedCropOffsetForElement(
+      element,
+      x: _cropOffsetXFromData(element.data),
+      y: _cropOffsetYFromData(element.data),
+      scale: nextScale,
+    );
+    final updatedElement = element.copyWith(
+      data: <String, dynamic>{
+        ...element.data,
+        'cropOffsetX': clamped.x,
+        'cropOffsetY': clamped.y,
+        'cropScale': nextScale,
+      },
+    );
+
+    unawaited(_replaceElement(updatedElement, persist: persist));
+  }
+
   Future<void> _nudgeSelectedImage(double dx, double dy) async {
     final selectedImage = _selectedImageElement;
     if (selectedImage == null) {
@@ -2474,13 +2798,25 @@ class _BlankPageState extends State<BlankPage> {
     final maxY = (1 - nextHeight).clamp(0.0, 1.0);
     final nextY = (centerY - (nextHeight / 2)).clamp(0.0, maxY);
 
-    final updatedElement = selectedImage.copyWith(
+    var updatedElement = selectedImage.copyWith(
       y: nextY,
       data: <String, dynamic>{
         ...selectedImage.data,
         'aspectRatio': nextAspectRatio,
         'originalAspectRatio': originalAspectRatio,
         'aspectPreset': option.key,
+      },
+    );
+    final clampedCrop = _clampedCropOffsetForElement(
+      updatedElement,
+      x: _cropOffsetXFromData(updatedElement.data),
+      y: _cropOffsetYFromData(updatedElement.data),
+    );
+    updatedElement = updatedElement.copyWith(
+      data: <String, dynamic>{
+        ...updatedElement.data,
+        'cropOffsetX': clampedCrop.x,
+        'cropOffsetY': clampedCrop.y,
       },
     );
 
@@ -2543,7 +2879,11 @@ class _BlankPageState extends State<BlankPage> {
     setState(() {
       if (_selectedElementId == elementId) {
         _selectedElementId = null;
+        _croppingElementId = null;
         _selectedBottomTab = _tabElements;
+      }
+      if (_croppingElementId == elementId) {
+        _croppingElementId = null;
       }
       if (_deleteArmedElementId == elementId) {
         _deleteArmedElementId = null;
@@ -2608,6 +2948,7 @@ class _BlankPageState extends State<BlankPage> {
     setState(() {
       _currentPageIndex = pageIndex;
       _selectedElementId = null;
+      _croppingElementId = null;
       _deleteArmedElementId = null;
       _refreshPageControllerViewportIfNeeded();
     });
@@ -2802,36 +3143,13 @@ class _BlankPageState extends State<BlankPage> {
       final targetHeight = (targetWidth / aspectRatio).round().clamp(1, 20000);
       final targetX = (element.x * exportWidth).round();
       final targetY = (element.y * exportHeight).round();
-      final sourceAspectRatio = sourceImage.width / sourceImage.height;
-
-      img.Image croppedSource;
-      if (sourceAspectRatio > aspectRatio) {
-        final cropWidth = (sourceImage.height * aspectRatio).round().clamp(
-          1,
-          sourceImage.width,
-        );
-        final offsetX = ((sourceImage.width - cropWidth) / 2).round();
-        croppedSource = img.copyCrop(
-          sourceImage,
-          x: offsetX,
-          y: 0,
-          width: cropWidth,
-          height: sourceImage.height,
-        );
-      } else {
-        final cropHeight = (sourceImage.width / aspectRatio).round().clamp(
-          1,
-          sourceImage.height,
-        );
-        final offsetY = ((sourceImage.height - cropHeight) / 2).round();
-        croppedSource = img.copyCrop(
-          sourceImage,
-          x: 0,
-          y: offsetY,
-          width: sourceImage.width,
-          height: cropHeight,
-        );
-      }
+      final croppedSource = _cropSourceToFrame(
+        sourceImage: sourceImage,
+        frameAspectRatio: aspectRatio,
+        cropOffsetX: _cropOffsetXFromData(element.data),
+        cropOffsetY: _cropOffsetYFromData(element.data),
+        cropScale: _cropScaleFromData(element.data),
+      );
 
       final resizedImage = img.copyResize(
         croppedSource,
@@ -2969,6 +3287,9 @@ class _BlankPageState extends State<BlankPage> {
                   element.data['src'] as String? ??
                   '',
               'aspectRatio': (element.data['aspectRatio'] as num?)?.toDouble(),
+              'cropOffsetX': _cropOffsetXFromData(element.data),
+              'cropOffsetY': _cropOffsetYFromData(element.data),
+              'cropScale': _cropScaleFromData(element.data),
             },
           )
           .toList(),
@@ -3051,6 +3372,9 @@ class _BlankPageState extends State<BlankPage> {
                         '',
                     'aspectRatio': (element.data['aspectRatio'] as num?)
                         ?.toDouble(),
+                    'cropOffsetX': _cropOffsetXFromData(element.data),
+                    'cropOffsetY': _cropOffsetYFromData(element.data),
+                    'cropScale': _cropScaleFromData(element.data),
                   },
                 )
                 .toList(),
@@ -3714,6 +4038,7 @@ class _BlankPageState extends State<BlankPage> {
                                               setState(() {
                                                 _currentPageIndex = index;
                                                 _selectedElementId = null;
+                                                _croppingElementId = null;
                                                 _deleteArmedElementId = null;
                                                 _refreshPageControllerViewportIfNeeded();
                                               });
@@ -3745,6 +4070,8 @@ class _BlankPageState extends State<BlankPage> {
                                                       _showSinglePageDivider,
                                                   selectedElementId:
                                                       _selectedElementId,
+                                                  croppingElementId:
+                                                      _croppingElementId,
                                                   deleteArmedElementId:
                                                       _deleteArmedElementId,
                                                   snapGuides: _activeSnapGuides,
@@ -3789,6 +4116,32 @@ class _BlankPageState extends State<BlankPage> {
                                                           pageId: page.id,
                                                           elementId: elementId,
                                                           width: width,
+                                                          persist: persist,
+                                                        );
+                                                      },
+                                                  onCropMove:
+                                                      (
+                                                        elementId,
+                                                        x,
+                                                        y,
+                                                        persist,
+                                                      ) {
+                                                        _updateImageCropOffset(
+                                                          elementId: elementId,
+                                                          x: x,
+                                                          y: y,
+                                                          persist: persist,
+                                                        );
+                                                      },
+                                                  onCropScale:
+                                                      (
+                                                        elementId,
+                                                        scale,
+                                                        persist,
+                                                      ) {
+                                                        _updateImageCropScale(
+                                                          elementId: elementId,
+                                                          scale: scale,
                                                           persist: persist,
                                                         );
                                                       },
@@ -3839,6 +4192,8 @@ class _BlankPageState extends State<BlankPage> {
                                               showBorder: _showPageBorder,
                                               selectedElementId:
                                                   _selectedElementId,
+                                              croppingElementId:
+                                                  _croppingElementId,
                                               deleteArmedElementId:
                                                   _deleteArmedElementId,
                                               snapGuides: _activeSnapGuides,
@@ -3891,6 +4246,23 @@ class _BlankPageState extends State<BlankPage> {
                                                       pageId: pageId,
                                                       elementId: elementId,
                                                       width: width,
+                                                      persist: persist,
+                                                    );
+                                                  },
+                                              onCropMove:
+                                                  (elementId, x, y, persist) {
+                                                    _updateImageCropOffset(
+                                                      elementId: elementId,
+                                                      x: x,
+                                                      y: y,
+                                                      persist: persist,
+                                                    );
+                                                  },
+                                              onCropScale:
+                                                  (elementId, scale, persist) {
+                                                    _updateImageCropScale(
+                                                      elementId: elementId,
+                                                      scale: scale,
                                                       persist: persist,
                                                     );
                                                   },
@@ -3968,6 +4340,8 @@ class _BlankPageState extends State<BlankPage> {
                               onImportImages: _importImages,
                               importedImagePaths: _importedImagePaths,
                               onTapImportedImage: _addImageElementFromPath,
+                              onLongPressImportedImage:
+                                  _showImportedImagePreview,
                             ),
                           ]
                         : <Widget>[
@@ -3990,6 +4364,8 @@ class _BlankPageState extends State<BlankPage> {
                               onImportImages: _importImages,
                               importedImagePaths: _importedImagePaths,
                               onTapImportedImage: _addImageElementFromPath,
+                              onLongPressImportedImage:
+                                  _showImportedImagePreview,
                             ),
                             _ImagePositionTabPage(
                               selectedElement: _selectedImageElement!,
@@ -3998,6 +4374,11 @@ class _BlankPageState extends State<BlankPage> {
                             ),
                             _ImageSettingsTabPage(
                               selectedElement: _selectedImageElement!,
+                              isCropping:
+                                  _croppingElementId ==
+                                  _selectedImageElement!.id,
+                              onStartCrop: _startCroppingSelectedImage,
+                              onFinishCrop: _finishCroppingSelectedImage,
                               onAspectSelected: _updateSelectedImageAspect,
                             ),
                           ],
@@ -4051,6 +4432,7 @@ class _CanvasViewport extends StatelessWidget {
     required this.showBorder,
     required this.showPageDivider,
     required this.selectedElementId,
+    required this.croppingElementId,
     required this.deleteArmedElementId,
     required this.snapGuides,
     required this.onTapCanvas,
@@ -4058,6 +4440,8 @@ class _CanvasViewport extends StatelessWidget {
     required this.onDoubleTapElement,
     required this.onMoveElement,
     required this.onResizeElement,
+    required this.onCropMove,
+    required this.onCropScale,
     required this.onDeleteElement,
     required this.onConfirmDeleteElement,
     required this.onCancelDeleteElement,
@@ -4072,6 +4456,7 @@ class _CanvasViewport extends StatelessWidget {
   final bool showBorder;
   final bool showPageDivider;
   final String? selectedElementId;
+  final String? croppingElementId;
   final String? deleteArmedElementId;
   final List<_SnapGuide> snapGuides;
   final VoidCallback onTapCanvas;
@@ -4081,6 +4466,9 @@ class _CanvasViewport extends StatelessWidget {
   onMoveElement;
   final void Function(String elementId, double width, bool persist)
   onResizeElement;
+  final void Function(String elementId, double x, double y, bool persist)
+  onCropMove;
+  final void Function(String elementId, double scale, bool persist) onCropScale;
   final ValueChanged<String> onDeleteElement;
   final ValueChanged<String> onConfirmDeleteElement;
   final ValueChanged<String> onCancelDeleteElement;
@@ -4143,6 +4531,7 @@ class _CanvasViewport extends StatelessWidget {
                                             element: element,
                                             isSelected: false,
                                             isDeleteArmed: false,
+                                            isCropMode: false,
                                             pageWidth: constraints.maxWidth,
                                             pageHeight: constraints.maxHeight,
                                             pageOffsetX:
@@ -4153,6 +4542,8 @@ class _CanvasViewport extends StatelessWidget {
                                             onDoubleTap: () {},
                                             onMove: (_, _, _) {},
                                             onResize: (_, _) {},
+                                            onCropMove: (_, _, _) {},
+                                            onCropScale: (_, _) {},
                                             onDelete: () {},
                                             onConfirmDelete: () {},
                                             onCancelDelete: () {},
@@ -4168,6 +4559,7 @@ class _CanvasViewport extends StatelessWidget {
                                   isSelected: selectedElementId == element.id,
                                   isDeleteArmed:
                                       deleteArmedElementId == element.id,
+                                  isCropMode: croppingElementId == element.id,
                                   canvasWidth: constraints.maxWidth,
                                   canvasHeight: constraints.maxHeight,
                                   onTap: () => onTapElement(element.id),
@@ -4178,6 +4570,12 @@ class _CanvasViewport extends StatelessWidget {
                                   },
                                   onResize: (width, persist) {
                                     onResizeElement(element.id, width, persist);
+                                  },
+                                  onCropMove: (x, y, persist) {
+                                    onCropMove(element.id, x, y, persist);
+                                  },
+                                  onCropScale: (scale, persist) {
+                                    onCropScale(element.id, scale, persist);
                                   },
                                   onDelete: () => onDeleteElement(element.id),
                                   onConfirmDelete: () =>
@@ -4229,6 +4627,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
     required this.exportRepaintKey,
     required this.showBorder,
     required this.selectedElementId,
+    required this.croppingElementId,
     required this.deleteArmedElementId,
     required this.snapGuides,
     required this.onTapCanvas,
@@ -4236,6 +4635,8 @@ class _PreviewCanvasStrip extends StatelessWidget {
     required this.onDoubleTapElement,
     required this.onMoveElement,
     required this.onResizeElement,
+    required this.onCropMove,
+    required this.onCropScale,
     required this.onDeleteElement,
     required this.onConfirmDeleteElement,
     required this.onCancelDeleteElement,
@@ -4248,6 +4649,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
   final GlobalKey exportRepaintKey;
   final bool showBorder;
   final String? selectedElementId;
+  final String? croppingElementId;
   final String? deleteArmedElementId;
   final List<_SnapGuide> snapGuides;
   final VoidCallback onTapCanvas;
@@ -4268,6 +4670,9 @@ class _PreviewCanvasStrip extends StatelessWidget {
     bool persist,
   )
   onResizeElement;
+  final void Function(String elementId, double x, double y, bool persist)
+  onCropMove;
+  final void Function(String elementId, double scale, bool persist) onCropScale;
   final void Function(String pageId, String elementId) onDeleteElement;
   final void Function(String pageId, String elementId) onConfirmDeleteElement;
   final ValueChanged<String> onCancelDeleteElement;
@@ -4328,6 +4733,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
                                         element: element,
                                         isSelected: false,
                                         isDeleteArmed: false,
+                                        isCropMode: false,
                                         pageWidth: constraints.maxWidth,
                                         pageHeight: constraints.maxHeight,
                                         pageOffsetX:
@@ -4338,6 +4744,8 @@ class _PreviewCanvasStrip extends StatelessWidget {
                                         onDoubleTap: () {},
                                         onMove: (_, _, _) {},
                                         onResize: (_, _) {},
+                                        onCropMove: (_, _, _) {},
+                                        onCropScale: (_, _) {},
                                         onDelete: () {},
                                         onConfirmDelete: () {},
                                         onCancelDelete: () {},
@@ -4360,6 +4768,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
                   element: element,
                   isSelected: selectedElementId == element.id,
                   isDeleteArmed: deleteArmedElementId == element.id,
+                  isCropMode: croppingElementId == element.id,
                   pageWidth: viewportWidth,
                   pageHeight:
                       viewportWidth *
@@ -4377,6 +4786,12 @@ class _PreviewCanvasStrip extends StatelessWidget {
                   },
                   onResize: (width, persist) {
                     onResizeElement(pages[i].id, element.id, width, persist);
+                  },
+                  onCropMove: (x, y, persist) {
+                    onCropMove(element.id, x, y, persist);
+                  },
+                  onCropScale: (scale, persist) {
+                    onCropScale(element.id, scale, persist);
                   },
                   onDelete: () => onDeleteElement(pages[i].id, element.id),
                   onConfirmDelete: () =>
@@ -4585,17 +5000,159 @@ class _DashedGuidePainter extends CustomPainter {
   }
 }
 
+class _CroppedImageFile extends StatelessWidget {
+  const _CroppedImageFile({
+    required this.path,
+    required this.frameWidth,
+    required this.frameHeight,
+    required this.sourceAspectRatio,
+    required this.cropOffsetX,
+    required this.cropOffsetY,
+    required this.cropScale,
+    required this.cacheWidth,
+  });
+
+  final String path;
+  final double frameWidth;
+  final double frameHeight;
+  final double sourceAspectRatio;
+  final double cropOffsetX;
+  final double cropOffsetY;
+  final double cropScale;
+  final int cacheWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final frameAspectRatio = frameWidth / frameHeight;
+    final safeSourceAspectRatio = sourceAspectRatio <= 0
+        ? frameAspectRatio
+        : sourceAspectRatio;
+    final safeCropScale = cropScale < 1 ? 1.0 : cropScale;
+    var imageWidth = frameWidth;
+    var imageHeight = frameHeight;
+
+    if (safeSourceAspectRatio > frameAspectRatio) {
+      imageHeight = frameHeight;
+      imageWidth = imageHeight * safeSourceAspectRatio;
+    } else {
+      imageWidth = frameWidth;
+      imageHeight = imageWidth / safeSourceAspectRatio;
+    }
+
+    imageWidth *= safeCropScale;
+    imageHeight *= safeCropScale;
+    final left = _clampCropImageOffset(
+      ((frameWidth - imageWidth) / 2) + (cropOffsetX * frameWidth),
+      frameWidth - imageWidth,
+      0,
+    );
+    final top = _clampCropImageOffset(
+      ((frameHeight - imageHeight) / 2) + (cropOffsetY * frameHeight),
+      frameHeight - imageHeight,
+      0,
+    );
+
+    return Stack(
+      clipBehavior: Clip.hardEdge,
+      children: [
+        Positioned(
+          left: left,
+          top: top,
+          width: imageWidth,
+          height: imageHeight,
+          child: Image.file(
+            File(path),
+            fit: BoxFit.fill,
+            cacheWidth: cacheWidth,
+            filterQuality: FilterQuality.low,
+            gaplessPlayback: true,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ImagePathPreviewDialog extends StatelessWidget {
+  const _ImagePathPreviewDialog({required this.imagePath});
+
+  final String imagePath;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => Navigator.of(context).pop(),
+      child: Material(
+        color: Colors.transparent,
+        child: SafeArea(
+          child: Center(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final maxWidth = constraints.maxWidth * 0.88;
+                final maxHeight = constraints.maxHeight * 0.78;
+
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {},
+                  child: Container(
+                    constraints: BoxConstraints(
+                      maxWidth: maxWidth,
+                      maxHeight: maxHeight,
+                    ),
+                    clipBehavior: Clip.hardEdge,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.26),
+                          blurRadius: 34,
+                          offset: const Offset(0, 18),
+                        ),
+                      ],
+                    ),
+                    child: Image.file(
+                      File(imagePath),
+                      fit: BoxFit.contain,
+                      filterQuality: FilterQuality.medium,
+                      gaplessPlayback: true,
+                      errorBuilder: (context, error, stackTrace) =>
+                          const SizedBox(
+                            width: 220,
+                            height: 160,
+                            child: Icon(
+                              Icons.broken_image_outlined,
+                              size: 34,
+                              color: Color(0xFF8A8A8A),
+                            ),
+                          ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ImageElementWidget extends StatefulWidget {
   const _ImageElementWidget({
     required this.element,
     required this.isSelected,
     required this.isDeleteArmed,
+    required this.isCropMode,
     required this.canvasWidth,
     required this.canvasHeight,
     required this.onTap,
     required this.onDoubleTap,
     required this.onMove,
     required this.onResize,
+    required this.onCropMove,
+    required this.onCropScale,
     required this.onDelete,
     required this.onConfirmDelete,
     required this.onCancelDelete,
@@ -4604,12 +5161,15 @@ class _ImageElementWidget extends StatefulWidget {
   final CanvasElement element;
   final bool isSelected;
   final bool isDeleteArmed;
+  final bool isCropMode;
   final double canvasWidth;
   final double canvasHeight;
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
   final void Function(double x, double y, bool persist) onMove;
   final void Function(double width, bool persist) onResize;
+  final void Function(double x, double y, bool persist) onCropMove;
+  final void Function(double scale, bool persist) onCropScale;
   final VoidCallback onDelete;
   final VoidCallback onConfirmDelete;
   final VoidCallback onCancelDelete;
@@ -4622,6 +5182,10 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
   late double _currentX;
   late double _currentY;
   late double _currentWidth;
+  late double _currentCropOffsetX;
+  late double _currentCropOffsetY;
+  late double _currentCropScale;
+  late double _resizeStartCropScale;
   bool _isResizing = false;
   late double _resizeStartWidth;
   late Offset _resizeStartGlobalPosition;
@@ -4652,9 +5216,11 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
         onTap: widget.onTap,
         onDoubleTap: widget.isDeleteArmed
             ? widget.onCancelDelete
+            : widget.isCropMode
+            ? null
             : widget.onDoubleTap,
         onLongPress: () {
-          if (_isResizing) {
+          if (_isResizing || widget.isCropMode) {
             return;
           }
           widget.onTap();
@@ -4668,6 +5234,11 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
             widget.onCancelDelete();
             return;
           }
+          if (widget.isCropMode) {
+            _currentCropOffsetX = _cropOffsetXFromData(widget.element.data);
+            _currentCropOffsetY = _cropOffsetYFromData(widget.element.data);
+            return;
+          }
           _currentX = widget.element.x;
           _currentY = widget.element.y;
           widget.onTap();
@@ -4676,12 +5247,22 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
           if (_isResizing) {
             return;
           }
+          if (widget.isCropMode) {
+            _currentCropOffsetX += details.delta.dx / width;
+            _currentCropOffsetY += details.delta.dy / height;
+            widget.onCropMove(_currentCropOffsetX, _currentCropOffsetY, false);
+            return;
+          }
           _currentX += details.delta.dx / widget.canvasWidth;
           _currentY += details.delta.dy / widget.canvasHeight;
           widget.onMove(_currentX, _currentY, false);
         },
         onPanEnd: (_) {
           if (_isResizing) {
+            return;
+          }
+          if (widget.isCropMode) {
+            widget.onCropMove(_currentCropOffsetX, _currentCropOffsetY, true);
             return;
           }
           widget.onMove(_currentX, _currentY, true);
@@ -4706,16 +5287,24 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                         size: 24,
                       ),
                     )
-                  : Image.file(
-                      File(src),
-                      fit: BoxFit.cover,
+                  : _CroppedImageFile(
+                      path: src,
+                      frameWidth: width,
+                      frameHeight: height,
+                      sourceAspectRatio:
+                          (widget.element.data['originalAspectRatio'] as num?)
+                              ?.toDouble() ??
+                          (widget.element.data['aspectRatio'] as num?)
+                              ?.toDouble() ??
+                          (width / height),
+                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                      cropScale: _cropScaleFromData(widget.element.data),
                       cacheWidth: _previewImageCacheExtent(
                         context,
                         width,
                         height,
                       ),
-                      filterQuality: FilterQuality.low,
-                      gaplessPlayback: true,
                     ),
             ),
             _DeleteConfirmOverlay(
@@ -4757,8 +5346,15 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                       behavior: HitTestBehavior.opaque,
                       onPanStart: (details) {
                         _isResizing = true;
-                        _resizeStartWidth = widget.element.width;
-                        _currentWidth = widget.element.width;
+                        if (widget.isCropMode) {
+                          _resizeStartCropScale = _cropScaleFromData(
+                            widget.element.data,
+                          );
+                          _currentCropScale = _resizeStartCropScale;
+                        } else {
+                          _resizeStartWidth = widget.element.width;
+                          _currentWidth = widget.element.width;
+                        }
                         _resizeStartGlobalPosition = details.globalPosition;
                       },
                       onPanUpdate: (details) {
@@ -4772,6 +5368,14 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                             (widget.element.data['aspectRatio'] as num?)
                                 ?.toDouble() ??
                             (widget.element.width / widget.element.height);
+                        if (widget.isCropMode) {
+                          final scaleDelta =
+                              (totalDx / width) + (totalDy / height);
+                          _currentCropScale =
+                              _resizeStartCropScale + (scaleDelta * 0.8);
+                          widget.onCropScale(_currentCropScale, false);
+                          return;
+                        }
                         final scaleDelta =
                             (totalDx / widget.canvasWidth) +
                             ((totalDy / widget.canvasHeight) * aspectRatio);
@@ -4780,6 +5384,10 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                       },
                       onPanEnd: (_) {
                         _isResizing = false;
+                        if (widget.isCropMode) {
+                          widget.onCropScale(_currentCropScale, true);
+                          return;
+                        }
                         widget.onResize(_currentWidth, true);
                       },
                       onPanCancel: () {
@@ -4832,6 +5440,7 @@ class _PreviewImageElementWidget extends StatefulWidget {
     required this.element,
     required this.isSelected,
     required this.isDeleteArmed,
+    required this.isCropMode,
     required this.pageWidth,
     required this.pageHeight,
     required this.pageOffsetX,
@@ -4840,6 +5449,8 @@ class _PreviewImageElementWidget extends StatefulWidget {
     required this.onDoubleTap,
     required this.onMove,
     required this.onResize,
+    required this.onCropMove,
+    required this.onCropScale,
     required this.onDelete,
     required this.onConfirmDelete,
     required this.onCancelDelete,
@@ -4848,6 +5459,7 @@ class _PreviewImageElementWidget extends StatefulWidget {
   final CanvasElement element;
   final bool isSelected;
   final bool isDeleteArmed;
+  final bool isCropMode;
   final double pageWidth;
   final double pageHeight;
   final double pageOffsetX;
@@ -4856,6 +5468,8 @@ class _PreviewImageElementWidget extends StatefulWidget {
   final VoidCallback onDoubleTap;
   final void Function(double x, double y, bool persist) onMove;
   final void Function(double width, bool persist) onResize;
+  final void Function(double x, double y, bool persist) onCropMove;
+  final void Function(double scale, bool persist) onCropScale;
   final VoidCallback onDelete;
   final VoidCallback onConfirmDelete;
   final VoidCallback onCancelDelete;
@@ -4870,6 +5484,10 @@ class _PreviewImageElementWidgetState
   late double _currentX;
   late double _currentY;
   late double _currentWidth;
+  late double _currentCropOffsetX;
+  late double _currentCropOffsetY;
+  late double _currentCropScale;
+  late double _resizeStartCropScale;
   bool _isResizing = false;
   late double _resizeStartWidth;
   late Offset _resizeStartGlobalPosition;
@@ -4900,9 +5518,11 @@ class _PreviewImageElementWidgetState
         onTap: widget.onTap,
         onDoubleTap: widget.isDeleteArmed
             ? widget.onCancelDelete
+            : widget.isCropMode
+            ? null
             : widget.onDoubleTap,
         onLongPress: () {
-          if (_isResizing) {
+          if (_isResizing || widget.isCropMode) {
             return;
           }
           widget.onTap();
@@ -4916,6 +5536,11 @@ class _PreviewImageElementWidgetState
             widget.onCancelDelete();
             return;
           }
+          if (widget.isCropMode) {
+            _currentCropOffsetX = _cropOffsetXFromData(widget.element.data);
+            _currentCropOffsetY = _cropOffsetYFromData(widget.element.data);
+            return;
+          }
           _currentX = widget.element.x;
           _currentY = widget.element.y;
           widget.onTap();
@@ -4924,12 +5549,22 @@ class _PreviewImageElementWidgetState
           if (_isResizing) {
             return;
           }
+          if (widget.isCropMode) {
+            _currentCropOffsetX += details.delta.dx / width;
+            _currentCropOffsetY += details.delta.dy / height;
+            widget.onCropMove(_currentCropOffsetX, _currentCropOffsetY, false);
+            return;
+          }
           _currentX += details.delta.dx / widget.pageWidth;
           _currentY += details.delta.dy / widget.pageHeight;
           widget.onMove(_currentX, _currentY, false);
         },
         onPanEnd: (_) {
           if (_isResizing) {
+            return;
+          }
+          if (widget.isCropMode) {
+            widget.onCropMove(_currentCropOffsetX, _currentCropOffsetY, true);
             return;
           }
           widget.onMove(_currentX, _currentY, true);
@@ -4954,16 +5589,24 @@ class _PreviewImageElementWidgetState
                         size: 24,
                       ),
                     )
-                  : Image.file(
-                      File(src),
-                      fit: BoxFit.cover,
+                  : _CroppedImageFile(
+                      path: src,
+                      frameWidth: width,
+                      frameHeight: height,
+                      sourceAspectRatio:
+                          (widget.element.data['originalAspectRatio'] as num?)
+                              ?.toDouble() ??
+                          (widget.element.data['aspectRatio'] as num?)
+                              ?.toDouble() ??
+                          (width / height),
+                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                      cropScale: _cropScaleFromData(widget.element.data),
                       cacheWidth: _previewImageCacheExtent(
                         context,
                         width,
                         height,
                       ),
-                      filterQuality: FilterQuality.low,
-                      gaplessPlayback: true,
                     ),
             ),
             _DeleteConfirmOverlay(
@@ -5005,8 +5648,15 @@ class _PreviewImageElementWidgetState
                       behavior: HitTestBehavior.opaque,
                       onPanStart: (details) {
                         _isResizing = true;
-                        _resizeStartWidth = widget.element.width;
-                        _currentWidth = widget.element.width;
+                        if (widget.isCropMode) {
+                          _resizeStartCropScale = _cropScaleFromData(
+                            widget.element.data,
+                          );
+                          _currentCropScale = _resizeStartCropScale;
+                        } else {
+                          _resizeStartWidth = widget.element.width;
+                          _currentWidth = widget.element.width;
+                        }
                         _resizeStartGlobalPosition = details.globalPosition;
                       },
                       onPanUpdate: (details) {
@@ -5020,6 +5670,14 @@ class _PreviewImageElementWidgetState
                             (widget.element.data['aspectRatio'] as num?)
                                 ?.toDouble() ??
                             (widget.element.width / widget.element.height);
+                        if (widget.isCropMode) {
+                          final scaleDelta =
+                              (totalDx / width) + (totalDy / height);
+                          _currentCropScale =
+                              _resizeStartCropScale + (scaleDelta * 0.8);
+                          widget.onCropScale(_currentCropScale, false);
+                          return;
+                        }
                         final scaleDelta =
                             (totalDx / widget.pageWidth) +
                             ((totalDy / widget.pageHeight) * aspectRatio);
@@ -5028,6 +5686,10 @@ class _PreviewImageElementWidgetState
                       },
                       onPanEnd: (_) {
                         _isResizing = false;
+                        if (widget.isCropMode) {
+                          widget.onCropScale(_currentCropScale, true);
+                          return;
+                        }
                         widget.onResize(_currentWidth, true);
                       },
                       onPanCancel: () {
@@ -5273,12 +5935,14 @@ class _PressableScale extends StatefulWidget {
   const _PressableScale({
     required this.child,
     this.onTap,
+    this.onLongPress,
     this.enabled = true,
     this.pressedScale = 0.96,
   });
 
   final Widget child;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
   final bool enabled;
   final double pressedScale;
 
@@ -5289,7 +5953,8 @@ class _PressableScale extends StatefulWidget {
 class _PressableScaleState extends State<_PressableScale> {
   bool _pressed = false;
 
-  bool get _isEnabled => widget.enabled && widget.onTap != null;
+  bool get _isEnabled =>
+      widget.enabled && (widget.onTap != null || widget.onLongPress != null);
 
   @override
   void didUpdateWidget(covariant _PressableScale oldWidget) {
@@ -5315,7 +5980,8 @@ class _PressableScaleState extends State<_PressableScale> {
       onTapDown: (_) => _setPressed(true),
       onTapUp: (_) => _setPressed(false),
       onTapCancel: () => _setPressed(false),
-      onTap: _isEnabled ? widget.onTap : null,
+      onTap: widget.enabled ? widget.onTap : null,
+      onLongPress: widget.enabled ? widget.onLongPress : null,
       child: AnimatedScale(
         scale: _pressed ? widget.pressedScale : 1,
         duration: const Duration(milliseconds: 90),
@@ -5927,11 +6593,13 @@ class _ElementTabPage extends StatelessWidget {
     required this.onImportImages,
     required this.importedImagePaths,
     required this.onTapImportedImage,
+    required this.onLongPressImportedImage,
   });
 
   final VoidCallback onImportImages;
   final List<String> importedImagePaths;
   final ValueChanged<String> onTapImportedImage;
+  final ValueChanged<String> onLongPressImportedImage;
 
   @override
   Widget build(BuildContext context) {
@@ -5954,6 +6622,7 @@ class _ElementTabPage extends StatelessWidget {
             _ImportedImageCard(
               imagePath: imagePath,
               onTap: () => onTapImportedImage(imagePath),
+              onLongPress: () => onLongPressImportedImage(imagePath),
             ),
           ],
         ],
@@ -5978,6 +6647,18 @@ class _ImagePositionTabPage extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16),
+          child: Text(
+            '\u4f4d\u7f6e\u5fae\u8abf',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF6A6A6A),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -6006,6 +6687,18 @@ class _ImagePositionTabPage extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16),
+          child: Text(
+            '\u81ea\u52d5\u5438\u9644\u958b\u95dc',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF6A6A6A),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
         Expanded(
           child: _ImageSnapTabPage(
             selectedElement: selectedElement,
@@ -6020,10 +6713,16 @@ class _ImagePositionTabPage extends StatelessWidget {
 class _ImageSettingsTabPage extends StatelessWidget {
   const _ImageSettingsTabPage({
     required this.selectedElement,
+    required this.isCropping,
+    required this.onStartCrop,
+    required this.onFinishCrop,
     required this.onAspectSelected,
   });
 
   final CanvasElement selectedElement;
+  final bool isCropping;
+  final VoidCallback onStartCrop;
+  final VoidCallback onFinishCrop;
   final ValueChanged<_ImageAspectOption> onAspectSelected;
 
   @override
@@ -6036,6 +6735,15 @@ class _ImageSettingsTabPage extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _CropActionCard(
+            label: isCropping ? '\u5b8c\u6210' : '\u88c1\u5207',
+            icon: isCropping ? Icons.check_rounded : Icons.crop_rounded,
+            selected: isCropping,
+            onTap: isCropping ? onFinishCrop : onStartCrop,
+          ),
+          const SizedBox(width: 12),
+          Container(width: 1, height: 75, color: const Color(0xFFD6D6D6)),
+          const SizedBox(width: 12),
           for (var i = 0; i < _imageAspectOptions.length; i++) ...[
             _ImageAspectCard(
               option: _imageAspectOptions[i],
@@ -6532,6 +7240,59 @@ class _PageColorCard extends StatelessWidget {
   }
 }
 
+class _CropActionCard extends StatelessWidget {
+  const _CropActionCard({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return _PressableScale(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeInOut,
+        width: 96,
+        height: 75,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: selected ? kPrimaryAccentColor : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              icon,
+              size: 22,
+              color: selected ? Colors.white : const Color(0xFF1F1F1F),
+            ),
+            const Spacer(),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: selected ? Colors.white : const Color(0xFF1F1F1F),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ImageAspectCard extends StatelessWidget {
   const _ImageAspectCard({
     required this.option,
@@ -6660,10 +7421,15 @@ class _ElementOptionCard extends StatelessWidget {
 }
 
 class _ImportedImageCard extends StatelessWidget {
-  const _ImportedImageCard({required this.imagePath, required this.onTap});
+  const _ImportedImageCard({
+    required this.imagePath,
+    required this.onTap,
+    required this.onLongPress,
+  });
 
   final String imagePath;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   Future<ui.Size?> _decodeSize() async {
     final bytes = await File(imagePath).readAsBytes();
@@ -6689,6 +7455,7 @@ class _ImportedImageCard extends StatelessWidget {
 
         return _PressableScale(
           onTap: onTap,
+          onLongPress: onLongPress,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 160),
             curve: Curves.easeInOut,
@@ -6710,7 +7477,7 @@ class _ImportedImageCard extends StatelessWidget {
                   height: imageHeight,
                   fit: BoxFit.fitHeight,
                   gaplessPlayback: true,
-                  errorBuilder: (_, __, ___) => const SizedBox(
+                  errorBuilder: (context, error, stackTrace) => const SizedBox(
                     width: 56,
                     height: 56,
                     child: Icon(
