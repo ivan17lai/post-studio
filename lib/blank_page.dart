@@ -17,6 +17,8 @@ enum PageDisplayMode { single, preview }
 
 enum ExportQualityMode { igStandard1080, high2400 }
 
+typedef _PreparedImageAsset = ({String displayPath, String originalPath});
+
 Color _pageBackgroundColorFromExtras(Map<String, dynamic> extras) {
   final colorValue =
       (extras['backgroundColorValue'] as num?)?.toInt() ?? Colors.white.value;
@@ -768,21 +770,34 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   String _importedImageOriginalPath(String displayPath) {
+    return _importedImageForPath(displayPath)?.originalPath ?? displayPath;
+  }
+
+  _PreparedImageAsset? _importedImageForPath(String path) {
+    if (path.isEmpty) {
+      return null;
+    }
     final rawList = _project.extras['importedImages'] as List<dynamic>?;
     if (rawList == null) {
-      return displayPath;
+      return null;
     }
 
     for (final item in rawList) {
-      if (item is Map && item['src'] == displayPath) {
-        final originalSrc = item['originalSrc'] as String?;
-        if (originalSrc != null && originalSrc.isNotEmpty) {
-          return originalSrc;
+      if (item is String && item == path) {
+        return (displayPath: item, originalPath: item);
+      }
+      if (item is Map) {
+        final src = item['src'] as String?;
+        final originalSrc = item['originalSrc'] as String? ?? src;
+        if (src == null || src.isEmpty) {
+          continue;
+        }
+        if (path == src || path == originalSrc) {
+          return (displayPath: src, originalPath: originalSrc ?? src);
         }
       }
     }
-
-    return displayPath;
+    return null;
   }
 
   List<dynamic> _mergedImportedImages(Iterable<dynamic> additions) {
@@ -791,16 +806,20 @@ class _BlankPageState extends State<BlankPage> {
       ...additions,
     ];
     final deduped = <dynamic>[];
-    final seenOriginalPaths = <String>{};
+    final seenPaths = <String>{};
     for (final item in merged) {
       if (item is String) {
-        if (seenOriginalPaths.add(item)) {
+        if (item.isNotEmpty && seenPaths.add(item)) {
           deduped.add(item);
         }
       } else if (item is Map) {
-        final originalSrc =
-            (item['originalSrc'] as String?) ?? (item['src'] as String?) ?? '';
-        if (originalSrc.isNotEmpty && seenOriginalPaths.add(originalSrc)) {
+        final src = item['src'] as String? ?? '';
+        final originalSrc = item['originalSrc'] as String? ?? '';
+        final keys = <String>{src, originalSrc}
+          ..removeWhere((path) => path.isEmpty);
+        if (keys.isNotEmpty &&
+            keys.every((path) => !seenPaths.contains(path))) {
+          seenPaths.addAll(keys);
           deduped.add(item);
         }
       }
@@ -809,7 +828,7 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   Future<void> _rememberPreparedImages(
-    Iterable<({String displayPath, String originalPath})> preparedImages,
+    Iterable<_PreparedImageAsset> preparedImages,
   ) async {
     final additions = preparedImages
         .map(
@@ -829,9 +848,7 @@ class _BlankPageState extends State<BlankPage> {
     });
   }
 
-  Future<({String displayPath, String originalPath})> _prepareImageAsset(
-    String sourcePath,
-  ) async {
+  Future<_PreparedImageAsset> _prepareImageAsset(String sourcePath) async {
     if (mounted) {
       setState(() {
         _isPreparingImage = true;
@@ -1623,10 +1640,13 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final preparedImage = await _prepareImageAsset(
-      _importedImageOriginalPath(path),
-    );
-    await _rememberPreparedImages([preparedImage]);
+    final existingImport = _importedImageForPath(path);
+    final preparedImage =
+        existingImport ??
+        await _prepareImageAsset(_importedImageOriginalPath(path));
+    if (existingImport == null) {
+      await _rememberPreparedImages([preparedImage]);
+    }
 
     final size = await _decodeImageSize(preparedImage.displayPath);
     if (size == null || size.height == 0) {
@@ -1680,18 +1700,34 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final importedImages = <Map<String, dynamic>>[];
+    final importedImages = <_PreparedImageAsset>[];
+    final seenSourcePaths = <String>{};
     for (final path in sourcePaths) {
-      final preparedImage = await _prepareImageAsset(path);
-      importedImages.add(<String, dynamic>{
-        'src': preparedImage.displayPath,
-        'originalSrc': preparedImage.originalPath,
-      });
+      if (path.isEmpty || !seenSourcePaths.add(path)) {
+        continue;
+      }
+      final existingImport = _importedImageForPath(path);
+      if (existingImport != null) {
+        importedImages.add(existingImport);
+        continue;
+      }
+      importedImages.add(await _prepareImageAsset(path));
+    }
+
+    if (importedImages.isEmpty) {
+      return;
     }
 
     await _saveProjectExtras(<String, dynamic>{
       ..._project.extras,
-      'importedImages': _mergedImportedImages(importedImages),
+      'importedImages': _mergedImportedImages(
+        importedImages.map(
+          (image) => <String, dynamic>{
+            'src': image.displayPath,
+            'originalSrc': image.originalPath,
+          },
+        ),
+      ),
     });
   }
 
@@ -1750,10 +1786,13 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final preparedImage = await _prepareImageAsset(
-      _importedImageOriginalPath(path),
-    );
-    await _rememberPreparedImages([preparedImage]);
+    final existingImport = _importedImageForPath(path);
+    final preparedImage =
+        existingImport ??
+        await _prepareImageAsset(_importedImageOriginalPath(path));
+    if (existingImport == null) {
+      await _rememberPreparedImages([preparedImage]);
+    }
 
     final size = await _decodeImageSize(preparedImage.displayPath);
     if (size == null || size.height == 0) {
@@ -3391,6 +3430,16 @@ class _BlankPageState extends State<BlankPage> {
       'pages': pagePayloads,
     };
 
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      final result = await _galleryChannel.invokeMethod<Uint8List>(
+        'renderPageToJpgNative',
+        payload,
+      );
+      if (result != null) {
+        return result;
+      }
+    }
+
     return compute(_renderSelectedPageJpgBytes, payload);
   }
 
@@ -4555,6 +4604,7 @@ class _CanvasViewport extends StatelessWidget {
                             for (final element in page.elements)
                               if (element.type == 'image')
                                 _ImageElementWidget(
+                                  key: ValueKey('canvas_${element.id}'),
                                   element: element,
                                   isSelected: selectedElementId == element.id,
                                   isDeleteArmed:
@@ -4765,6 +4815,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
             for (final element in pages[i].elements)
               if (element.type == 'image')
                 _PreviewImageElementWidget(
+                  key: ValueKey('preview_${element.id}'),
                   element: element,
                   isSelected: selectedElementId == element.id,
                   isDeleteArmed: deleteArmedElementId == element.id,
@@ -5112,22 +5163,7 @@ class _ImagePathPreviewDialog extends StatelessWidget {
                         ),
                       ],
                     ),
-                    child: Image.file(
-                      File(imagePath),
-                      fit: BoxFit.contain,
-                      filterQuality: FilterQuality.medium,
-                      gaplessPlayback: true,
-                      errorBuilder: (context, error, stackTrace) =>
-                          const SizedBox(
-                            width: 220,
-                            height: 160,
-                            child: Icon(
-                              Icons.broken_image_outlined,
-                              size: 34,
-                              color: Color(0xFF8A8A8A),
-                            ),
-                          ),
-                    ),
+                    child: HdrImageView(path: imagePath, fit: BoxFit.contain),
                   ),
                 );
               },
@@ -5141,6 +5177,7 @@ class _ImagePathPreviewDialog extends StatelessWidget {
 
 class _ImageElementWidget extends StatefulWidget {
   const _ImageElementWidget({
+    super.key,
     required this.element,
     required this.isSelected,
     required this.isDeleteArmed,
@@ -5241,7 +5278,9 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
           }
           _currentX = widget.element.x;
           _currentY = widget.element.y;
-          widget.onTap();
+          if (!widget.isSelected) {
+            widget.onTap();
+          }
         },
         onPanUpdate: (details) {
           if (_isResizing) {
@@ -5437,6 +5476,7 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
 
 class _PreviewImageElementWidget extends StatefulWidget {
   const _PreviewImageElementWidget({
+    super.key,
     required this.element,
     required this.isSelected,
     required this.isDeleteArmed,
@@ -5543,7 +5583,9 @@ class _PreviewImageElementWidgetState
           }
           _currentX = widget.element.x;
           _currentY = widget.element.y;
-          widget.onTap();
+          if (!widget.isSelected) {
+            widget.onTap();
+          }
         },
         onPanUpdate: (details) {
           if (_isResizing) {
@@ -7493,5 +7535,26 @@ class _ImportedImageCard extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+class HdrImageView extends StatelessWidget {
+  final String path;
+  final BoxFit fit;
+  const HdrImageView({required this.path, this.fit = BoxFit.fill, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return AndroidView(
+        viewType: 'igapp/hdr_image_view',
+        creationParams: <String, dynamic>{
+          'path': path,
+          'fit': fit == BoxFit.contain ? 'contain' : 'fill',
+        },
+        creationParamsCodec: const StandardMessageCodec(),
+      );
+    }
+    return Image.file(File(path), fit: fit, gaplessPlayback: true);
   }
 }
