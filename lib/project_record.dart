@@ -190,6 +190,24 @@ class CanvasElement {
     );
   }
 
+  factory CanvasElement.text({required String pageId}) {
+    return CanvasElement(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      type: 'text',
+      pageId: pageId,
+      x: 0.14,
+      y: 0.18,
+      width: 0.62,
+      height: 0.08,
+      allowCrossPage: false,
+      data: const <String, dynamic>{
+        'text': 'Text',
+        'fontSizeRatio': 0.075,
+        'colorValue': 0xFF111111,
+      },
+    );
+  }
+
   ProjectElementBounds get bounds =>
       ProjectElementBounds(x: x, y: y, width: width, height: height);
 

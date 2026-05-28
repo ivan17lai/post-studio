@@ -45,6 +45,66 @@ double _clampCropImageOffset(double value, double min, double max) {
   return value.clamp(min, max).toDouble();
 }
 
+String _textContentFromData(Map<String, dynamic> data) {
+  final text = data['text'] as String?;
+  if (text == null || text.trim().isEmpty) {
+    return 'Text';
+  }
+  return text;
+}
+
+double _textFontSizeRatioFromData(Map<String, dynamic> data) {
+  final value = (data['fontSizeRatio'] as num?)?.toDouble() ?? 0.075;
+  return value.clamp(0.025, 0.16).toDouble();
+}
+
+Color _textColorFromData(Map<String, dynamic> data) {
+  return Color((data['colorValue'] as num?)?.toInt() ?? 0xFF111111);
+}
+
+int _textLineCount(String text) {
+  return text.split('\n').length.clamp(1, 8);
+}
+
+double _textRenderedHeightRatio({
+  required CanvasElement element,
+  required ProjectPage page,
+}) {
+  final fontSizeRatio = _textFontSizeRatioFromData(element.data);
+  final lineCount = _textLineCount(_textContentFromData(element.data));
+  final height =
+      fontSizeRatio * (page.aspectWidth / page.aspectHeight) * 1.24 * lineCount;
+  return height.clamp(0.04, 0.9).toDouble();
+}
+
+SliderThemeData _lightControlSliderTheme(BuildContext context) {
+  return SliderTheme.of(context).copyWith(
+    trackHeight: 4,
+    activeTrackColor: const Color(0xFFCFCFCF),
+    inactiveTrackColor: const Color(0xFFE8E8E8),
+    thumbColor: Colors.white,
+    overlayColor: const Color(0x1A8F8F8F),
+    valueIndicatorColor: const Color(0xFFE0E0E0),
+    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+    overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
+  );
+}
+
+SliderThemeData _positionControlSliderTheme(BuildContext context) {
+  const trackColor = Color(0xFFD8D8D8);
+  return SliderTheme.of(context).copyWith(
+    trackHeight: 4,
+    activeTrackColor: trackColor,
+    inactiveTrackColor: trackColor,
+    secondaryActiveTrackColor: trackColor,
+    thumbColor: const Color(0xFF8F8F8F),
+    overlayColor: const Color(0x1A8F8F8F),
+    valueIndicatorColor: const Color(0xFFE0E0E0),
+    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+    overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
+  );
+}
+
 Uint8List _renderPageJpgBytes(Map<String, dynamic> payload) {
   const defaultWidth = 2400;
   const maxWidth = 6000;
@@ -443,6 +503,7 @@ bool _snapFlagForElement(CanvasElement element, String key) {
 enum _SnapGuideAxis { vertical, horizontal }
 
 const Color _selectionChromeColor = Color(0xFFBDBDBD);
+const double _canvasControlChromePadding = 9.0;
 
 class _SnapGuide {
   const _SnapGuide({
@@ -535,7 +596,8 @@ class _BlankPageState extends State<BlankPage> {
   static const String _tabImageSource = 'image_source';
   static const String _tabImagePosition = 'image_position';
   static const String _tabImageSettings = 'image_settings';
-  static const String _tabImageSnap = 'image_snap';
+  static const String _tabTextPosition = 'text_position';
+  static const String _tabTextSettings = 'text_settings';
   static const double _singlePagePeekViewportFraction = 0.78;
   static const double _singlePagePeekGap = 8.0;
   int _currentPageIndex = 0;
@@ -588,13 +650,30 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   bool _hasTwoOptionRows(String tab) =>
-      tab == _tabPage || tab == _tabImagePosition;
+      tab == _tabPage ||
+      tab == _tabImagePosition ||
+      tab == _tabImageSettings ||
+      tab == _tabTextSettings;
 
   bool _isImageTab(String tab) =>
       tab == _tabElements ||
       tab == _tabImagePosition ||
-      tab == _tabImageSettings ||
-      tab == _tabImageSnap;
+      tab == _tabImageSettings;
+
+  bool _isTextTab(String tab) =>
+      tab == _tabElements || tab == _tabTextPosition || tab == _tabTextSettings;
+
+  bool _isElementTab(String tab) {
+    final selectedImage = _selectedImageElement;
+    final selectedText = _selectedTextElement;
+    if (selectedImage != null) {
+      return _isImageTab(tab);
+    }
+    if (selectedText != null) {
+      return _isTextTab(tab);
+    }
+    return tab == _tabElements;
+  }
 
   bool _shouldUseSinglePagePeek({int? pageIndex, String? selectedTab}) {
     if (_displayMode != PageDisplayMode.single || _project.pages.isEmpty) {
@@ -661,12 +740,13 @@ class _BlankPageState extends State<BlankPage> {
       _tabTemplate => strings.t('template'),
       _tabElements =>
         _selectedImageElement == null
-            ? strings.t('image')
-            : '\u66f4\u63db\u5716\u7247',
+            ? strings.t('elements')
+            : '\u66ff\u63db\u5716\u7247',
       _tabImageSource => strings.t('imageSource'),
       _tabImagePosition => '\u5716\u7247\u4f4d\u7f6e',
       _tabImageSettings => '\u5716\u7247\u8a2d\u5b9a',
-      _tabImageSnap => strings.t('imageSnap'),
+      _tabTextPosition => '\u6587\u5b57\u4f4d\u7f6e',
+      _tabTextSettings => strings.t('text'),
       _ => tabKey,
     };
   }
@@ -715,6 +795,9 @@ class _BlankPageState extends State<BlankPage> {
     ProjectPage page, {
     double? width,
   }) {
+    if (element.type == 'text') {
+      return _textRenderedHeightRatio(element: element, page: page);
+    }
     final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
     final nextWidth = width ?? element.width;
     if (aspectRatio != null && aspectRatio > 0) {
@@ -974,10 +1057,19 @@ class _BlankPageState extends State<BlankPage> {
         _tabImageSettings,
       ];
     }
+    if (_selectedTextElement != null) {
+      return const <String>[
+        _tabPage,
+        _tabTemplate,
+        _tabElements,
+        _tabTextPosition,
+        _tabTextSettings,
+      ];
+    }
     return const <String>[_tabPage, _tabTemplate, _tabElements];
   }
 
-  CanvasElement? get _selectedImageElement {
+  CanvasElement? get _selectedElement {
     final selectedId = _selectedElementId;
     if (selectedId == null) {
       return null;
@@ -985,12 +1077,22 @@ class _BlankPageState extends State<BlankPage> {
 
     for (final page in _project.pages) {
       for (final element in page.elements) {
-        if (element.id == selectedId && element.type == 'image') {
+        if (element.id == selectedId) {
           return element;
         }
       }
     }
     return null;
+  }
+
+  CanvasElement? get _selectedImageElement {
+    final element = _selectedElement;
+    return element?.type == 'image' ? element : null;
+  }
+
+  CanvasElement? get _selectedTextElement {
+    final element = _selectedElement;
+    return element?.type == 'text' ? element : null;
   }
 
   void _syncBottomTab() {
@@ -1028,8 +1130,8 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final isImageTab = _isImageTab(tab);
-    final shouldClearSelection = _selectedImageElement != null && !isImageTab;
+    final shouldClearSelection =
+        _selectedElement != null && !_isElementTab(tab);
 
     setState(() {
       if (shouldClearSelection) {
@@ -1051,7 +1153,8 @@ class _BlankPageState extends State<BlankPage> {
     final shouldFallbackToElements =
         _selectedBottomTab == _tabImagePosition ||
         _selectedBottomTab == _tabImageSettings ||
-        _selectedBottomTab == _tabImageSnap;
+        _selectedBottomTab == _tabTextPosition ||
+        _selectedBottomTab == _tabTextSettings;
     setState(() {
       _selectedElementId = null;
       _croppingElementId = null;
@@ -1634,6 +1737,37 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
+  Future<void> _addTextElement() async {
+    final currentPage = _project.pages[_currentPageIndex];
+    final newElement = CanvasElement.text(pageId: currentPage.id);
+    final updatedPage = currentPage.copyWith(
+      elements: List<CanvasElement>.from(currentPage.elements)..add(newElement),
+    );
+
+    final updatedPages = List<ProjectPage>.from(_project.pages);
+    updatedPages[_currentPageIndex] = updatedPage;
+
+    await _saveProject(
+      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _selectedElementId = newElement.id;
+      _croppingElementId = null;
+      _deleteArmedElementId = null;
+      _selectedBottomTab = _tabTextSettings;
+    });
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.jumpToPage(
+        _bottomTabs.indexOf(_tabTextSettings),
+      );
+    }
+  }
+
   Future<void> _addImageElementFromPath(String path) async {
     if (_selectedImageElement != null) {
       await _applyPathToSelectedImage(path);
@@ -1932,7 +2066,7 @@ class _BlankPageState extends State<BlankPage> {
 
     ProjectRecord? reorderedProject;
     if (selectedElement != null &&
-        selectedElement.type == 'image' &&
+        (selectedElement.type == 'image' || selectedElement.type == 'text') &&
         selectedPageIndex != -1) {
       final selectedPage = _project.pages[selectedPageIndex];
       final isAlreadyTop =
@@ -1971,7 +2105,21 @@ class _BlankPageState extends State<BlankPage> {
       if (_croppingElementId != null && _croppingElementId != elementId) {
         _croppingElementId = null;
       }
-      if (_selectedBottomTab != _tabPage && !_isImageTab(_selectedBottomTab)) {
+      final isValidTabForSelectedElement = selectedElement?.type == 'image'
+          ? _isImageTab(_selectedBottomTab)
+          : selectedElement?.type == 'text'
+          ? _isTextTab(_selectedBottomTab)
+          : _selectedBottomTab == _tabElements;
+      if (_selectedBottomTab != _tabPage && !isValidTabForSelectedElement) {
+        _selectedBottomTab = selectedElement?.type == 'text'
+            ? _tabTextSettings
+            : _tabElements;
+      } else if (selectedElement?.type == 'text' &&
+          _selectedBottomTab == _tabElements) {
+        _selectedBottomTab = _tabTextSettings;
+      } else if (selectedElement?.type == 'image' &&
+          (_selectedBottomTab == _tabTextPosition ||
+              _selectedBottomTab == _tabTextSettings)) {
         _selectedBottomTab = _tabElements;
       }
       _refreshPageControllerViewportIfNeeded();
@@ -1990,6 +2138,33 @@ class _BlankPageState extends State<BlankPage> {
         _bottomTabs.indexOf(_selectedBottomTab),
       );
     }
+  }
+
+  void _handleElementDoubleTap({
+    required String pageId,
+    required String elementId,
+  }) {
+    final element = _findElementById(elementId);
+
+    if (_selectedElementId != elementId) {
+      _selectElement(elementId);
+    }
+    if (element?.type == 'text') {
+      unawaited(_showTextEditor(elementId));
+      return;
+    }
+    unawaited(_fitElementToCanvas(pageId: pageId, elementId: elementId));
+  }
+
+  CanvasElement? _findElementById(String elementId, {String? type}) {
+    for (final page in _project.pages) {
+      for (final item in page.elements) {
+        if (item.id == elementId && (type == null || item.type == type)) {
+          return item;
+        }
+      }
+    }
+    return null;
   }
 
   Future<void> _replaceElement(
@@ -2030,6 +2205,99 @@ class _BlankPageState extends State<BlankPage> {
       _hasPendingElementUndoSnapshot = false;
       await _saveProject(updatedProject);
     }
+  }
+
+  Future<void> _showTextEditor(String elementId) async {
+    final element = _findElementById(elementId, type: 'text');
+    if (element == null) {
+      return;
+    }
+
+    final nextText = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('\u7de8\u8f2f\u6587\u5b57'),
+          content: _TextEditorField(
+            initialText: _textContentFromData(element.data),
+          ),
+        );
+      },
+    );
+    if (!mounted || nextText == null) {
+      return;
+    }
+
+    final trimmedText = nextText.trim().isEmpty ? 'Text' : nextText.trim();
+    final latestElement = _findElementById(elementId, type: 'text');
+    if (latestElement == null ||
+        _textContentFromData(latestElement.data) == trimmedText) {
+      return;
+    }
+    _storeUndoSnapshot();
+    await _replaceElement(
+      latestElement.copyWith(
+        data: <String, dynamic>{...latestElement.data, 'text': trimmedText},
+      ),
+      persist: true,
+    );
+  }
+
+  Future<void> _updateSelectedTextColor(Color color) async {
+    final selectedText = _selectedTextElement;
+    if (selectedText == null) {
+      return;
+    }
+
+    _storeUndoSnapshot();
+    await _replaceElement(
+      selectedText.copyWith(
+        data: <String, dynamic>{
+          ...selectedText.data,
+          'colorValue': color.toARGB32(),
+        },
+      ),
+      persist: true,
+    );
+  }
+
+  void _updateSelectedTextSize(double fontSizeRatio, {required bool persist}) {
+    final selectedText = _selectedTextElement;
+    if (selectedText == null) {
+      return;
+    }
+    if (!persist && !_hasPendingElementUndoSnapshot) {
+      _storeUndoSnapshot();
+      _hasPendingElementUndoSnapshot = true;
+    }
+
+    final pageIndex = _project.pages.indexWhere(
+      (page) => page.id == selectedText.pageId,
+    );
+    if (pageIndex == -1) {
+      return;
+    }
+
+    final page = _project.pages[pageIndex];
+    final updatedData = <String, dynamic>{
+      ...selectedText.data,
+      'fontSizeRatio': fontSizeRatio.clamp(0.025, 0.16).toDouble(),
+    };
+    final updatedElement = selectedText.copyWith(data: updatedData);
+    final nextHeight = _textRenderedHeightRatio(
+      element: updatedElement,
+      page: page,
+    );
+    final maxY = (1 - nextHeight).clamp(0.0, 1.0);
+    unawaited(
+      _replaceElement(
+        updatedElement.copyWith(
+          height: nextHeight,
+          y: updatedElement.y.clamp(0.0, maxY),
+        ),
+        persist: persist,
+      ),
+    );
   }
 
   void _updateElementPosition({
@@ -2619,18 +2887,149 @@ class _BlankPageState extends State<BlankPage> {
     );
   }
 
-  Future<void> _updateSelectedImageSnapFlag(String key, bool enabled) async {
+  ({double value, double min, double max}) _imageSizeSliderRange(
+    CanvasElement image,
+  ) {
+    const min = 0.08;
+    var max = _displayMode == PageDisplayMode.single ? 1.0 : 2.2;
+    final pageIndex = _project.pages.indexWhere(
+      (page) => page.id == image.pageId,
+    );
+    if (pageIndex != -1) {
+      final page = _project.pages[pageIndex];
+      final aspectRatio =
+          (image.data['aspectRatio'] as num?)?.toDouble() ??
+          (image.width / image.height);
+      max = _maxElementResizeWidth(
+        page: page,
+        element: image,
+        aspectRatio: aspectRatio > 0 ? aspectRatio : 1.0,
+      );
+    }
+    if (max <= min) {
+      max = min + 0.001;
+    }
+    return (value: image.width.clamp(min, max).toDouble(), min: min, max: max);
+  }
+
+  ({double width, double height}) _elementPositionPagePixelSize(
+    CanvasElement element, {
+    required double singleCanvasWidth,
+    required double previewCanvasWidth,
+  }) {
+    final pageIndex = _project.pages.indexWhere(
+      (page) => page.id == element.pageId,
+    );
+    final page = pageIndex == -1
+        ? _project.pages[_currentPageIndex]
+        : _project.pages[pageIndex];
+    final width = _displayMode == PageDisplayMode.single
+        ? (singleCanvasWidth - (_canvasControlChromePadding * 2))
+              .clamp(1.0, singleCanvasWidth)
+              .toDouble()
+        : previewCanvasWidth.clamp(1.0, double.infinity).toDouble();
+    return (
+      width: width,
+      height: width * (page.aspectHeight / page.aspectWidth),
+    );
+  }
+
+  ({
+    double x,
+    double y,
+    double minX,
+    double maxX,
+    double minY,
+    double maxY,
+    double pixelStepX,
+    double pixelStepY,
+  })
+  _elementPositionSliderRange(
+    CanvasElement element, {
+    required ({double width, double height}) pagePixelSize,
+  }) {
+    final minX = _displayMode == PageDisplayMode.single ? 0.0 : -0.95;
+    var maxX = _displayMode == PageDisplayMode.single
+        ? (1 - element.width).clamp(0.0, 1.0).toDouble()
+        : 1.95;
+    const minY = 0.0;
+    var maxY = (1 - element.height).clamp(0.0, 1.0).toDouble();
+    final pageIndex = _project.pages.indexWhere(
+      (page) => page.id == element.pageId,
+    );
+    if (pageIndex != -1) {
+      final page = _project.pages[pageIndex];
+      maxY = (1 - _elementRenderedHeight(element, page))
+          .clamp(0.0, 1.0)
+          .toDouble();
+    }
+    if (maxX <= minX) {
+      maxX = minX + 0.001;
+    }
+    if (maxY <= minY) {
+      maxY = minY + 0.001;
+    }
+    return (
+      x: element.x.clamp(minX, maxX).toDouble(),
+      y: element.y.clamp(minY, maxY).toDouble(),
+      minX: minX,
+      maxX: maxX,
+      minY: minY,
+      maxY: maxY,
+      pixelStepX: 1 / pagePixelSize.width.clamp(1.0, double.infinity),
+      pixelStepY: 1 / pagePixelSize.height.clamp(1.0, double.infinity),
+    );
+  }
+
+  void _updateSelectedImagePositionFromSlider({
+    required double x,
+    required double y,
+    required bool persist,
+  }) {
     final selectedImage = _selectedImageElement;
     if (selectedImage == null) {
       return;
     }
+    _updateElementPosition(
+      pageId: selectedImage.pageId,
+      elementId: selectedImage.id,
+      x: x,
+      y: y,
+      persist: persist,
+    );
+  }
 
-    _storeUndoSnapshot();
-    await _replaceElement(
-      selectedImage.copyWith(
-        data: <String, dynamic>{...selectedImage.data, key: enabled},
-      ),
-      persist: true,
+  void _updateSelectedTextPositionFromSlider({
+    required double x,
+    required double y,
+    required bool persist,
+  }) {
+    final selectedText = _selectedTextElement;
+    if (selectedText == null) {
+      return;
+    }
+    _updateElementPosition(
+      pageId: selectedText.pageId,
+      elementId: selectedText.id,
+      x: x,
+      y: y,
+      persist: persist,
+    );
+  }
+
+  void _updateSelectedImageSizeFromSlider(
+    double width, {
+    required bool persist,
+  }) {
+    final selectedImage = _selectedImageElement;
+    if (selectedImage == null) {
+      return;
+    }
+    _updateElementSize(
+      pageId: selectedImage.pageId,
+      elementId: selectedImage.id,
+      width: width,
+      persist: persist,
     );
   }
 
@@ -2734,16 +3133,15 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final page = _project.pages[pageIndex];
-    const step = 0.01;
     final maxX = (1 - selectedImage.width).clamp(0.0, 1.0);
     final maxY = (1 - _elementRenderedHeight(selectedImage, page)).clamp(
       0.0,
       1.0,
     );
     final rawX = _displayMode == PageDisplayMode.single
-        ? (selectedImage.x + (dx * step)).clamp(0.0, maxX)
-        : (selectedImage.x + (dx * step)).clamp(-0.95, 1.95);
-    final rawY = (selectedImage.y + (dy * step)).clamp(0.0, maxY);
+        ? (selectedImage.x + dx).clamp(0.0, maxX)
+        : (selectedImage.x + dx).clamp(-0.95, 1.95);
+    final rawY = (selectedImage.y + dy).clamp(0.0, maxY);
 
     if (rawX == selectedImage.x && rawY == selectedImage.y) {
       return;
@@ -2762,6 +3160,51 @@ class _BlankPageState extends State<BlankPage> {
 
     await _replaceElement(
       selectedImage.copyWith(x: rawX, y: rawY),
+      persist: true,
+    );
+  }
+
+  Future<void> _nudgeSelectedText(double dx, double dy) async {
+    final selectedText = _selectedTextElement;
+    if (selectedText == null) {
+      return;
+    }
+
+    final pageIndex = _project.pages.indexWhere(
+      (page) => page.id == selectedText.pageId,
+    );
+    if (pageIndex == -1) {
+      return;
+    }
+
+    final page = _project.pages[pageIndex];
+    final maxX = (1 - selectedText.width).clamp(0.0, 1.0);
+    final maxY = (1 - _elementRenderedHeight(selectedText, page)).clamp(
+      0.0,
+      1.0,
+    );
+    final rawX = _displayMode == PageDisplayMode.single
+        ? (selectedText.x + dx).clamp(0.0, maxX)
+        : (selectedText.x + dx).clamp(-0.95, 1.95);
+    final rawY = (selectedText.y + dy).clamp(0.0, maxY);
+
+    if (rawX == selectedText.x && rawY == selectedText.y) {
+      return;
+    }
+
+    _storeUndoSnapshot();
+    if (_activeSnapGuides.isNotEmpty ||
+        _deleteArmedElementId == selectedText.id) {
+      setState(() {
+        _activeSnapGuides = const <_SnapGuide>[];
+        if (_deleteArmedElementId == selectedText.id) {
+          _deleteArmedElementId = null;
+        }
+      });
+    }
+
+    await _replaceElement(
+      selectedText.copyWith(x: rawX, y: rawY),
       persist: true,
     );
   }
@@ -2862,9 +3305,99 @@ class _BlankPageState extends State<BlankPage> {
     await _replaceElement(updatedElement, persist: true);
   }
 
+  Future<bool> _confirmApplyTemplateIfNeeded(ProjectPage page) async {
+    if (page.elements.isEmpty) {
+      return true;
+    }
+
+    final strings = AppStrings.of(context);
+    final shouldApply = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F4F4),
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Icon(
+                    Icons.layers_clear_rounded,
+                    size: 21,
+                    color: Color(0xFF6F6F6F),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  '\u5957\u7528\u6a21\u677f',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1F1F1F),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  '\u76ee\u524d\u9801\u9762\u5df2\u6709\u5167\u5bb9\uff0c'
+                  '\u5957\u7528\u6a21\u677f\u6703\u6e05\u7a7a\u539f\u6709'
+                  '\u5716\u7247\u8207\u6587\u5b57\u3002\u78ba\u5b9a\u8981'
+                  '\u6e05\u7a7a\u4e26\u5957\u7528\u55ce\uff1f',
+                  style: TextStyle(
+                    fontSize: 14,
+                    height: 1.4,
+                    color: Color(0xFF6A6A6A),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: strings.t('cancel'),
+                        onTap: () => Navigator.of(context).pop(false),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: '\u6e05\u7a7a\u5957\u7528',
+                        isPrimary: true,
+                        onTap: () => Navigator.of(context).pop(true),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    return shouldApply == true;
+  }
+
   Future<void> _applyTemplate(_TemplateOption option) async {
-    _storeUndoSnapshot();
     final currentPage = _project.pages[_currentPageIndex];
+    final shouldApply = await _confirmApplyTemplateIfNeeded(currentPage);
+    if (!mounted || !shouldApply) {
+      return;
+    }
+
+    _storeUndoSnapshot();
     final templateElements = option.buildElements(currentPage.id, currentPage);
     final updatedPage = currentPage.copyWith(
       elements: templateElements,
@@ -3288,6 +3821,16 @@ class _BlankPageState extends State<BlankPage> {
     ProjectPage page, {
     required int exportWidth,
   }) {
+    final pageIndex = _project.pages.indexWhere((item) => item.id == page.id);
+    if (pageIndex != -1 &&
+        page.elements.any((element) => element.type == 'text')) {
+      return _renderProjectPageInSetBytesWithFlutter(
+        exportWidth: exportWidth,
+        pageIndexes: <int>[pageIndex],
+        targetListIndex: 0,
+      );
+    }
+
     final payload = <String, dynamic>{
       'exportWidth': exportWidth,
       'aspectWidth': page.aspectWidth,
@@ -3337,11 +3880,197 @@ class _BlankPageState extends State<BlankPage> {
     return compute(_renderPageJpgBytes, payload);
   }
 
+  bool _pageIndexesContainText(List<int> pageIndexes) {
+    for (final pageIndex in pageIndexes) {
+      if (_project.pages[pageIndex].elements.any(
+        (element) => element.type == 'text',
+      )) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Future<ui.Image?> _decodeUiImageForExport(Uint8List bytes) {
+    final completer = Completer<ui.Image?>();
+    try {
+      ui.decodeImageFromList(bytes, completer.complete);
+    } catch (_) {
+      completer.complete(null);
+    }
+    return completer.future;
+  }
+
+  Future<Uint8List> _renderProjectPageInSetBytesWithFlutter({
+    required int exportWidth,
+    required List<int> pageIndexes,
+    required int targetListIndex,
+  }) async {
+    final targetOriginalIndex = pageIndexes[targetListIndex];
+    final targetPage = _project.pages[targetOriginalIndex];
+    final exportHeight =
+        (exportWidth * (targetPage.aspectHeight / targetPage.aspectWidth))
+            .round();
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final decodedImages = <ui.Image>[];
+
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, exportWidth.toDouble(), exportHeight.toDouble()),
+      Paint()
+        ..color = Color(
+          (targetPage.extras['backgroundColorValue'] as num?)?.toInt() ??
+              Colors.white.value,
+        ),
+    );
+
+    try {
+      for (
+        var sourceListIndex = 0;
+        sourceListIndex < pageIndexes.length;
+        sourceListIndex++
+      ) {
+        final sourceOriginalIndex = pageIndexes[sourceListIndex];
+        final sourcePage = _project.pages[sourceOriginalIndex];
+        for (final element in sourcePage.elements) {
+          if (sourceListIndex != targetListIndex) {
+            if (!element.allowCrossPage) {
+              continue;
+            }
+            final elementHeight = _elementRenderedHeight(element, sourcePage);
+            final left =
+                (sourceOriginalIndex - targetOriginalIndex) + element.x;
+            final right = left + element.width;
+            final top = element.y;
+            final bottom = top + elementHeight;
+            if (right <= 0 || left >= 1 || bottom <= 0 || top >= 1) {
+              continue;
+            }
+          }
+
+          final targetX =
+              ((element.x + sourceOriginalIndex - targetOriginalIndex) *
+                      exportWidth)
+                  .roundToDouble();
+          final targetY = (element.y * exportHeight).roundToDouble();
+
+          if (element.type == 'image') {
+            final src =
+                element.data['originalSrc'] as String? ??
+                element.data['src'] as String? ??
+                '';
+            final bytes = _exportImageBytesCache[src];
+            if (bytes == null) {
+              continue;
+            }
+            final sourceImage = await _decodeUiImageForExport(bytes);
+            if (sourceImage == null) {
+              continue;
+            }
+            decodedImages.add(sourceImage);
+
+            final aspectRatio =
+                (element.data['aspectRatio'] as num?)?.toDouble() ??
+                (sourceImage.width / sourceImage.height);
+            final targetWidth = (element.width * exportWidth)
+                .round()
+                .clamp(1, 20000)
+                .toDouble();
+            final targetHeight = (targetWidth / aspectRatio)
+                .round()
+                .clamp(1, 20000)
+                .toDouble();
+            final cropRect = _sourceCropRectForFrame(
+              sourceWidth: sourceImage.width,
+              sourceHeight: sourceImage.height,
+              frameAspectRatio: aspectRatio,
+              cropOffsetX: _cropOffsetXFromData(element.data),
+              cropOffsetY: _cropOffsetYFromData(element.data),
+              cropScale: _cropScaleFromData(element.data),
+            );
+            canvas.drawImageRect(
+              sourceImage,
+              Rect.fromLTWH(
+                cropRect.x.toDouble(),
+                cropRect.y.toDouble(),
+                cropRect.width.toDouble(),
+                cropRect.height.toDouble(),
+              ),
+              Rect.fromLTWH(targetX, targetY, targetWidth, targetHeight),
+              Paint()..filterQuality = FilterQuality.high,
+            );
+          } else if (element.type == 'text') {
+            final text = _textContentFromData(element.data);
+            final fontSize =
+                _textFontSizeRatioFromData(element.data) * exportWidth;
+            final maxWidth = (element.width * exportWidth)
+                .round()
+                .clamp(1, 20000)
+                .toDouble();
+            final textPainter = TextPainter(
+              text: TextSpan(
+                text: text,
+                style: TextStyle(
+                  color: _textColorFromData(element.data),
+                  fontSize: fontSize,
+                  height: 1.12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              textDirection: TextDirection.ltr,
+              maxLines: _textLineCount(text),
+            )..layout(maxWidth: maxWidth);
+            final clipHeight = textPainter.height
+                .clamp(1.0, exportHeight)
+                .toDouble();
+            canvas.save();
+            canvas.clipRect(
+              Rect.fromLTWH(targetX, targetY, maxWidth, clipHeight),
+            );
+            textPainter.paint(canvas, Offset(targetX, targetY));
+            canvas.restore();
+          }
+        }
+      }
+
+      final picture = recorder.endRecording();
+      final renderedImage = await picture.toImage(exportWidth, exportHeight);
+      picture.dispose();
+      try {
+        final byteData = await renderedImage.toByteData(
+          format: ui.ImageByteFormat.png,
+        );
+        if (byteData == null) {
+          throw StateError('Canvas conversion failed');
+        }
+        final decoded = img.decodeImage(byteData.buffer.asUint8List());
+        if (decoded == null) {
+          throw StateError('Image decode failed');
+        }
+        return Uint8List.fromList(img.encodeJpg(decoded, quality: 100));
+      } finally {
+        renderedImage.dispose();
+      }
+    } finally {
+      for (final image in decodedImages) {
+        image.dispose();
+      }
+    }
+  }
+
   Future<Uint8List> _renderProjectPageInSetBytesForGallery({
     required int exportWidth,
     required List<int> pageIndexes,
     required int targetListIndex,
   }) async {
+    if (_pageIndexesContainText(pageIndexes)) {
+      return _renderProjectPageInSetBytesWithFlutter(
+        exportWidth: exportWidth,
+        pageIndexes: pageIndexes,
+        targetListIndex: targetListIndex,
+      );
+    }
+
     final targetOriginalIndex = pageIndexes[targetListIndex];
     final usedImagePaths = <String>{};
 
@@ -4129,15 +4858,9 @@ class _BlankPageState extends State<BlankPage> {
                                                   onTapElement: _selectElement,
                                                   onDoubleTapElement:
                                                       (elementId) {
-                                                        _selectElement(
-                                                          elementId,
-                                                        );
-                                                        unawaited(
-                                                          _fitElementToCanvas(
-                                                            pageId: page.id,
-                                                            elementId:
-                                                                elementId,
-                                                          ),
+                                                        _handleElementDoubleTap(
+                                                          pageId: page.id,
+                                                          elementId: elementId,
                                                         );
                                                       },
                                                   onMoveElement:
@@ -4250,7 +4973,6 @@ class _BlankPageState extends State<BlankPage> {
                                                   _clearSelectedElement,
                                               onTapElement: _selectElement,
                                               onDoubleTapElement: (elementId) {
-                                                _selectElement(elementId);
                                                 final pageId = pages
                                                     .firstWhere(
                                                       (item) =>
@@ -4261,11 +4983,9 @@ class _BlankPageState extends State<BlankPage> {
                                                           ),
                                                     )
                                                     .id;
-                                                unawaited(
-                                                  _fitElementToCanvas(
-                                                    pageId: pageId,
-                                                    elementId: elementId,
-                                                  ),
+                                                _handleElementDoubleTap(
+                                                  pageId: pageId,
+                                                  elementId: elementId,
                                                 );
                                               },
                                               onMoveElement:
@@ -4368,7 +5088,7 @@ class _BlankPageState extends State<BlankPage> {
                     key: ValueKey(bottomTabs.join('|')),
                     controller: _bottomTabPageController,
                     physics: const NeverScrollableScrollPhysics(),
-                    children: _selectedImageElement == null
+                    children: _selectedImageElement != null
                         ? <Widget>[
                             _PageTabPage(
                               page: currentPage,
@@ -4386,11 +5106,127 @@ class _BlankPageState extends State<BlankPage> {
                               onApplyTemplate: _applyTemplate,
                             ),
                             _ElementTabPage(
+                              showTextOption: false,
+                              onAddText: _addTextElement,
                               onImportImages: _importImages,
                               importedImagePaths: _importedImagePaths,
                               onTapImportedImage: _addImageElementFromPath,
                               onLongPressImportedImage:
                                   _showImportedImagePreview,
+                            ),
+                            _ElementPositionTabPage(
+                              range: _elementPositionSliderRange(
+                                _selectedImageElement!,
+                                pagePixelSize: _elementPositionPagePixelSize(
+                                  _selectedImageElement!,
+                                  singleCanvasWidth: singleCanvasWidth,
+                                  previewCanvasWidth: previewCanvasWidth,
+                                ),
+                              ),
+                              onNudge: _nudgeSelectedImage,
+                              onPositionChanged: (x, y) {
+                                _updateSelectedImagePositionFromSlider(
+                                  x: x,
+                                  y: y,
+                                  persist: false,
+                                );
+                              },
+                              onPositionChangeEnd: (x, y) {
+                                _updateSelectedImagePositionFromSlider(
+                                  x: x,
+                                  y: y,
+                                  persist: true,
+                                );
+                              },
+                            ),
+                            _ImageSettingsTabPage(
+                              selectedElement: _selectedImageElement!,
+                              sizeRange: _imageSizeSliderRange(
+                                _selectedImageElement!,
+                              ),
+                              isCropping:
+                                  _croppingElementId ==
+                                  _selectedImageElement!.id,
+                              onStartCrop: _startCroppingSelectedImage,
+                              onFinishCrop: _finishCroppingSelectedImage,
+                              onAspectSelected: _updateSelectedImageAspect,
+                              onSizeChanged: (value) {
+                                _updateSelectedImageSizeFromSlider(
+                                  value,
+                                  persist: false,
+                                );
+                              },
+                              onSizeChangeEnd: (value) {
+                                _updateSelectedImageSizeFromSlider(
+                                  value,
+                                  persist: true,
+                                );
+                              },
+                            ),
+                          ]
+                        : _selectedTextElement != null
+                        ? <Widget>[
+                            _PageTabPage(
+                              page: currentPage,
+                              onAspectSelected: (width, height) {
+                                _updateCurrentPageAspect(
+                                  aspectWidth: width,
+                                  aspectHeight: height,
+                                );
+                              },
+                              onColorSelected: _updateCurrentPageColor,
+                              onCustomColorTap: _showCustomPageColorDialog,
+                            ),
+                            _TemplateTabPage(
+                              page: currentPage,
+                              onApplyTemplate: _applyTemplate,
+                            ),
+                            _ElementTabPage(
+                              showTextOption: true,
+                              onAddText: _addTextElement,
+                              onImportImages: _importImages,
+                              importedImagePaths: _importedImagePaths,
+                              onTapImportedImage: _addImageElementFromPath,
+                              onLongPressImportedImage:
+                                  _showImportedImagePreview,
+                            ),
+                            _ElementPositionTabPage(
+                              range: _elementPositionSliderRange(
+                                _selectedTextElement!,
+                                pagePixelSize: _elementPositionPagePixelSize(
+                                  _selectedTextElement!,
+                                  singleCanvasWidth: singleCanvasWidth,
+                                  previewCanvasWidth: previewCanvasWidth,
+                                ),
+                              ),
+                              onNudge: _nudgeSelectedText,
+                              onPositionChanged: (x, y) {
+                                _updateSelectedTextPositionFromSlider(
+                                  x: x,
+                                  y: y,
+                                  persist: false,
+                                );
+                              },
+                              onPositionChangeEnd: (x, y) {
+                                _updateSelectedTextPositionFromSlider(
+                                  x: x,
+                                  y: y,
+                                  persist: true,
+                                );
+                              },
+                            ),
+                            _TextSettingsTabPage(
+                              selectedElement: _selectedTextElement!,
+                              onEditText: () {
+                                _showTextEditor(_selectedTextElement!.id);
+                              },
+                              onColorSelected: _updateSelectedTextColor,
+                              onSizeChanged: (value) {
+                                _updateSelectedTextSize(value, persist: false);
+                              },
+                              onSizeChangeEnd: (value) {
+                                _updateSelectedTextSize(value, persist: true);
+                              },
                             ),
                           ]
                         : <Widget>[
@@ -4410,25 +5246,13 @@ class _BlankPageState extends State<BlankPage> {
                               onApplyTemplate: _applyTemplate,
                             ),
                             _ElementTabPage(
+                              showTextOption: true,
+                              onAddText: _addTextElement,
                               onImportImages: _importImages,
                               importedImagePaths: _importedImagePaths,
                               onTapImportedImage: _addImageElementFromPath,
                               onLongPressImportedImage:
                                   _showImportedImagePreview,
-                            ),
-                            _ImagePositionTabPage(
-                              selectedElement: _selectedImageElement!,
-                              onNudge: _nudgeSelectedImage,
-                              onSnapFlagChanged: _updateSelectedImageSnapFlag,
-                            ),
-                            _ImageSettingsTabPage(
-                              selectedElement: _selectedImageElement!,
-                              isCropping:
-                                  _croppingElementId ==
-                                  _selectedImageElement!.id,
-                              onStartCrop: _startCroppingSelectedImage,
-                              onFinishCrop: _finishCroppingSelectedImage,
-                              onAspectSelected: _updateSelectedImageAspect,
                             ),
                           ],
                   ),
@@ -4524,8 +5348,7 @@ class _CanvasViewport extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const controlChromePadding = 9.0;
-    final pageWidth = (viewportWidth - (controlChromePadding * 2))
+    final pageWidth = (viewportWidth - (_canvasControlChromePadding * 2))
         .clamp(1.0, viewportWidth)
         .toDouble();
     final pageHeight = pageWidth * (page.aspectHeight / page.aspectWidth);
@@ -4601,7 +5424,7 @@ class _CanvasViewport extends StatelessWidget {
                                 ),
                               ),
                             ),
-                            for (final element in page.elements)
+                            for (final element in page.elements) ...[
                               if (element.type == 'image')
                                 _ImageElementWidget(
                                   key: ValueKey('canvas_${element.id}'),
@@ -4633,6 +5456,30 @@ class _CanvasViewport extends StatelessWidget {
                                   onCancelDelete: () =>
                                       onCancelDeleteElement(element.id),
                                 ),
+                              if (element.type == 'text')
+                                _TextElementWidget(
+                                  key: ValueKey('canvas_text_${element.id}'),
+                                  element: element,
+                                  isSelected: selectedElementId == element.id,
+                                  isDeleteArmed:
+                                      deleteArmedElementId == element.id,
+                                  pageWidth: constraints.maxWidth,
+                                  pageHeight: constraints.maxHeight,
+                                  pageOffsetX: 0,
+                                  pageOffsetY: 0,
+                                  onTap: () => onTapElement(element.id),
+                                  onDoubleTap: () =>
+                                      onDoubleTapElement(element.id),
+                                  onMove: (x, y, persist) {
+                                    onMoveElement(element.id, x, y, persist);
+                                  },
+                                  onDelete: () => onDeleteElement(element.id),
+                                  onConfirmDelete: () =>
+                                      onConfirmDeleteElement(element.id),
+                                  onCancelDelete: () =>
+                                      onCancelDeleteElement(element.id),
+                                ),
+                            ],
                             _SnapGuideOverlay(
                               guides: snapGuides,
                               pageIndex: pageIndex,
@@ -4812,7 +5659,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
             ),
           ],
           for (var i = 0; i < pages.length; i++)
-            for (final element in pages[i].elements)
+            for (final element in pages[i].elements) ...[
               if (element.type == 'image')
                 _PreviewImageElementWidget(
                   key: ValueKey('preview_${element.id}'),
@@ -4849,6 +5696,33 @@ class _PreviewCanvasStrip extends StatelessWidget {
                       onConfirmDeleteElement(pages[i].id, element.id),
                   onCancelDelete: () => onCancelDeleteElement(element.id),
                 ),
+              if (element.type == 'text')
+                _TextElementWidget(
+                  key: ValueKey('preview_text_${element.id}'),
+                  element: element,
+                  isSelected: selectedElementId == element.id,
+                  isDeleteArmed: deleteArmedElementId == element.id,
+                  pageWidth: viewportWidth,
+                  pageHeight:
+                      viewportWidth *
+                      (pages[i].aspectHeight / pages[i].aspectWidth),
+                  pageOffsetX: viewportWidth * i,
+                  pageOffsetY:
+                      ((viewportHeight -
+                          (viewportWidth *
+                              (pages[i].aspectHeight / pages[i].aspectWidth))) /
+                      2),
+                  onTap: () => onTapElement(element.id),
+                  onDoubleTap: () => onDoubleTapElement(element.id),
+                  onMove: (x, y, persist) {
+                    onMoveElement(pages[i].id, element.id, x, y, persist);
+                  },
+                  onDelete: () => onDeleteElement(pages[i].id, element.id),
+                  onConfirmDelete: () =>
+                      onConfirmDeleteElement(pages[i].id, element.id),
+                  onCancelDelete: () => onCancelDeleteElement(element.id),
+                ),
+            ],
           for (var i = 0; i < pages.length; i++)
             _SnapGuideOverlay(
               guides: snapGuides,
@@ -5779,6 +6653,204 @@ class _PreviewImageElementWidgetState
   }
 }
 
+class _TextElementWidget extends StatefulWidget {
+  const _TextElementWidget({
+    super.key,
+    required this.element,
+    required this.isSelected,
+    required this.isDeleteArmed,
+    required this.pageWidth,
+    required this.pageHeight,
+    required this.pageOffsetX,
+    required this.pageOffsetY,
+    required this.onTap,
+    required this.onDoubleTap,
+    required this.onMove,
+    required this.onDelete,
+    required this.onConfirmDelete,
+    required this.onCancelDelete,
+  });
+
+  final CanvasElement element;
+  final bool isSelected;
+  final bool isDeleteArmed;
+  final double pageWidth;
+  final double pageHeight;
+  final double pageOffsetX;
+  final double pageOffsetY;
+  final VoidCallback onTap;
+  final VoidCallback onDoubleTap;
+  final void Function(double x, double y, bool persist) onMove;
+  final VoidCallback onDelete;
+  final VoidCallback onConfirmDelete;
+  final VoidCallback onCancelDelete;
+
+  @override
+  State<_TextElementWidget> createState() => _TextElementWidgetState();
+}
+
+class _TextElementWidgetState extends State<_TextElementWidget> {
+  late double _currentX;
+  late double _currentY;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = _textContentFromData(widget.element.data);
+    final fontSize =
+        _textFontSizeRatioFromData(widget.element.data) * widget.pageWidth;
+    final lineCount = _textLineCount(text);
+    final width = widget.element.width * widget.pageWidth;
+    final height = (fontSize * 1.24 * lineCount)
+        .clamp(1.0, widget.pageHeight)
+        .toDouble();
+    final left = widget.pageOffsetX + (widget.element.x * widget.pageWidth);
+    final top = widget.pageOffsetY + (widget.element.y * widget.pageHeight);
+    final color = _textColorFromData(widget.element.data);
+    final selectionColor = widget.isDeleteArmed
+        ? kDeleteConfirmColor
+        : _selectionChromeColor;
+
+    return Positioned(
+      left: left,
+      top: top,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: widget.onTap,
+        onDoubleTap: widget.isDeleteArmed
+            ? widget.onCancelDelete
+            : widget.onDoubleTap,
+        onLongPress: () {
+          widget.onTap();
+          widget.onDelete();
+        },
+        onPanStart: (_) {
+          if (widget.isDeleteArmed) {
+            widget.onCancelDelete();
+            return;
+          }
+          _currentX = widget.element.x;
+          _currentY = widget.element.y;
+          if (!widget.isSelected) {
+            widget.onTap();
+          }
+        },
+        onPanUpdate: (details) {
+          _currentX += details.delta.dx / widget.pageWidth;
+          _currentY += details.delta.dy / widget.pageHeight;
+          widget.onMove(_currentX, _currentY, false);
+        },
+        onPanEnd: (_) {
+          widget.onMove(_currentX, _currentY, true);
+        },
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Container(
+              width: width,
+              height: height,
+              alignment: Alignment.centerLeft,
+              clipBehavior: Clip.hardEdge,
+              decoration: const BoxDecoration(color: Colors.transparent),
+              child: Text(
+                text,
+                maxLines: lineCount,
+                overflow: TextOverflow.clip,
+                style: TextStyle(
+                  color: color,
+                  fontSize: fontSize,
+                  height: 1.12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            _DeleteConfirmOverlay(
+              visible: widget.isDeleteArmed,
+              onConfirm: widget.onConfirmDelete,
+            ),
+            Positioned(
+              left: -2,
+              top: -2,
+              child: IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: widget.isSelected ? 1 : 0,
+                  duration: const Duration(milliseconds: 120),
+                  curve: Curves.easeInOut,
+                  child: Container(
+                    width: width + 4,
+                    height: height + 4,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: selectionColor, width: 3),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TextEditorField extends StatefulWidget {
+  const _TextEditorField({required this.initialText});
+
+  final String initialText;
+
+  @override
+  State<_TextEditorField> createState() => _TextEditorFieldState();
+}
+
+class _TextEditorFieldState extends State<_TextEditorField> {
+  late String _draftText;
+
+  @override
+  void initState() {
+    super.initState();
+    _draftText = widget.initialText;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        TextFormField(
+          initialValue: widget.initialText,
+          autofocus: true,
+          minLines: 1,
+          maxLines: 4,
+          decoration: const InputDecoration(border: OutlineInputBorder()),
+          onChanged: (value) {
+            _draftText = value;
+          },
+          onFieldSubmitted: (value) {
+            Navigator.of(context).pop(value);
+          },
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('\u53d6\u6d88'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextButton(
+                onPressed: () => Navigator.of(context).pop(_draftText),
+                child: const Text('\u5b8c\u6210'),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 class _DeleteConfirmOverlay extends StatelessWidget {
   const _DeleteConfirmOverlay({required this.visible, required this.onConfirm});
 
@@ -6632,12 +7704,16 @@ const List<_ImageAspectOption> _imageAspectOptions = <_ImageAspectOption>[
 
 class _ElementTabPage extends StatelessWidget {
   const _ElementTabPage({
+    required this.showTextOption,
+    required this.onAddText,
     required this.onImportImages,
     required this.importedImagePaths,
     required this.onTapImportedImage,
     required this.onLongPressImportedImage,
   });
 
+  final bool showTextOption;
+  final VoidCallback onAddText;
   final VoidCallback onImportImages;
   final List<String> importedImagePaths;
   final ValueChanged<String> onTapImportedImage;
@@ -6651,6 +7727,17 @@ class _ElementTabPage extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (showTextOption) ...[
+            SizedBox(
+              width: 96,
+              child: _ElementOptionCard(
+                icon: Icons.text_fields_rounded,
+                label: 'text',
+                onTap: onAddText,
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
           SizedBox(
             width: 120,
             child: _ElementOptionCard(
@@ -6673,16 +7760,28 @@ class _ElementTabPage extends StatelessWidget {
   }
 }
 
-class _ImagePositionTabPage extends StatelessWidget {
-  const _ImagePositionTabPage({
-    required this.selectedElement,
+class _ElementPositionTabPage extends StatelessWidget {
+  const _ElementPositionTabPage({
+    required this.range,
     required this.onNudge,
-    required this.onSnapFlagChanged,
+    required this.onPositionChanged,
+    required this.onPositionChangeEnd,
   });
 
-  final CanvasElement selectedElement;
+  final ({
+    double x,
+    double y,
+    double minX,
+    double maxX,
+    double minY,
+    double maxY,
+    double pixelStepX,
+    double pixelStepY,
+  })
+  range;
   final void Function(double dx, double dy) onNudge;
-  final void Function(String key, bool enabled) onSnapFlagChanged;
+  final void Function(double x, double y) onPositionChanged;
+  final void Function(double x, double y) onPositionChangeEnd;
 
   @override
   Widget build(BuildContext context) {
@@ -6701,50 +7800,36 @@ class _ImagePositionTabPage extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 10),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
+        Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
+          child: Column(
             children: [
-              _ImageNudgeButton(
-                icon: Icons.keyboard_arrow_up_rounded,
-                onTap: () => onNudge(0, -1),
+              _AxisPositionSlider(
+                label: 'X',
+                value: range.x,
+                min: range.minX,
+                max: range.maxX,
+                leadingIcon: Icons.chevron_left_rounded,
+                trailingIcon: Icons.chevron_right_rounded,
+                onStepDown: () => onNudge(-range.pixelStepX, 0),
+                onStepUp: () => onNudge(range.pixelStepX, 0),
+                onChanged: (value) => onPositionChanged(value, range.y),
+                onChangeEnd: (value) => onPositionChangeEnd(value, range.y),
               ),
-              const SizedBox(width: 10),
-              _ImageNudgeButton(
-                icon: Icons.keyboard_arrow_down_rounded,
-                onTap: () => onNudge(0, 1),
-              ),
-              const SizedBox(width: 10),
-              _ImageNudgeButton(
-                icon: Icons.keyboard_arrow_left_rounded,
-                onTap: () => onNudge(-1, 0),
-              ),
-              const SizedBox(width: 10),
-              _ImageNudgeButton(
-                icon: Icons.keyboard_arrow_right_rounded,
-                onTap: () => onNudge(1, 0),
+              const SizedBox(height: 8),
+              _AxisPositionSlider(
+                label: 'Y',
+                value: range.y,
+                min: range.minY,
+                max: range.maxY,
+                leadingIcon: Icons.keyboard_arrow_up_rounded,
+                trailingIcon: Icons.keyboard_arrow_down_rounded,
+                onStepDown: () => onNudge(0, -range.pixelStepY),
+                onStepUp: () => onNudge(0, range.pixelStepY),
+                onChanged: (value) => onPositionChanged(range.x, value),
+                onChangeEnd: (value) => onPositionChangeEnd(range.x, value),
               ),
             ],
-          ),
-        ),
-        const SizedBox(height: 14),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16),
-          child: Text(
-            '\u81ea\u52d5\u5438\u9644\u958b\u95dc',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: Color(0xFF6A6A6A),
-            ),
-          ),
-        ),
-        const SizedBox(height: 10),
-        Expanded(
-          child: _ImageSnapTabPage(
-            selectedElement: selectedElement,
-            onSnapFlagChanged: onSnapFlagChanged,
           ),
         ),
       ],
@@ -6752,57 +7837,8 @@ class _ImagePositionTabPage extends StatelessWidget {
   }
 }
 
-class _ImageSettingsTabPage extends StatelessWidget {
-  const _ImageSettingsTabPage({
-    required this.selectedElement,
-    required this.isCropping,
-    required this.onStartCrop,
-    required this.onFinishCrop,
-    required this.onAspectSelected,
-  });
-
-  final CanvasElement selectedElement;
-  final bool isCropping;
-  final VoidCallback onStartCrop;
-  final VoidCallback onFinishCrop;
-  final ValueChanged<_ImageAspectOption> onAspectSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    final selectedKey =
-        selectedElement.data['aspectPreset'] as String? ?? 'original';
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _CropActionCard(
-            label: isCropping ? '\u5b8c\u6210' : '\u88c1\u5207',
-            icon: isCropping ? Icons.check_rounded : Icons.crop_rounded,
-            selected: isCropping,
-            onTap: isCropping ? onFinishCrop : onStartCrop,
-          ),
-          const SizedBox(width: 12),
-          Container(width: 1, height: 75, color: const Color(0xFFD6D6D6)),
-          const SizedBox(width: 12),
-          for (var i = 0; i < _imageAspectOptions.length; i++) ...[
-            _ImageAspectCard(
-              option: _imageAspectOptions[i],
-              height: 75,
-              selected: selectedKey == _imageAspectOptions[i].key,
-              onTap: () => onAspectSelected(_imageAspectOptions[i]),
-            ),
-            if (i != _imageAspectOptions.length - 1) const SizedBox(width: 12),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _ImageNudgeButton extends StatelessWidget {
-  const _ImageNudgeButton({required this.icon, required this.onTap});
+class _PositionStepButton extends StatelessWidget {
+  const _PositionStepButton({required this.icon, required this.onTap});
 
   final IconData icon;
   final VoidCallback onTap;
@@ -6812,16 +7848,312 @@ class _ImageNudgeButton extends StatelessWidget {
     return _PressableScale(
       onTap: onTap,
       pressedScale: 0.92,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        curve: Curves.easeInOut,
-        width: 54,
-        height: 48,
+      child: Container(
+        width: 34,
+        height: 34,
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(12),
         ),
-        child: Icon(icon, size: 26, color: const Color(0xFF1F1F1F)),
+        child: Icon(icon, size: 21, color: const Color(0xFF4A4A4A)),
+      ),
+    );
+  }
+}
+
+class _AxisPositionSlider extends StatelessWidget {
+  const _AxisPositionSlider({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.leadingIcon,
+    required this.trailingIcon,
+    required this.onStepDown,
+    required this.onStepUp,
+    required this.onChanged,
+    required this.onChangeEnd,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final IconData leadingIcon;
+  final IconData trailingIcon;
+  final VoidCallback onStepDown;
+  final VoidCallback onStepUp;
+  final ValueChanged<double> onChanged;
+  final ValueChanged<double> onChangeEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 18,
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF6A6A6A),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        _PositionStepButton(icon: leadingIcon, onTap: onStepDown),
+        const SizedBox(width: 6),
+        Expanded(
+          child: SliderTheme(
+            data: _positionControlSliderTheme(context),
+            child: Slider(
+              value: value,
+              min: min,
+              max: max,
+              onChanged: onChanged,
+              onChangeEnd: onChangeEnd,
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        _PositionStepButton(icon: trailingIcon, onTap: onStepUp),
+      ],
+    );
+  }
+}
+
+class _ImageSettingsTabPage extends StatelessWidget {
+  const _ImageSettingsTabPage({
+    required this.selectedElement,
+    required this.sizeRange,
+    required this.isCropping,
+    required this.onStartCrop,
+    required this.onFinishCrop,
+    required this.onAspectSelected,
+    required this.onSizeChanged,
+    required this.onSizeChangeEnd,
+  });
+
+  final CanvasElement selectedElement;
+  final ({double value, double min, double max}) sizeRange;
+  final bool isCropping;
+  final VoidCallback onStartCrop;
+  final VoidCallback onFinishCrop;
+  final ValueChanged<_ImageAspectOption> onAspectSelected;
+  final ValueChanged<double> onSizeChanged;
+  final ValueChanged<double> onSizeChangeEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedKey =
+        selectedElement.data['aspectPreset'] as String? ?? 'original';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _CropActionCard(
+                label: isCropping ? '\u5b8c\u6210' : '\u88c1\u5207',
+                icon: isCropping ? Icons.check_rounded : Icons.crop_rounded,
+                selected: isCropping,
+                onTap: isCropping ? onFinishCrop : onStartCrop,
+              ),
+              const SizedBox(width: 12),
+              Container(width: 1, height: 75, color: const Color(0xFFD6D6D6)),
+              const SizedBox(width: 12),
+              for (var i = 0; i < _imageAspectOptions.length; i++) ...[
+                _ImageAspectCard(
+                  option: _imageAspectOptions[i],
+                  height: 75,
+                  selected: selectedKey == _imageAspectOptions[i].key,
+                  onTap: () => onAspectSelected(_imageAspectOptions[i]),
+                ),
+                if (i != _imageAspectOptions.length - 1)
+                  const SizedBox(width: 12),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              const Text(
+                '\u5927\u5c0f',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF6A6A6A),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: SliderTheme(
+                  data: _lightControlSliderTheme(context),
+                  child: Slider(
+                    value: sizeRange.value,
+                    min: sizeRange.min,
+                    max: sizeRange.max,
+                    onChanged: onSizeChanged,
+                    onChangeEnd: onSizeChangeEnd,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TextSettingsTabPage extends StatelessWidget {
+  const _TextSettingsTabPage({
+    required this.selectedElement,
+    required this.onEditText,
+    required this.onColorSelected,
+    required this.onSizeChanged,
+    required this.onSizeChangeEnd,
+  });
+
+  final CanvasElement selectedElement;
+  final VoidCallback onEditText;
+  final ValueChanged<Color> onColorSelected;
+  final ValueChanged<double> onSizeChanged;
+  final ValueChanged<double> onSizeChangeEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedColor = _textColorFromData(selectedElement.data);
+    final selectedColorValue = selectedColor.toARGB32();
+    final fontSizeRatio = _textFontSizeRatioFromData(selectedElement.data);
+    const colors = <Color>[
+      Color(0xFF111111),
+      Colors.white,
+      Color(0xFFE63946),
+      Color(0xFFFFB703),
+      Color(0xFF2A9D8F),
+      Color(0xFF4361EE),
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16),
+          child: Text(
+            '\u6587\u5b57\u984f\u8272',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF6A6A6A),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _CropActionCard(
+                label: '\u7de8\u8f2f',
+                icon: Icons.edit_rounded,
+                selected: false,
+                onTap: onEditText,
+              ),
+              const SizedBox(width: 12),
+              Container(width: 1, height: 75, color: const Color(0xFFD6D6D6)),
+              const SizedBox(width: 12),
+              for (var i = 0; i < colors.length; i++) ...[
+                _TextColorCard(
+                  color: colors[i],
+                  selected: selectedColorValue == colors[i].toARGB32(),
+                  onTap: () => onColorSelected(colors[i]),
+                ),
+                if (i != colors.length - 1) const SizedBox(width: 10),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              const Text(
+                '\u5927\u5c0f',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF6A6A6A),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: SliderTheme(
+                  data: _lightControlSliderTheme(context),
+                  child: Slider(
+                    value: fontSizeRatio,
+                    min: 0.025,
+                    max: 0.16,
+                    onChanged: onSizeChanged,
+                    onChangeEnd: onSizeChangeEnd,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TextColorCard extends StatelessWidget {
+  const _TextColorCard({
+    required this.color,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final Color color;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return _PressableScale(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeInOut,
+        width: 54,
+        height: 46,
+        padding: const EdgeInsets.all(5),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: selected
+              ? Border.all(color: kPrimaryAccentColor, width: 2)
+              : null,
+        ),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(10),
+            border: color.toARGB32() == Colors.white.toARGB32()
+                ? Border.all(color: const Color(0xFFD0D0D0))
+                : null,
+          ),
+        ),
       ),
     );
   }
@@ -6869,128 +8201,6 @@ class _ImageSourceTabPage extends StatelessWidget {
             ),
           ],
         ],
-      ),
-    );
-  }
-}
-
-class _ImageSnapTabPage extends StatelessWidget {
-  const _ImageSnapTabPage({
-    required this.selectedElement,
-    required this.onSnapFlagChanged,
-  });
-
-  final CanvasElement selectedElement;
-  final void Function(String key, bool enabled) onSnapFlagChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final strings = AppStrings.of(context);
-    final options = <({String key, String label, IconData icon})>[
-      (
-        key: 'snapEnabled',
-        label: strings.t('snapAll'),
-        icon: Icons.center_focus_strong_rounded,
-      ),
-      (
-        key: 'snapPageEdges',
-        label: strings.t('snapPageEdges'),
-        icon: Icons.crop_free_rounded,
-      ),
-      (
-        key: 'snapPageCenter',
-        label: strings.t('snapPageCenter'),
-        icon: Icons.vertical_align_center_rounded,
-      ),
-      (
-        key: 'snapImageLines',
-        label: strings.t('snapImageLines'),
-        icon: Icons.align_horizontal_center_rounded,
-      ),
-      (
-        key: 'snapImageEdges',
-        label: strings.t('snapImageEdges'),
-        icon: Icons.space_bar_rounded,
-      ),
-    ];
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (var i = 0; i < options.length; i++) ...[
-              _SnapToggleCard(
-                label: options[i].label,
-                icon: options[i].icon,
-                value: options[i].key == 'snapEnabled'
-                    ? _snapEnabledForElement(selectedElement)
-                    : _snapFlagForElement(selectedElement, options[i].key),
-                onChanged: (enabled) =>
-                    onSnapFlagChanged(options[i].key, enabled),
-              ),
-              if (i != options.length - 1) const SizedBox(width: 12),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SnapToggleCard extends StatelessWidget {
-  const _SnapToggleCard({
-    required this.label,
-    required this.icon,
-    required this.value,
-    required this.onChanged,
-  });
-
-  final String label;
-  final IconData icon;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return _PressableScale(
-      onTap: () => onChanged(!value),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeInOut,
-        width: 120,
-        height: 75,
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: value
-              ? Border.all(color: kPrimaryAccentColor, width: 2)
-              : null,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(
-              icon,
-              size: 20,
-              color: value ? kPrimaryAccentColor : const Color(0xFF7A7A7A),
-            ),
-            const Spacer(),
-            AnimatedDefaultTextStyle(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeInOut,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: value ? FontWeight.w700 : FontWeight.w600,
-                color: const Color(0xFF1F1F1F),
-              ),
-              child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-            ),
-          ],
-        ),
       ),
     );
   }
