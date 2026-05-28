@@ -3151,6 +3151,44 @@ class _BlankPageState extends State<BlankPage> {
     unawaited(_replaceElement(updatedElement, persist: persist));
   }
 
+  void _updateImageCropBounds({
+    required String elementId,
+    required double x,
+    required double y,
+    required double width,
+    required double height,
+    required double cropOffsetX,
+    required double cropOffsetY,
+    required double cropScale,
+    required bool persist,
+  }) {
+    if (!persist && !_hasPendingElementUndoSnapshot) {
+      _storeUndoSnapshot();
+      _hasPendingElementUndoSnapshot = true;
+    }
+    final element = _selectedImageElement;
+    if (element == null || element.id != elementId) {
+      return;
+    }
+    
+    final updatedElement = element.copyWith(
+      x: x,
+      y: y,
+      width: width,
+      height: height,
+      data: <String, dynamic>{
+        ...element.data,
+        'aspectRatio': width / height,
+        'aspectPreset': 'custom',
+        'cropOffsetX': cropOffsetX,
+        'cropOffsetY': cropOffsetY,
+        'cropScale': cropScale,
+      },
+    );
+
+    unawaited(_replaceElement(updatedElement, persist: persist));
+  }
+
   Future<void> _nudgeSelectedImage(double dx, double dy) async {
     final selectedImage = _selectedImageElement;
     if (selectedImage == null) {
@@ -4950,6 +4988,30 @@ class _BlankPageState extends State<BlankPage> {
                                                           persist: persist,
                                                         );
                                                       },
+                                                  onCropBoundsChanged:
+                                                      (
+                                                        elementId,
+                                                        x,
+                                                        y,
+                                                        w,
+                                                        h,
+                                                        cx,
+                                                        cy,
+                                                        cs,
+                                                        persist,
+                                                      ) {
+                                                        _updateImageCropBounds(
+                                                          elementId: elementId,
+                                                          x: x,
+                                                          y: y,
+                                                          width: w,
+                                                          height: h,
+                                                          cropOffsetX: cx,
+                                                          cropOffsetY: cy,
+                                                          cropScale: cs,
+                                                          persist: persist,
+                                                        );
+                                                      },
                                                   onDeleteElement: (elementId) {
                                                     _requestDeleteElement(
                                                       elementId: elementId,
@@ -5400,6 +5462,7 @@ class _CanvasViewport extends StatelessWidget {
     required this.onResizeElement,
     required this.onCropMove,
     required this.onCropScale,
+    required this.onCropBoundsChanged,
     required this.onDeleteElement,
     required this.onConfirmDeleteElement,
     required this.onCancelDeleteElement,
@@ -5427,6 +5490,7 @@ class _CanvasViewport extends StatelessWidget {
   final void Function(String elementId, double x, double y, bool persist)
   onCropMove;
   final void Function(String elementId, double scale, bool persist) onCropScale;
+  final void Function(String elementId, double x, double y, double width, double height, double cropOffsetX, double cropOffsetY, double cropScale, bool persist) onCropBoundsChanged;
   final ValueChanged<String> onDeleteElement;
   final ValueChanged<String> onConfirmDeleteElement;
   final ValueChanged<String> onCancelDeleteElement;
@@ -5534,6 +5598,9 @@ class _CanvasViewport extends StatelessWidget {
                                   },
                                   onCropScale: (scale, persist) {
                                     onCropScale(element.id, scale, persist);
+                                  },
+                                  onCropBoundsChanged: (x, y, w, h, cx, cy, cs, persist) {
+                                    onCropBoundsChanged(element.id, x, y, w, h, cx, cy, cs, persist);
                                   },
                                   onDelete: () => onDeleteElement(element.id),
                                   onConfirmDelete: () =>
@@ -6149,6 +6216,7 @@ class _ImageElementWidget extends StatefulWidget {
     required this.onResize,
     required this.onCropMove,
     required this.onCropScale,
+    required this.onCropBoundsChanged,
     required this.onDelete,
     required this.onConfirmDelete,
     required this.onCancelDelete,
@@ -6166,6 +6234,7 @@ class _ImageElementWidget extends StatefulWidget {
   final void Function(double width, bool persist) onResize;
   final void Function(double x, double y, bool persist) onCropMove;
   final void Function(double scale, bool persist) onCropScale;
+  final void Function(double x, double y, double width, double height, double cropOffsetX, double cropOffsetY, double cropScale, bool persist) onCropBoundsChanged;
   final VoidCallback onDelete;
   final VoidCallback onConfirmDelete;
   final VoidCallback onCancelDelete;
@@ -6185,6 +6254,163 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
   bool _isResizing = false;
   late double _resizeStartWidth;
   late Offset _resizeStartGlobalPosition;
+
+  bool _isEdgeDragging = false;
+  late CanvasElement _edgeDragStartElement;
+  late Offset _edgeDragStartGlobalPosition;
+
+  void _onCropEdgePanStart(DragStartDetails details) {
+    _isEdgeDragging = true;
+    _edgeDragStartElement = widget.element;
+    _edgeDragStartGlobalPosition = details.globalPosition;
+  }
+
+  void _onCropEdgePanUpdate(DragUpdateDetails details, String edge) {
+    if (!_isEdgeDragging) return;
+
+    final totalDx = details.globalPosition.dx - _edgeDragStartGlobalPosition.dx;
+    final totalDy = details.globalPosition.dy - _edgeDragStartGlobalPosition.dy;
+
+    final startWidth = _edgeDragStartElement.width;
+    final startAspectRatio = (_edgeDragStartElement.data['aspectRatio'] as num?)?.toDouble() ?? 1.0;
+    final startHeight = startAspectRatio > 0 ? startWidth / startAspectRatio : startWidth;
+    final startX = _edgeDragStartElement.x;
+    final startY = _edgeDragStartElement.y;
+
+    final dx = totalDx / widget.canvasWidth;
+    final dy = totalDy / widget.canvasHeight;
+
+    double newX = startX;
+    double newY = startY;
+    double newWidth = startWidth;
+    double newHeight = startHeight;
+
+    if (edge == 'left') {
+      newX = startX + dx;
+      newWidth = startWidth - dx;
+    } else if (edge == 'right') {
+      newWidth = startWidth + dx;
+    } else if (edge == 'top') {
+      newY = startY + dy;
+      newHeight = startHeight - dy;
+    } else if (edge == 'bottom') {
+      newHeight = startHeight + dy;
+    }
+
+    if (newWidth < 0.05) {
+      newX = edge == 'left' ? startX + startWidth - 0.05 : startX;
+      newWidth = 0.05;
+    }
+    if (newHeight < 0.05) {
+      newY = edge == 'top' ? startY + startHeight - 0.05 : startY;
+      newHeight = 0.05;
+    }
+
+    final newAspectRatio = newWidth / newHeight;
+    final frameWidth = newWidth * widget.canvasWidth;
+    final frameHeight = newHeight * widget.canvasHeight;
+    final frameAspectRatio = frameWidth / frameHeight;
+
+    final sourceAspectRatio = (_edgeDragStartElement.data['originalAspectRatio'] as num?)?.toDouble() ??
+                              (_edgeDragStartElement.data['aspectRatio'] as num?)?.toDouble() ??
+                              newAspectRatio;
+    final safeSourceAspectRatio = sourceAspectRatio <= 0 ? frameAspectRatio : sourceAspectRatio;
+
+    final oldFrameWidth = startWidth * widget.canvasWidth;
+    final oldFrameHeight = startHeight * widget.canvasHeight;
+    final oldFrameAspectRatio = oldFrameWidth / oldFrameHeight;
+    
+    double oldBaseImageWidth;
+    if (safeSourceAspectRatio > oldFrameAspectRatio) {
+      oldBaseImageWidth = oldFrameHeight * safeSourceAspectRatio;
+    } else {
+      oldBaseImageWidth = oldFrameWidth;
+    }
+    final oldCropScale = _cropScaleFromData(_edgeDragStartElement.data);
+    final currentImageWidth = oldBaseImageWidth * oldCropScale;
+    
+    double newBaseImageWidth;
+    if (safeSourceAspectRatio > frameAspectRatio) {
+      newBaseImageWidth = frameHeight * safeSourceAspectRatio;
+    } else {
+      newBaseImageWidth = frameWidth;
+    }
+    final newCropScale = currentImageWidth / newBaseImageWidth;
+
+    final oldCropOffsetX = _cropOffsetXFromData(_edgeDragStartElement.data);
+    final oldCropOffsetY = _cropOffsetYFromData(_edgeDragStartElement.data);
+    
+    final currentVisualLeft = ((oldFrameWidth - currentImageWidth) / 2) + (oldCropOffsetX * oldFrameWidth);
+    final currentVisualTop = ((oldFrameHeight - (currentImageWidth / safeSourceAspectRatio)) / 2) + (oldCropOffsetY * oldFrameHeight);
+    
+    final newVisualLeft = currentVisualLeft - (newX - startX) * widget.canvasWidth;
+    final newVisualTop = currentVisualTop - (newY - startY) * widget.canvasHeight;
+
+    final newCropOffsetX = (newVisualLeft - (frameWidth - currentImageWidth) / 2) / frameWidth;
+    final newCropOffsetY = (newVisualTop - (frameHeight - (currentImageWidth / safeSourceAspectRatio)) / 2) / frameHeight;
+
+    widget.onCropBoundsChanged(
+      newX,
+      newY,
+      newWidth,
+      newHeight,
+      newCropOffsetX,
+      newCropOffsetY,
+      newCropScale,
+      false,
+    );
+  }
+
+  void _onCropEdgePanEnd(DragEndDetails details) {
+    _isEdgeDragging = false;
+    final aspectRatio = (widget.element.data['aspectRatio'] as num?)?.toDouble() ?? 1.0;
+    widget.onCropBoundsChanged(
+      widget.element.x,
+      widget.element.y,
+      widget.element.width,
+      aspectRatio > 0 ? widget.element.width / aspectRatio : widget.element.width,
+      _cropOffsetXFromData(widget.element.data),
+      _cropOffsetYFromData(widget.element.data),
+      _cropScaleFromData(widget.element.data),
+      true,
+    );
+  }
+
+  Widget _buildEdgeHandle({
+    required double width,
+    required double height,
+    required String edge,
+  }) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onPanStart: _onCropEdgePanStart,
+      onPanUpdate: (details) => _onCropEdgePanUpdate(details, edge),
+      onPanEnd: _onCropEdgePanEnd,
+      onPanCancel: () {
+        _isEdgeDragging = false;
+      },
+      child: Container(
+        width: width,
+        height: height,
+        alignment: Alignment.center,
+        child: Container(
+          width: edge == 'top' || edge == 'bottom' ? 36 : 8,
+          height: edge == 'left' || edge == 'right' ? 36 : 8,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(4),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black26,
+                blurRadius: 2,
+                spreadRadius: 0.5,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -6426,6 +6652,44 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                 ),
               ),
             ),
+            if (widget.isCropMode) ...[
+              Positioned(
+                top: -12,
+                left: width / 2 - 24,
+                child: _buildEdgeHandle(
+                  width: 48,
+                  height: 24,
+                  edge: 'top',
+                ),
+              ),
+              Positioned(
+                bottom: -12,
+                left: width / 2 - 24,
+                child: _buildEdgeHandle(
+                  width: 48,
+                  height: 24,
+                  edge: 'bottom',
+                ),
+              ),
+              Positioned(
+                left: -12,
+                top: height / 2 - 24,
+                child: _buildEdgeHandle(
+                  width: 24,
+                  height: 48,
+                  edge: 'left',
+                ),
+              ),
+              Positioned(
+                right: -12,
+                top: height / 2 - 24,
+                child: _buildEdgeHandle(
+                  width: 24,
+                  height: 48,
+                  edge: 'right',
+                ),
+              ),
+            ],
           ],
         ),
       ),

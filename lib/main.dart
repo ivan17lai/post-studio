@@ -3,7 +3,10 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'app_strings.dart';
 import 'blank_page.dart';
@@ -40,6 +43,9 @@ class _MainPageState extends State<MainPage> {
 
   final List<ProjectRecord> _projects = <ProjectRecord>[];
   bool _isLoading = true;
+  bool _hasUpdate = false;
+  String? _latestVersionUrl;
+  String? _newVersionString;
 
   @override
   void initState() {
@@ -48,6 +54,7 @@ class _MainPageState extends State<MainPage> {
     _loadProjects();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_consumePendingSharedImages());
+      unawaited(_checkForUpdates(isSilent: true));
     });
   }
 
@@ -276,13 +283,194 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
+  Future<void> _checkForUpdates({bool isSilent = false}) async {
+    if (!isSilent) {
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final currentVersion = info.version;
+
+      final response = await http.get(Uri.parse('https://api.github.com/repos/ivan17lai/post-studio/releases/latest'));
+      if (!mounted) return;
+      if (!isSilent) Navigator.of(context).pop();
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final tag = data['tag_name'] as String;
+        final htmlUrl = data['html_url'] as String;
+        
+        final latestVersion = tag.startsWith('v') ? tag.substring(1) : tag;
+        
+        final isNewer = _isVersionNewer(currentVersion, latestVersion);
+        
+        if (isNewer) {
+          setState(() {
+            _hasUpdate = true;
+            _latestVersionUrl = htmlUrl;
+            _newVersionString = latestVersion;
+          });
+          if (!isSilent) {
+            _showUpdateDialog(latestVersion, htmlUrl);
+          }
+        } else {
+          if (!isSilent) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('目前已是最新版本')),
+            );
+          }
+        }
+      } else {
+        if (!isSilent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('檢查更新失敗，請稍後再試')),
+          );
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      if (!isSilent) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('網路連線錯誤')),
+        );
+      }
+    }
+  }
+
+  bool _isVersionNewer(String current, String latest) {
+    final currentParts = current.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final latestParts = latest.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    
+    for (var i = 0; i < 3; i++) {
+      final c = i < currentParts.length ? currentParts[i] : 0;
+      final l = i < latestParts.length ? latestParts[i] : 0;
+      if (l > c) return true;
+      if (l < c) return false;
+    }
+    return false;
+  }
+
+  void _showUpdateDialog(String newVersion, String url) {
+    showDialog<void>(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F4F4),
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Icon(
+                    Icons.system_update_rounded,
+                    size: 20,
+                    color: Color(0xFF6F6F6F),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  '發現新版本',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1F1F1F),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '最新版本為 v$newVersion，是否前往下載更新？',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    height: 1.4,
+                    color: Color(0xFF6A6A6A),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: '稍後再說',
+                        onTap: () => Navigator.of(context).pop(),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: '前往下載',
+                        isPrimary: true,
+                        onTap: () {
+                          Navigator.of(context).pop();
+                          launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.of(context).size.width;
     final strings = AppStrings.of(context);
 
     return Scaffold(
-      appBar: AppBar(backgroundColor: const Color(0xFFEAEAEA)),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFFEAEAEA),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: _hasUpdate
+                ? TextButton.icon(
+                    onPressed: () => _showUpdateDialog(_newVersionString!, _latestVersionUrl!),
+                    icon: const Icon(Icons.system_update_rounded, size: 18, color: Colors.black87),
+                    label: const Text(
+                      '有新版本',
+                      style: TextStyle(
+                        color: Colors.black87,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    style: TextButton.styleFrom(
+                      backgroundColor: kPrimaryAccentColor,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                  )
+                : IconButton(
+                    onPressed: () => _checkForUpdates(),
+                    icon: const Icon(Icons.system_update_rounded, color: Colors.grey),
+                  ),
+          ),
+        ],
+      ),
       backgroundColor: const Color(0xFFEAEAEA),
       floatingActionButton: FloatingActionButton(
         onPressed: _showCreateProjectDialog,
