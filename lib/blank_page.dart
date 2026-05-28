@@ -8,6 +8,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import 'app_strings.dart';
 import 'project_record.dart';
@@ -622,10 +623,12 @@ class _BlankPageState extends State<BlankPage> {
   bool _showSinglePageDivider = false;
   _EditorSnapshot? _lastSnapshot;
   bool _hasPendingElementUndoSnapshot = false;
+  String _appVersion = '';
 
   @override
   void initState() {
     super.initState();
+    _loadVersion();
     _project = widget.project.pages.isEmpty
         ? widget.project.copyWith(
             pages: <ProjectPage>[ProjectPage.initial()],
@@ -642,6 +645,17 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
+  Future<void> _loadVersion() async {
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() {
+          _appVersion = 'v${packageInfo.version}';
+        });
+      }
+    } catch (_) {}
+  }
+
   PageController _buildPageController() {
     return PageController(
       initialPage: _currentPageIndex,
@@ -654,6 +668,22 @@ class _BlankPageState extends State<BlankPage> {
       tab == _tabImagePosition ||
       tab == _tabImageSettings ||
       tab == _tabTextSettings;
+
+  double _bottomPanelHeightForTab(String tab) {
+    if (tab == _tabPage) {
+      return 270.0;
+    }
+    if (tab == _tabImagePosition || tab == _tabTextPosition) {
+      return 130.0;
+    }
+    if (tab == _tabImageSettings) {
+      return 139.0;
+    }
+    if (tab == _tabTextSettings) {
+      return 165.0;
+    }
+    return 75.0;
+  }
 
   bool _isImageTab(String tab) =>
       tab == _tabElements ||
@@ -1142,11 +1172,13 @@ class _BlankPageState extends State<BlankPage> {
       _refreshPageControllerViewportIfNeeded();
     });
 
-    _bottomTabPageController.animateToPage(
-      targetIndex,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeInOut,
-    );
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.animateToPage(
+        targetIndex,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeInOut,
+      );
+    }
   }
 
   void _clearSelectedElement() {
@@ -4570,9 +4602,10 @@ class _BlankPageState extends State<BlankPage> {
         : shouldCompactCanvas
         ? 0.7
         : 1.0;
-    final bottomPanelHeight = _hasTwoOptionRows(_selectedBottomTab)
-        ? 248.0
-        : 180.0;
+    const bottomTabRowHeight = 30.0;
+    const bottomTabPanelGap = 10.0;
+    final bottomSafePadding = MediaQuery.of(context).padding.bottom;
+    final bottomPadding = 32.0 + bottomSafePadding;
     final bottomTabs = _bottomTabs;
     WidgetsBinding.instance.addPostFrameCallback((_) => _syncBottomTab());
 
@@ -5063,202 +5096,254 @@ class _BlankPageState extends State<BlankPage> {
                     },
                   ),
                 ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Row(
+                Container(
+                  color: const Color(0xFFEAEAEA),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      for (var i = 0; i < bottomTabs.length; i++) ...[
-                        _BottomTab(
-                          label: _tabLabel(context, bottomTabs[i]),
-                          selected: _selectedBottomTab == bottomTabs[i],
-                          onTap: () => _changeBottomTab(bottomTabs[i]),
+                    SizedBox(
+                      height: bottomTabRowHeight,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Row(
+                            children: [
+                              for (var i = 0; i < bottomTabs.length; i++) ...[
+                                _BottomTab(
+                                  label: _tabLabel(context, bottomTabs[i]),
+                                  selected: _selectedBottomTab == bottomTabs[i],
+                                  onTap: () => _changeBottomTab(bottomTabs[i]),
+                                ),
+                                if (i != bottomTabs.length - 1)
+                                  const SizedBox(width: 18),
+                              ],
+                            ],
+                          ),
                         ),
-                        if (i != bottomTabs.length - 1)
-                          const SizedBox(width: 18),
-                      ],
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 10),
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 220),
-                  curve: Curves.easeInOut,
-                  height: bottomPanelHeight,
-                  child: PageView(
-                    key: ValueKey(bottomTabs.join('|')),
-                    controller: _bottomTabPageController,
-                    physics: const NeverScrollableScrollPhysics(),
-                    children: _selectedImageElement != null
-                        ? <Widget>[
-                            _PageTabPage(
-                              page: currentPage,
-                              onAspectSelected: (width, height) {
-                                _updateCurrentPageAspect(
-                                  aspectWidth: width,
-                                  aspectHeight: height,
-                                );
-                              },
-                              onColorSelected: _updateCurrentPageColor,
-                              onCustomColorTap: _showCustomPageColorDialog,
-                            ),
-                            _TemplateTabPage(
-                              page: currentPage,
-                              onApplyTemplate: _applyTemplate,
-                            ),
-                            _ElementTabPage(
-                              showTextOption: false,
-                              onAddText: _addTextElement,
-                              onImportImages: _importImages,
-                              importedImagePaths: _importedImagePaths,
-                              onTapImportedImage: _addImageElementFromPath,
-                              onLongPressImportedImage:
-                                  _showImportedImagePreview,
-                            ),
-                            _ElementPositionTabPage(
-                              range: _elementPositionSliderRange(
-                                _selectedImageElement!,
-                                pagePixelSize: _elementPositionPagePixelSize(
-                                  _selectedImageElement!,
-                                  singleCanvasWidth: singleCanvasWidth,
-                                  previewCanvasWidth: previewCanvasWidth,
+                      ),
+                    ),
+                    const SizedBox(height: bottomTabPanelGap),
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeInOut,
+                      alignment: Alignment.topCenter,
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 220),
+                        child: Builder(
+                          key: ValueKey(_selectedBottomTab),
+                          builder: (context) {
+                            final pages = _selectedImageElement != null
+                            ? <Widget>[
+                                _PageTabPage(
+                                  page: currentPage,
+                                  onAspectSelected: (width, height) {
+                                    _updateCurrentPageAspect(
+                                      aspectWidth: width,
+                                      aspectHeight: height,
+                                    );
+                                  },
+                                  onColorSelected: _updateCurrentPageColor,
+                                  onCustomColorTap: _showCustomPageColorDialog,
+                                ),
+                                _TemplateTabPage(
+                                  page: currentPage,
+                                  onApplyTemplate: _applyTemplate,
+                                ),
+                                _ElementTabPage(
+                                  showTextOption: false,
+                                  onAddText: _addTextElement,
+                                  onImportImages: _importImages,
+                                  importedImagePaths: _importedImagePaths,
+                                  onTapImportedImage: _addImageElementFromPath,
+                                  onLongPressImportedImage:
+                                      _showImportedImagePreview,
+                                ),
+                                _ElementPositionTabPage(
+                                  range: _elementPositionSliderRange(
+                                    _selectedImageElement!,
+                                    pagePixelSize:
+                                        _elementPositionPagePixelSize(
+                                          _selectedImageElement!,
+                                          singleCanvasWidth: singleCanvasWidth,
+                                          previewCanvasWidth:
+                                              previewCanvasWidth,
+                                        ),
+                                  ),
+                                  onNudge: _nudgeSelectedImage,
+                                  onPositionChanged: (x, y) {
+                                    _updateSelectedImagePositionFromSlider(
+                                      x: x,
+                                      y: y,
+                                      persist: false,
+                                    );
+                                  },
+                                  onPositionChangeEnd: (x, y) {
+                                    _updateSelectedImagePositionFromSlider(
+                                      x: x,
+                                      y: y,
+                                      persist: true,
+                                    );
+                                  },
+                                ),
+                                _ImageSettingsTabPage(
+                                  selectedElement: _selectedImageElement!,
+                                  sizeRange: _imageSizeSliderRange(
+                                    _selectedImageElement!,
+                                  ),
+                                  isCropping:
+                                      _croppingElementId ==
+                                      _selectedImageElement!.id,
+                                  onStartCrop: _startCroppingSelectedImage,
+                                  onFinishCrop: _finishCroppingSelectedImage,
+                                  onAspectSelected: _updateSelectedImageAspect,
+                                  onSizeChanged: (value) {
+                                    _updateSelectedImageSizeFromSlider(
+                                      value,
+                                      persist: false,
+                                    );
+                                  },
+                                  onSizeChangeEnd: (value) {
+                                    _updateSelectedImageSizeFromSlider(
+                                      value,
+                                      persist: true,
+                                    );
+                                  },
+                                ),
+                              ]
+                            : _selectedTextElement != null
+                            ? <Widget>[
+                                _PageTabPage(
+                                  page: currentPage,
+                                  onAspectSelected: (width, height) {
+                                    _updateCurrentPageAspect(
+                                      aspectWidth: width,
+                                      aspectHeight: height,
+                                    );
+                                  },
+                                  onColorSelected: _updateCurrentPageColor,
+                                  onCustomColorTap: _showCustomPageColorDialog,
+                                ),
+                                _TemplateTabPage(
+                                  page: currentPage,
+                                  onApplyTemplate: _applyTemplate,
+                                ),
+                                _ElementTabPage(
+                                  showTextOption: true,
+                                  onAddText: _addTextElement,
+                                  onImportImages: _importImages,
+                                  importedImagePaths: _importedImagePaths,
+                                  onTapImportedImage: _addImageElementFromPath,
+                                  onLongPressImportedImage:
+                                      _showImportedImagePreview,
+                                ),
+                                _ElementPositionTabPage(
+                                  range: _elementPositionSliderRange(
+                                    _selectedTextElement!,
+                                    pagePixelSize:
+                                        _elementPositionPagePixelSize(
+                                          _selectedTextElement!,
+                                          singleCanvasWidth: singleCanvasWidth,
+                                          previewCanvasWidth:
+                                              previewCanvasWidth,
+                                        ),
+                                  ),
+                                  onNudge: _nudgeSelectedText,
+                                  onPositionChanged: (x, y) {
+                                    _updateSelectedTextPositionFromSlider(
+                                      x: x,
+                                      y: y,
+                                      persist: false,
+                                    );
+                                  },
+                                  onPositionChangeEnd: (x, y) {
+                                    _updateSelectedTextPositionFromSlider(
+                                      x: x,
+                                      y: y,
+                                      persist: true,
+                                    );
+                                  },
+                                ),
+                                _TextSettingsTabPage(
+                                  selectedElement: _selectedTextElement!,
+                                  onEditText: () {
+                                    _showTextEditor(_selectedTextElement!.id);
+                                  },
+                                  onColorSelected: _updateSelectedTextColor,
+                                  onSizeChanged: (value) {
+                                    _updateSelectedTextSize(
+                                      value,
+                                      persist: false,
+                                    );
+                                  },
+                                  onSizeChangeEnd: (value) {
+                                    _updateSelectedTextSize(
+                                      value,
+                                      persist: true,
+                                    );
+                                  },
+                                ),
+                              ]
+                            : <Widget>[
+                                _PageTabPage(
+                                  page: currentPage,
+                                  onAspectSelected: (width, height) {
+                                    _updateCurrentPageAspect(
+                                      aspectWidth: width,
+                                      aspectHeight: height,
+                                    );
+                                  },
+                                  onColorSelected: _updateCurrentPageColor,
+                                  onCustomColorTap: _showCustomPageColorDialog,
+                                ),
+                                _TemplateTabPage(
+                                  page: currentPage,
+                                  onApplyTemplate: _applyTemplate,
+                                ),
+                                _ElementTabPage(
+                                  showTextOption: true,
+                                  onAddText: _addTextElement,
+                                  onImportImages: _importImages,
+                                  importedImagePaths: _importedImagePaths,
+                                  onTapImportedImage: _addImageElementFromPath,
+                                  onLongPressImportedImage:
+                                      _showImportedImagePreview,
+                                ),
+                              ];
+                            final index = bottomTabs.indexOf(_selectedBottomTab);
+                            if (index == -1 || index >= pages.length) {
+                              return const SizedBox.shrink();
+                            }
+                            return SizedBox(
+                              width: double.infinity,
+                              child: pages[index],
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                    SizedBox(
+                      height: bottomPadding,
+                      child: _appVersion.isNotEmpty
+                          ? Container(
+                              alignment: Alignment.center,
+                              padding: EdgeInsets.only(bottom: bottomSafePadding),
+                              child: Text(
+                                _appVersion,
+                                style: const TextStyle(
+                                  color: Color(0xFFB0B0B0),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
-                              onNudge: _nudgeSelectedImage,
-                              onPositionChanged: (x, y) {
-                                _updateSelectedImagePositionFromSlider(
-                                  x: x,
-                                  y: y,
-                                  persist: false,
-                                );
-                              },
-                              onPositionChangeEnd: (x, y) {
-                                _updateSelectedImagePositionFromSlider(
-                                  x: x,
-                                  y: y,
-                                  persist: true,
-                                );
-                              },
-                            ),
-                            _ImageSettingsTabPage(
-                              selectedElement: _selectedImageElement!,
-                              sizeRange: _imageSizeSliderRange(
-                                _selectedImageElement!,
-                              ),
-                              isCropping:
-                                  _croppingElementId ==
-                                  _selectedImageElement!.id,
-                              onStartCrop: _startCroppingSelectedImage,
-                              onFinishCrop: _finishCroppingSelectedImage,
-                              onAspectSelected: _updateSelectedImageAspect,
-                              onSizeChanged: (value) {
-                                _updateSelectedImageSizeFromSlider(
-                                  value,
-                                  persist: false,
-                                );
-                              },
-                              onSizeChangeEnd: (value) {
-                                _updateSelectedImageSizeFromSlider(
-                                  value,
-                                  persist: true,
-                                );
-                              },
-                            ),
-                          ]
-                        : _selectedTextElement != null
-                        ? <Widget>[
-                            _PageTabPage(
-                              page: currentPage,
-                              onAspectSelected: (width, height) {
-                                _updateCurrentPageAspect(
-                                  aspectWidth: width,
-                                  aspectHeight: height,
-                                );
-                              },
-                              onColorSelected: _updateCurrentPageColor,
-                              onCustomColorTap: _showCustomPageColorDialog,
-                            ),
-                            _TemplateTabPage(
-                              page: currentPage,
-                              onApplyTemplate: _applyTemplate,
-                            ),
-                            _ElementTabPage(
-                              showTextOption: true,
-                              onAddText: _addTextElement,
-                              onImportImages: _importImages,
-                              importedImagePaths: _importedImagePaths,
-                              onTapImportedImage: _addImageElementFromPath,
-                              onLongPressImportedImage:
-                                  _showImportedImagePreview,
-                            ),
-                            _ElementPositionTabPage(
-                              range: _elementPositionSliderRange(
-                                _selectedTextElement!,
-                                pagePixelSize: _elementPositionPagePixelSize(
-                                  _selectedTextElement!,
-                                  singleCanvasWidth: singleCanvasWidth,
-                                  previewCanvasWidth: previewCanvasWidth,
-                                ),
-                              ),
-                              onNudge: _nudgeSelectedText,
-                              onPositionChanged: (x, y) {
-                                _updateSelectedTextPositionFromSlider(
-                                  x: x,
-                                  y: y,
-                                  persist: false,
-                                );
-                              },
-                              onPositionChangeEnd: (x, y) {
-                                _updateSelectedTextPositionFromSlider(
-                                  x: x,
-                                  y: y,
-                                  persist: true,
-                                );
-                              },
-                            ),
-                            _TextSettingsTabPage(
-                              selectedElement: _selectedTextElement!,
-                              onEditText: () {
-                                _showTextEditor(_selectedTextElement!.id);
-                              },
-                              onColorSelected: _updateSelectedTextColor,
-                              onSizeChanged: (value) {
-                                _updateSelectedTextSize(value, persist: false);
-                              },
-                              onSizeChangeEnd: (value) {
-                                _updateSelectedTextSize(value, persist: true);
-                              },
-                            ),
-                          ]
-                        : <Widget>[
-                            _PageTabPage(
-                              page: currentPage,
-                              onAspectSelected: (width, height) {
-                                _updateCurrentPageAspect(
-                                  aspectWidth: width,
-                                  aspectHeight: height,
-                                );
-                              },
-                              onColorSelected: _updateCurrentPageColor,
-                              onCustomColorTap: _showCustomPageColorDialog,
-                            ),
-                            _TemplateTabPage(
-                              page: currentPage,
-                              onApplyTemplate: _applyTemplate,
-                            ),
-                            _ElementTabPage(
-                              showTextOption: true,
-                              onAddText: _addTextElement,
-                              onImportImages: _importImages,
-                              importedImagePaths: _importedImagePaths,
-                              onTapImportedImage: _addImageElementFromPath,
-                              onLongPressImportedImage:
-                                  _showImportedImagePreview,
-                            ),
-                          ],
-                  ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+            ],
+          ),
             if (_isPreparingImage)
               Positioned.fill(
                 child: AbsorbPointer(
