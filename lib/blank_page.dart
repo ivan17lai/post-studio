@@ -20,9 +20,19 @@ enum ExportQualityMode { igStandard1080, high2400 }
 
 typedef _PreparedImageAsset = ({String displayPath, String originalPath});
 
+const int _pageWhiteBackgroundColorValue = 0xFFFFFFFF;
+const int _pageBlackBackgroundColorValue = 0xFF000000;
+const int _igDarkBackgroundColorValue = 0xFF0C0F14;
+const String _pageBackgroundColorPresetKey = 'backgroundColorPreset';
+const String _pageBackgroundColorPresetWhite = 'white';
+const String _pageBackgroundColorPresetBlack = 'black';
+const String _pageBackgroundColorPresetIgBlack = 'ig_black';
+const String _pageBackgroundColorPresetCustom = 'custom';
+
 Color _pageBackgroundColorFromExtras(Map<String, dynamic> extras) {
   final colorValue =
-      (extras['backgroundColorValue'] as num?)?.toInt() ?? Colors.white.value;
+      (extras['backgroundColorValue'] as num?)?.toInt() ??
+      _pageWhiteBackgroundColorValue;
   return Color(colorValue);
 }
 
@@ -1508,13 +1518,17 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
-  Future<void> _updateCurrentPageColor(Color color) async {
+  Future<void> _updateCurrentPageColor(
+    Color color, {
+    required String preset,
+  }) async {
     _storeUndoSnapshot();
     final currentPage = _project.pages[_currentPageIndex];
     final updatedPage = currentPage.copyWith(
       extras: <String, dynamic>{
         ...currentPage.extras,
         'backgroundColorValue': color.toARGB32(),
+        _pageBackgroundColorPresetKey: preset,
       },
     );
     final updatedPages = List<ProjectPage>.from(_project.pages);
@@ -1532,6 +1546,7 @@ class _BlankPageState extends State<BlankPage> {
         ...currentPage.extras,
         'backgroundColorValue': color.toARGB32(),
         'customBackgroundColorValue': color.toARGB32(),
+        _pageBackgroundColorPresetKey: _pageBackgroundColorPresetCustom,
       },
     );
     final updatedPages = List<ProjectPage>.from(_project.pages);
@@ -5205,7 +5220,12 @@ class _BlankPageState extends State<BlankPage> {
                                       aspectHeight: height,
                                     );
                                   },
-                                  onColorSelected: _updateCurrentPageColor,
+                                  onColorSelected: (color, preset) {
+                                    _updateCurrentPageColor(
+                                      color,
+                                      preset: preset,
+                                    );
+                                  },
                                   onCustomColorTap: _showCustomPageColorDialog,
                                 ),
                                 _TemplateTabPage(
@@ -5283,7 +5303,12 @@ class _BlankPageState extends State<BlankPage> {
                                       aspectHeight: height,
                                     );
                                   },
-                                  onColorSelected: _updateCurrentPageColor,
+                                  onColorSelected: (color, preset) {
+                                    _updateCurrentPageColor(
+                                      color,
+                                      preset: preset,
+                                    );
+                                  },
                                   onCustomColorTap: _showCustomPageColorDialog,
                                 ),
                                 _TemplateTabPage(
@@ -5355,7 +5380,12 @@ class _BlankPageState extends State<BlankPage> {
                                       aspectHeight: height,
                                     );
                                   },
-                                  onColorSelected: _updateCurrentPageColor,
+                                  onColorSelected: (color, preset) {
+                                    _updateCurrentPageColor(
+                                      color,
+                                      preset: preset,
+                                    );
+                                  },
                                   onCustomColorTap: _showCustomPageColorDialog,
                                 ),
                                 _TemplateTabPage(
@@ -7833,7 +7863,7 @@ class _PageTabPage extends StatelessWidget {
 
   final ProjectPage page;
   final void Function(double aspectWidth, double aspectHeight) onAspectSelected;
-  final ValueChanged<Color> onColorSelected;
+  final void Function(Color color, String preset) onColorSelected;
   final Future<void> Function() onCustomColorTap;
 
   static const List<_PageAspectOption> _options = <_PageAspectOption>[
@@ -7850,7 +7880,31 @@ class _PageTabPage extends StatelessWidget {
     const double cardHeight = 75;
     final selectedColorValue =
         (page.extras['backgroundColorValue'] as num?)?.toInt() ??
-        Colors.white.value;
+        _pageWhiteBackgroundColorValue;
+    final selectedPreset =
+        page.extras[_pageBackgroundColorPresetKey] as String?;
+    final isKnownPreset =
+        selectedPreset == _pageBackgroundColorPresetWhite ||
+        selectedPreset == _pageBackgroundColorPresetBlack ||
+        selectedPreset == _pageBackgroundColorPresetIgBlack ||
+        selectedPreset == _pageBackgroundColorPresetCustom;
+    final isWhiteSelected =
+        selectedPreset == _pageBackgroundColorPresetWhite ||
+        (!isKnownPreset &&
+            selectedColorValue == _pageWhiteBackgroundColorValue);
+    final isBlackSelected =
+        selectedPreset == _pageBackgroundColorPresetBlack ||
+        (!isKnownPreset &&
+            selectedColorValue == _pageBlackBackgroundColorValue);
+    final isIgBlackSelected =
+        selectedPreset == _pageBackgroundColorPresetIgBlack ||
+        (!isKnownPreset && selectedColorValue == _igDarkBackgroundColorValue);
+    final isCustomSelected =
+        selectedPreset == _pageBackgroundColorPresetCustom ||
+        (!isKnownPreset &&
+            selectedColorValue != _pageWhiteBackgroundColorValue &&
+            selectedColorValue != _pageBlackBackgroundColorValue &&
+            selectedColorValue != _igDarkBackgroundColorValue);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -7906,31 +7960,48 @@ class _PageTabPage extends StatelessWidget {
         const SizedBox(height: 10),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            children: [
-              _PageColorCard(
-                label: '白',
-                color: Colors.white,
-                selected: selectedColorValue == Colors.white.value,
-                onTap: () => onColorSelected(Colors.white),
-              ),
-              const SizedBox(width: 12),
-              _PageColorCard(
-                label: '黑',
-                color: Colors.black,
-                selected: selectedColorValue == Colors.black.value,
-                onTap: () => onColorSelected(Colors.black),
-              ),
-              const SizedBox(width: 12),
-              _PageColorCard(
-                label: '自訂',
-                color: Color(selectedColorValue),
-                selected:
-                    selectedColorValue != Colors.white.value &&
-                    selectedColorValue != Colors.black.value,
-                onTap: onCustomColorTap,
-              ),
-            ],
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _PageColorCard(
+                  label: '白',
+                  color: Colors.white,
+                  selected: isWhiteSelected,
+                  onTap: () => onColorSelected(
+                    Colors.white,
+                    _pageBackgroundColorPresetWhite,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                _PageColorCard(
+                  label: '黑',
+                  color: Colors.black,
+                  selected: isBlackSelected,
+                  onTap: () => onColorSelected(
+                    Colors.black,
+                    _pageBackgroundColorPresetBlack,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                _PageColorCard(
+                  label: 'IG黑',
+                  color: const Color(_igDarkBackgroundColorValue),
+                  selected: isIgBlackSelected,
+                  onTap: () => onColorSelected(
+                    const Color(_igDarkBackgroundColorValue),
+                    _pageBackgroundColorPresetIgBlack,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                _PageColorCard(
+                  label: '自訂',
+                  color: Color(selectedColorValue),
+                  selected: isCustomSelected,
+                  onTap: onCustomColorTap,
+                ),
+              ],
+            ),
           ),
         ),
       ],
