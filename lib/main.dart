@@ -9,12 +9,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'app_strings.dart';
+import 'app_settings.dart';
 import 'blank_page.dart';
 import 'project_record.dart';
+import 'settings_page.dart';
 import 'theme_constants.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppSettingsController.instance.load();
   runApp(const MyApp());
 }
 
@@ -23,9 +26,22 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      home: const MainPage(),
+    return AnimatedBuilder(
+      animation: AppSettingsController.instance,
+      builder: (context, _) {
+        final primary = AppSettingsController.instance.primaryColor;
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(
+            colorScheme: ColorScheme.fromSeed(
+              seedColor: primary,
+              brightness: Brightness.light,
+            ),
+            scaffoldBackgroundColor: const Color(0xFFEAEAEA),
+          ),
+          home: const MainPage(),
+        );
+      },
     );
   }
 }
@@ -46,11 +62,13 @@ class _MainPageState extends State<MainPage> {
   bool _hasUpdate = false;
   String? _latestVersionUrl;
   String? _newVersionString;
+  final String _appVersion = kAppDisplayVersion;
 
   @override
   void initState() {
     super.initState();
     _shareChannel.setMethodCallHandler(_handleShareMethodCall);
+    AppSettingsController.instance.addListener(_handleSettingsChanged);
     _loadProjects();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_consumePendingSharedImages());
@@ -61,21 +79,29 @@ class _MainPageState extends State<MainPage> {
   @override
   void dispose() {
     _shareChannel.setMethodCallHandler(null);
+    AppSettingsController.instance.removeListener(_handleSettingsChanged);
     super.dispose();
+  }
+
+  void _handleSettingsChanged() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _loadProjects() async {
     final prefs = await SharedPreferences.getInstance();
     final rawList = prefs.getStringList(_projectsStorageKey) ?? <String>[];
 
-    final projects = rawList
-        .map(
-          (item) => ProjectRecord.fromJson(
-            jsonDecode(item) as Map<String, dynamic>,
-          ),
-        )
-        .toList()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final projects =
+        rawList
+            .map(
+              (item) => ProjectRecord.fromJson(
+                jsonDecode(item) as Map<String, dynamic>,
+              ),
+            )
+            .toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
     if (!mounted) {
       return;
@@ -216,11 +242,15 @@ class _MainPageState extends State<MainPage> {
   }
 
   Future<void> _consumePendingSharedImages() async {
-    final pending = await _shareChannel.invokeListMethod<dynamic>(
+    final pending =
+        await _shareChannel.invokeListMethod<dynamic>(
           'getPendingSharedImages',
         ) ??
         const <dynamic>[];
-    final paths = pending.whereType<String>().where((item) => item.isNotEmpty).toList();
+    final paths = pending
+        .whereType<String>()
+        .where((item) => item.isNotEmpty)
+        .toList();
     if (paths.isEmpty) {
       return;
     }
@@ -283,6 +313,20 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
+  Future<void> _openSettingsPage() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => SettingsPage(
+          appVersion: _appVersion,
+          hasUpdate: _hasUpdate,
+          latestVersion: _newVersionString,
+          latestVersionUrl: _latestVersionUrl,
+          onCheckForUpdates: () => _checkForUpdates(),
+        ),
+      ),
+    );
+  }
+
   Future<void> _checkForUpdates({bool isSilent = false}) async {
     if (!isSilent) {
       showDialog<void>(
@@ -296,7 +340,11 @@ class _MainPageState extends State<MainPage> {
       final info = await PackageInfo.fromPlatform();
       final currentVersion = info.version;
 
-      final response = await http.get(Uri.parse('https://api.github.com/repos/ivan17lai/post-studio/releases/latest'));
+      final response = await http.get(
+        Uri.parse(
+          'https://api.github.com/repos/ivan17lai/post-studio/releases/latest',
+        ),
+      );
       if (!mounted) return;
       if (!isSilent) Navigator.of(context).pop();
 
@@ -304,11 +352,11 @@ class _MainPageState extends State<MainPage> {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final tag = data['tag_name'] as String;
         final htmlUrl = data['html_url'] as String;
-        
+
         final latestVersion = tag.startsWith('v') ? tag.substring(1) : tag;
-        
+
         final isNewer = _isVersionNewer(currentVersion, latestVersion);
-        
+
         if (isNewer) {
           setState(() {
             _hasUpdate = true;
@@ -320,33 +368,39 @@ class _MainPageState extends State<MainPage> {
           }
         } else {
           if (!isSilent) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('目前已是最新版本')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('目前已是最新版本')));
           }
         }
       } else {
         if (!isSilent) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('檢查更新失敗，請稍後再試')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('妾㈡煡鏇存柊澶辨晽锛岃珛绋嶅緦鍐嶈│')));
         }
       }
     } catch (e) {
       if (!mounted) return;
       if (!isSilent) {
         Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('網路連線錯誤')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('缍茶矾閫ｇ窔閷')));
       }
     }
   }
 
   bool _isVersionNewer(String current, String latest) {
-    final currentParts = current.split('.').map((e) => int.tryParse(e) ?? 0).toList();
-    final latestParts = latest.split('.').map((e) => int.tryParse(e) ?? 0).toList();
-    
+    final currentParts = current
+        .split('.')
+        .map((e) => int.tryParse(e) ?? 0)
+        .toList();
+    final latestParts = latest
+        .split('.')
+        .map((e) => int.tryParse(e) ?? 0)
+        .toList();
+
     for (var i = 0; i < 3; i++) {
       final c = i < currentParts.length ? currentParts[i] : 0;
       final l = i < latestParts.length ? latestParts[i] : 0;
@@ -409,18 +463,21 @@ class _MainPageState extends State<MainPage> {
                   children: [
                     Expanded(
                       child: _DialogActionButton(
-                        label: '稍後再說',
+                        label: '绋嶅緦鍐嶈',
                         onTap: () => Navigator.of(context).pop(),
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: _DialogActionButton(
-                        label: '前往下載',
+                        label: '鍓嶅線涓嬭級',
                         isPrimary: true,
                         onTap: () {
                           Navigator.of(context).pop();
-                          launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+                          launchUrl(
+                            Uri.parse(url),
+                            mode: LaunchMode.externalApplication,
+                          );
                         },
                       ),
                     ),
@@ -445,29 +502,31 @@ class _MainPageState extends State<MainPage> {
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 16),
-            child: _hasUpdate
-                ? TextButton.icon(
-                    onPressed: () => _showUpdateDialog(_newVersionString!, _latestVersionUrl!),
-                    icon: const Icon(Icons.system_update_rounded, size: 18, color: Colors.black87),
-                    label: const Text(
-                      '有新版本',
-                      style: TextStyle(
-                        color: Colors.black87,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    style: TextButton.styleFrom(
-                      backgroundColor: kPrimaryAccentColor,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      shape: RoundedRectangleBorder(
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                IconButton(
+                  onPressed: _openSettingsPage,
+                  icon: const Icon(
+                    Icons.settings_rounded,
+                    color: Color(0xFF5F5F5F),
+                  ),
+                ),
+                if (_hasUpdate)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: kPrimaryAccentColor,
                         borderRadius: BorderRadius.circular(999),
                       ),
                     ),
-                  )
-                : IconButton(
-                    onPressed: () => _checkForUpdates(),
-                    icon: const Icon(Icons.system_update_rounded, color: Colors.grey),
                   ),
+              ],
+            ),
           ),
         ],
       ),
@@ -520,6 +579,18 @@ class _MainPageState extends State<MainPage> {
                       },
                     ),
             ),
+            if (_appVersion.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: Text(
+                  _appVersion,
+                  style: const TextStyle(
+                    color: Color(0xFF9A9A9A),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -748,10 +819,7 @@ class _StyledCreateProjectDialogState
                     'count': '${widget.attachedPhotoCount}',
                   },
                 ),
-                style: const TextStyle(
-                  fontSize: 13,
-                  color: Color(0xFF6A6A6A),
-                ),
+                style: const TextStyle(fontSize: 13, color: Color(0xFF6A6A6A)),
               ),
             ],
             const SizedBox(height: 12),

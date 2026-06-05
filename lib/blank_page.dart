@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -6,10 +7,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 
+import 'app_settings.dart';
 import 'app_strings.dart';
 import 'project_record.dart';
 import 'theme_constants.dart';
@@ -28,6 +30,7 @@ const String _pageBackgroundColorPresetWhite = 'white';
 const String _pageBackgroundColorPresetBlack = 'black';
 const String _pageBackgroundColorPresetIgBlack = 'ig_black';
 const String _pageBackgroundColorPresetCustom = 'custom';
+const double _cropScaleSliderMax = 14.0;
 
 Color _pageBackgroundColorFromExtras(Map<String, dynamic> extras) {
   final colorValue =
@@ -39,6 +42,18 @@ Color _pageBackgroundColorFromExtras(Map<String, dynamic> extras) {
 double _cropScaleFromData(Map<String, dynamic> data) {
   final value = (data['cropScale'] as num?)?.toDouble() ?? 1.0;
   return value < 1 ? 1.0 : value;
+}
+
+double _cropScaleToSliderValue(double scale) {
+  final safeScale = scale.clamp(1.0, _cropScaleSliderMax).toDouble();
+  return 0.5 + ((safeScale - 1.0) / (_cropScaleSliderMax - 1.0) * 0.5);
+}
+
+double _cropScaleFromSliderValue(double value) {
+  if (value <= 0.5) {
+    return 1.0;
+  }
+  return 1.0 + ((value - 0.5) / 0.5 * (_cropScaleSliderMax - 1.0));
 }
 
 double _cropOffsetXFromData(Map<String, dynamic> data) {
@@ -473,13 +488,13 @@ int _previewImageCacheExtent(
   double logicalWidth,
   double logicalHeight,
 ) {
-  final pixelRatio = MediaQuery.devicePixelRatioOf(context).clamp(1.0, 3.0);
+  final pixelRatio = MediaQuery.devicePixelRatioOf(context).clamp(1.0, 2.0);
   return (logicalWidth > logicalHeight ? logicalWidth : logicalHeight).isFinite
       ? ((logicalWidth > logicalHeight ? logicalWidth : logicalHeight) *
                 pixelRatio)
             .round()
-            .clamp(96, 2048)
-      : 1024;
+            .clamp(96, 768)
+      : 512;
 }
 
 bool _shouldPaintCrossPageElement({
@@ -501,6 +516,13 @@ bool _shouldPaintCrossPageElement({
   final bottom = top + elementHeight;
 
   return right > 0 && left < 1 && bottom > 0 && top < 1;
+}
+
+bool _shouldBuildPreviewPage({
+  required int pageIndex,
+  required int currentPageIndex,
+}) {
+  return (pageIndex - currentPageIndex).abs() <= 2;
 }
 
 bool _snapEnabledForElement(CanvasElement element) {
@@ -614,6 +636,7 @@ class _BlankPageState extends State<BlankPage> {
   int _currentPageIndex = 0;
   late ProjectRecord _project;
   bool _showPageBorder = false;
+  bool _showPageSorter = false;
   bool _isExporting = false;
   bool _isPreparingImage = false;
   int _savingRequestCount = 0;
@@ -622,6 +645,7 @@ class _BlankPageState extends State<BlankPage> {
   String? _selectedElementId;
   String? _croppingElementId;
   String? _deleteArmedElementId;
+  String? _selectedSorterPageId;
   late PageController _pageController;
   late final PageController _bottomTabPageController;
   final ScrollController _previewScrollController = ScrollController();
@@ -631,14 +655,15 @@ class _BlankPageState extends State<BlankPage> {
   final Map<String, Color> _customPageColorDrafts = <String, Color>{};
   List<_SnapGuide> _activeSnapGuides = const <_SnapGuide>[];
   bool _showSinglePageDivider = false;
+  bool _singlePageDividerUpdateScheduled = false;
+  bool? _pendingSinglePageDividerVisible;
   _EditorSnapshot? _lastSnapshot;
   bool _hasPendingElementUndoSnapshot = false;
-  String _appVersion = '';
 
   @override
   void initState() {
     super.initState();
-    _loadVersion();
+    AppSettingsController.instance.addListener(_handleSettingsChanged);
     _project = widget.project.pages.isEmpty
         ? widget.project.copyWith(
             pages: <ProjectPage>[ProjectPage.initial()],
@@ -647,23 +672,21 @@ class _BlankPageState extends State<BlankPage> {
         : widget.project.copyWith(pageCount: widget.project.pages.length);
     _pageController = _buildPageController();
     _bottomTabPageController = PageController();
-    unawaited(_persistProject(_project));
-    if (widget.initialImportedSourcePaths.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      unawaited(_persistProject(_project));
+      if (widget.initialImportedSourcePaths.isNotEmpty) {
         unawaited(_importSourcePaths(widget.initialImportedSourcePaths));
-      });
-    }
+      }
+    });
   }
 
-  Future<void> _loadVersion() async {
-    try {
-      final packageInfo = await PackageInfo.fromPlatform();
-      if (mounted) {
-        setState(() {
-          _appVersion = 'v${packageInfo.version}';
-        });
-      }
-    } catch (_) {}
+  void _handleSettingsChanged() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   PageController _buildPageController() {
@@ -971,8 +994,11 @@ class _BlankPageState extends State<BlankPage> {
     });
   }
 
-  Future<_PreparedImageAsset> _prepareImageAsset(String sourcePath) async {
-    if (mounted) {
+  Future<_PreparedImageAsset> _prepareImageAsset(
+    String sourcePath, {
+    bool managePreparingState = true,
+  }) async {
+    if (managePreparingState && mounted) {
       setState(() {
         _isPreparingImage = true;
       });
@@ -985,7 +1011,7 @@ class _BlankPageState extends State<BlankPage> {
             <String, dynamic>{
               'sourcePath': sourcePath,
               'projectId': _project.id,
-              'maxPreviewSide': 1080,
+              'maxPreviewSide': 720,
             },
           ) ??
           <String, dynamic>{};
@@ -1000,7 +1026,7 @@ class _BlankPageState extends State<BlankPage> {
           sourcePath;
       return (displayPath: displayPath, originalPath: originalPath);
     } finally {
-      if (mounted) {
+      if (managePreparingState && mounted) {
         setState(() {
           _isPreparingImage = false;
         });
@@ -1155,11 +1181,28 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   void _setSinglePageDividerVisible(bool isVisible) {
-    if (_showSinglePageDivider == isVisible) {
+    if (_showSinglePageDivider == isVisible &&
+        _pendingSinglePageDividerVisible == null) {
       return;
     }
-    setState(() {
-      _showSinglePageDivider = isVisible;
+    _pendingSinglePageDividerVisible = isVisible;
+    if (_singlePageDividerUpdateScheduled) {
+      return;
+    }
+
+    _singlePageDividerUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _singlePageDividerUpdateScheduled = false;
+      final nextVisible = _pendingSinglePageDividerVisible;
+      _pendingSinglePageDividerVisible = null;
+      if (!mounted ||
+          nextVisible == null ||
+          _showSinglePageDivider == nextVisible) {
+        return;
+      }
+      setState(() {
+        _showSinglePageDivider = nextVisible;
+      });
     });
   }
 
@@ -1263,8 +1306,15 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   Future<void> _deleteCurrentPage() async {
-    final strings = AppStrings.of(context);
     if (_displayMode == PageDisplayMode.preview) {
+      return;
+    }
+    await _deletePageAtIndex(_currentPageIndex);
+  }
+
+  Future<void> _deletePageAtIndex(int pageIndex) async {
+    final strings = AppStrings.of(context);
+    if (pageIndex < 0 || pageIndex >= _project.pages.length) {
       return;
     }
 
@@ -1356,9 +1406,12 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     _storeUndoSnapshot();
+    final deletedPageId = _project.pages[pageIndex].id;
     final updatedPages = List<ProjectPage>.from(_project.pages)
-      ..removeAt(_currentPageIndex);
-    final nextIndex = _currentPageIndex >= updatedPages.length
+      ..removeAt(pageIndex);
+    final nextIndex = _currentPageIndex > pageIndex
+        ? _currentPageIndex - 1
+        : _currentPageIndex >= updatedPages.length
         ? updatedPages.length - 1
         : _currentPageIndex;
 
@@ -1375,7 +1428,11 @@ class _BlankPageState extends State<BlankPage> {
       _selectedElementId = null;
       _croppingElementId = null;
       _deleteArmedElementId = null;
+      if (deletedPageId == _selectedSorterPageId) {
+        _selectedSorterPageId = null;
+      }
       _selectedBottomTab = _tabTemplate;
+      _showPageSorter = updatedPages.length > 1 && _showPageSorter;
       _refreshPageControllerViewportIfNeeded();
     });
 
@@ -1385,6 +1442,343 @@ class _BlankPageState extends State<BlankPage> {
       }
       _syncBottomTab();
     });
+  }
+
+  void _togglePageSorter() {
+    setState(() {
+      _showPageSorter = !_showPageSorter;
+      _selectedSorterPageId = null;
+      _selectedElementId = null;
+      _croppingElementId = null;
+      _deleteArmedElementId = null;
+      _activeSnapGuides = const <_SnapGuide>[];
+    });
+  }
+
+  void _toggleSorterPageSelection(int pageIndex) {
+    if (pageIndex < 0 || pageIndex >= _project.pages.length) {
+      return;
+    }
+
+    final pageId = _project.pages[pageIndex].id;
+    setState(() {
+      _selectedSorterPageId = _selectedSorterPageId == pageId ? null : pageId;
+      _selectedElementId = null;
+      _croppingElementId = null;
+      _deleteArmedElementId = null;
+      _activeSnapGuides = const <_SnapGuide>[];
+    });
+  }
+
+  void _moveSelectedSorterPage(int delta) {
+    final selectedPageId = _selectedSorterPageId;
+    if (selectedPageId == null) {
+      return;
+    }
+
+    final oldIndex = _project.pages.indexWhere(
+      (page) => page.id == selectedPageId,
+    );
+    if (oldIndex == -1) {
+      setState(() {
+        _selectedSorterPageId = null;
+      });
+      return;
+    }
+
+    final newIndex = (oldIndex + delta).clamp(0, _project.pages.length - 1);
+    if (newIndex == oldIndex) {
+      return;
+    }
+    _reorderPages(oldIndex, newIndex);
+  }
+
+  void _reorderPages(int oldIndex, int newIndex) {
+    if (oldIndex < 0 ||
+        oldIndex >= _project.pages.length ||
+        newIndex < 0 ||
+        newIndex >= _project.pages.length) {
+      return;
+    }
+
+    final targetIndex = newIndex;
+    if (oldIndex == targetIndex) {
+      return;
+    }
+
+    _storeUndoSnapshot();
+    final currentPageId = _project.pages[_currentPageIndex].id;
+    final updatedPages = List<ProjectPage>.from(_project.pages);
+    final movedPage = updatedPages.removeAt(oldIndex);
+    updatedPages.insert(targetIndex, movedPage);
+    final nextCurrentIndex = updatedPages.indexWhere(
+      (page) => page.id == currentPageId,
+    );
+    final updatedProject = _project.copyWith(
+      pages: updatedPages,
+      pageCount: updatedPages.length,
+    );
+
+    setState(() {
+      _project = updatedProject;
+      _currentPageIndex = nextCurrentIndex == -1
+          ? targetIndex
+          : nextCurrentIndex;
+      _selectedElementId = null;
+      _croppingElementId = null;
+      _deleteArmedElementId = null;
+      _activeSnapGuides = const <_SnapGuide>[];
+      _refreshPageControllerViewportIfNeeded();
+    });
+
+    unawaited(_saveProject(updatedProject));
+  }
+
+  Future<void> _requestAiPageSort() async {
+    final settings = AppSettingsController.instance;
+    if (_project.pages.length < 2) {
+      return;
+    }
+    if (!settings.aiSortEnabled || !settings.hasGeminiApiKey) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('請先到設定啟用 AI 排序並驗證 API Key')));
+      return;
+    }
+
+    setState(() {
+      _isPreparingImage = true;
+    });
+
+    try {
+      final order = await _requestGeminiPageOrder(settings.geminiApiKey);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isPreparingImage = false;
+      });
+      final accepted = await _showAiSortConfirmationDialog(order);
+      if (accepted == true) {
+        _applyPageOrder(order);
+      }
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isPreparingImage = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('AI 排序失敗，請確認 API Key 或稍後再試')),
+      );
+    }
+  }
+
+  Future<List<int>> _requestGeminiPageOrder(String apiKey) async {
+    await _primeExportImageCache();
+    final pageIndexes = <int>[
+      for (var i = 0; i < _project.pages.length; i++) i,
+    ];
+    final parts = <Map<String, dynamic>>[
+      <String, String>{
+        'text':
+            'You are sorting pages for a social post carousel. Analyze the page thumbnails and return the best narrative order. Return ONLY JSON in this exact format: {"order":[1,2,3],"reason":"short reason"}. The order array must include every original page number exactly once, using 1-based page numbers.',
+      },
+    ];
+
+    for (var listIndex = 0; listIndex < pageIndexes.length; listIndex++) {
+      final pageNumber = pageIndexes[listIndex] + 1;
+      final bytes = await _renderProjectPageInSetBytesForGallery(
+        exportWidth: 360,
+        pageIndexes: pageIndexes,
+        targetListIndex: listIndex,
+      );
+      parts
+        ..add(<String, String>{'text': 'Original page $pageNumber'})
+        ..add(<String, dynamic>{
+          'inlineData': <String, String>{
+            'mimeType': 'image/jpeg',
+            'data': base64Encode(bytes),
+          },
+        });
+    }
+
+    final uri = Uri.https(
+      'generativelanguage.googleapis.com',
+      '/v1beta/models/$kGeminiSortModel:generateContent',
+      <String, String>{'key': apiKey},
+    );
+    final response = await http
+        .post(
+          uri,
+          headers: const <String, String>{'Content-Type': 'application/json'},
+          body: jsonEncode(<String, dynamic>{
+            'contents': <Map<String, dynamic>>[
+              <String, dynamic>{'role': 'user', 'parts': parts},
+            ],
+            'generationConfig': <String, dynamic>{
+              'temperature': 0.2,
+              'responseMimeType': 'application/json',
+            },
+          }),
+        )
+        .timeout(const Duration(seconds: 45));
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('Gemini request failed');
+    }
+
+    final responseData = jsonDecode(response.body) as Map<String, dynamic>;
+    final text = _geminiTextFromResponse(responseData);
+    return _parseAiSortOrder(text, _project.pages.length);
+  }
+
+  String _geminiTextFromResponse(Map<String, dynamic> data) {
+    final candidates = data['candidates'] as List<dynamic>?;
+    if (candidates == null || candidates.isEmpty) {
+      throw Exception('Missing Gemini candidates');
+    }
+    final content =
+        (candidates.first as Map<String, dynamic>)['content']
+            as Map<String, dynamic>?;
+    final parts = content?['parts'] as List<dynamic>?;
+    final text = parts
+        ?.whereType<Map<String, dynamic>>()
+        .map((part) => part['text'])
+        .whereType<String>()
+        .join('\n')
+        .trim();
+    if (text == null || text.isEmpty) {
+      throw Exception('Missing Gemini text');
+    }
+    return text;
+  }
+
+  List<int> _parseAiSortOrder(String text, int pageCount) {
+    var cleaned = text.trim();
+    final fenced = RegExp(
+      r'```(?:json)?\s*([\s\S]*?)\s*```',
+      caseSensitive: false,
+    ).firstMatch(cleaned);
+    if (fenced != null) {
+      cleaned = fenced.group(1)!.trim();
+    }
+    final objectStart = cleaned.indexOf('{');
+    final objectEnd = cleaned.lastIndexOf('}');
+    if (objectStart != -1 && objectEnd > objectStart) {
+      cleaned = cleaned.substring(objectStart, objectEnd + 1);
+    }
+
+    final decoded = jsonDecode(cleaned) as Map<String, dynamic>;
+    final rawOrder = decoded['order'] as List<dynamic>?;
+    if (rawOrder == null) {
+      throw Exception('Missing order');
+    }
+    final order = rawOrder.map((item) {
+      if (item is num) {
+        return item.toInt() - 1;
+      }
+      return int.parse('$item') - 1;
+    }).toList();
+    final unique = order.toSet();
+    if (order.length != pageCount ||
+        unique.length != pageCount ||
+        unique.any((index) => index < 0 || index >= pageCount)) {
+      throw Exception('Invalid order');
+    }
+    return order;
+  }
+
+  Future<bool?> _showAiSortConfirmationDialog(List<int> order) {
+    final currentOrder = <int>[
+      for (var i = 0; i < _project.pages.length; i++) i,
+    ];
+    final currentLabel = currentOrder.map((index) => '${index + 1}').join('  ');
+    final nextLabel = order.map((index) => '${index + 1}').join('  ');
+    return showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F4F4),
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'AI 建議排序',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF1F1F1F),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                _AiSortOrderPreview(title: '目前順序', value: currentLabel),
+                const SizedBox(height: 8),
+                _AiSortOrderPreview(title: '建議順序', value: nextLabel),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: '取消',
+                        onTap: () => Navigator.of(context).pop(false),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: '接受',
+                        isPrimary: true,
+                        onTap: () => Navigator.of(context).pop(true),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _applyPageOrder(List<int> order) {
+    if (order.length != _project.pages.length) {
+      return;
+    }
+    final currentPageId = _project.pages[_currentPageIndex].id;
+    final updatedPages = order.map((index) => _project.pages[index]).toList();
+    final nextCurrentIndex = updatedPages.indexWhere(
+      (page) => page.id == currentPageId,
+    );
+    final updatedProject = _project.copyWith(
+      pages: updatedPages,
+      pageCount: updatedPages.length,
+    );
+
+    _storeUndoSnapshot();
+    setState(() {
+      _project = updatedProject;
+      _currentPageIndex = nextCurrentIndex == -1 ? 0 : nextCurrentIndex;
+      _selectedElementId = null;
+      _croppingElementId = null;
+      _deleteArmedElementId = null;
+      _activeSnapGuides = const <_SnapGuide>[];
+      _refreshPageControllerViewportIfNeeded();
+    });
+    unawaited(_saveProject(updatedProject));
   }
 
   Future<bool> _confirmPageAspectChangeIfNeeded() async {
@@ -1881,35 +2275,51 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final importedImages = <_PreparedImageAsset>[];
-    final seenSourcePaths = <String>{};
-    for (final path in sourcePaths) {
-      if (path.isEmpty || !seenSourcePaths.add(path)) {
-        continue;
-      }
-      final existingImport = _importedImageForPath(path);
-      if (existingImport != null) {
-        importedImages.add(existingImport);
-        continue;
-      }
-      importedImages.add(await _prepareImageAsset(path));
+    if (mounted) {
+      setState(() {
+        _isPreparingImage = true;
+      });
     }
 
-    if (importedImages.isEmpty) {
-      return;
-    }
+    try {
+      final importedImages = <_PreparedImageAsset>[];
+      final seenSourcePaths = <String>{};
+      for (final path in sourcePaths) {
+        if (path.isEmpty || !seenSourcePaths.add(path)) {
+          continue;
+        }
+        final existingImport = _importedImageForPath(path);
+        if (existingImport != null) {
+          importedImages.add(existingImport);
+          continue;
+        }
+        importedImages.add(
+          await _prepareImageAsset(path, managePreparingState: false),
+        );
+      }
 
-    await _saveProjectExtras(<String, dynamic>{
-      ..._project.extras,
-      'importedImages': _mergedImportedImages(
-        importedImages.map(
-          (image) => <String, dynamic>{
-            'src': image.displayPath,
-            'originalSrc': image.originalPath,
-          },
+      if (importedImages.isEmpty) {
+        return;
+      }
+
+      await _saveProjectExtras(<String, dynamic>{
+        ..._project.extras,
+        'importedImages': _mergedImportedImages(
+          importedImages.map(
+            (image) => <String, dynamic>{
+              'src': image.displayPath,
+              'originalSrc': image.originalPath,
+            },
+          ),
         ),
-      ),
-    });
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isPreparingImage = false;
+        });
+      }
+    }
   }
 
   Future<void> _importImages() async {
@@ -3147,7 +3557,7 @@ class _BlankPageState extends State<BlankPage> {
     if (element == null || element.id != elementId) {
       return;
     }
-    final nextScale = scale.clamp(1.0, 8.0).toDouble();
+    final nextScale = scale.clamp(1.0, _cropScaleSliderMax).toDouble();
     final clamped = _clampedCropOffsetForElement(
       element,
       x: _cropOffsetXFromData(element.data),
@@ -3185,7 +3595,7 @@ class _BlankPageState extends State<BlankPage> {
     if (element == null || element.id != elementId) {
       return;
     }
-    
+
     final updatedElement = element.copyWith(
       x: x,
       y: y,
@@ -3607,6 +4017,8 @@ class _BlankPageState extends State<BlankPage> {
       _selectedElementId = null;
       _croppingElementId = null;
       _deleteArmedElementId = null;
+      _selectedSorterPageId = null;
+      _showPageSorter = false;
       _refreshPageControllerViewportIfNeeded();
     });
 
@@ -4260,6 +4672,7 @@ class _BlankPageState extends State<BlankPage> {
   Future<void> _exportAllPagesToGallery({
     required bool reverseOrder,
     required ExportQualityMode qualityMode,
+    required Set<int> selectedPageIndexes,
     void Function(double progress, String label)? onProgress,
     ValueChanged<_CompletedExportPage>? onCompletedPage,
   }) async {
@@ -4276,14 +4689,22 @@ class _BlankPageState extends State<BlankPage> {
     try {
       await _primeExportImageCache(onProgress: onProgress);
       var successCount = 0;
-      final totalPages = _project.pages.length;
+      final selectedIndexes =
+          selectedPageIndexes
+              .where((index) => index >= 0 && index < _project.pages.length)
+              .toList()
+            ..sort();
+      if (selectedIndexes.isEmpty) {
+        return;
+      }
+      final totalPages = selectedIndexes.length;
       final exportWidth = switch (qualityMode) {
         ExportQualityMode.igStandard1080 => 1080,
         ExportQualityMode.high2400 => 2400,
       };
       final pageIndexes = reverseOrder
-          ? <int>[for (var i = totalPages - 1; i >= 0; i--) i]
-          : <int>[for (var i = 0; i < totalPages; i++) i];
+          ? selectedIndexes.reversed.toList()
+          : selectedIndexes;
 
       for (var listIndex = 0; listIndex < pageIndexes.length; listIndex++) {
         final pageIndex = pageIndexes[listIndex];
@@ -4342,7 +4763,7 @@ class _BlankPageState extends State<BlankPage> {
         return;
       }
 
-      if (successCount == _project.pages.length) {
+      if (successCount == pageIndexes.length) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text(strings.t('exportedToGallery'))));
@@ -4382,6 +4803,9 @@ class _BlankPageState extends State<BlankPage> {
     var dialogProgress = 0.0;
     var dialogProgressLabel = strings.t('prepareExport');
     var dialogCompletedPages = <_CompletedExportPage>[];
+    var selectedExportPageIndexes = <int>{
+      for (var i = 0; i < _project.pages.length; i++) i,
+    };
 
     Future<void> startExport(
       StateSetter setDialogState,
@@ -4403,6 +4827,7 @@ class _BlankPageState extends State<BlankPage> {
       await _exportAllPagesToGallery(
         reverseOrder: reverseOrder,
         qualityMode: qualityMode,
+        selectedPageIndexes: selectedExportPageIndexes,
         onProgress: (progress, label) {
           if (!dialogContext.mounted) {
             return;
@@ -4479,6 +4904,30 @@ class _BlankPageState extends State<BlankPage> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
+                              _ExportSelectionSummary(
+                                totalCount: _project.pages.length,
+                                selectedIndexes: selectedExportPageIndexes,
+                                reverseOrder: reverseOrder,
+                              ),
+                              const SizedBox(height: 10),
+                              _ExportPageSelectionStrip(
+                                pages: _project.pages,
+                                selectedIndexes: selectedExportPageIndexes,
+                                onToggle: (pageIndex) {
+                                  setDialogState(() {
+                                    final next = Set<int>.from(
+                                      selectedExportPageIndexes,
+                                    );
+                                    if (next.contains(pageIndex)) {
+                                      next.remove(pageIndex);
+                                    } else {
+                                      next.add(pageIndex);
+                                    }
+                                    selectedExportPageIndexes = next;
+                                  });
+                                },
+                              ),
+                              const SizedBox(height: 16),
                               const Text(
                                 '畫質',
                                 style: TextStyle(
@@ -4591,6 +5040,7 @@ class _BlankPageState extends State<BlankPage> {
                               child: _DialogIconActionButton(
                                 icon: Icons.ios_share_rounded,
                                 isPrimary: true,
+                                enabled: selectedExportPageIndexes.isNotEmpty,
                                 onTap: () {
                                   unawaited(
                                     startExport(setDialogState, context),
@@ -4622,6 +5072,7 @@ class _BlankPageState extends State<BlankPage> {
 
   @override
   void dispose() {
+    AppSettingsController.instance.removeListener(_handleSettingsChanged);
     _pageController.dispose();
     _bottomTabPageController.dispose();
     _previewScrollController.dispose();
@@ -4658,7 +5109,7 @@ class _BlankPageState extends State<BlankPage> {
     const bottomTabRowHeight = 30.0;
     const bottomTabPanelGap = 10.0;
     final bottomSafePadding = MediaQuery.of(context).padding.bottom;
-    final bottomPadding = 32.0 + bottomSafePadding;
+    final bottomPadding = (32.0 + bottomSafePadding) * 0.5;
     final bottomTabs = _bottomTabs;
     WidgetsBinding.instance.addPostFrameCallback((_) => _syncBottomTab());
 
@@ -4739,6 +5190,7 @@ class _BlankPageState extends State<BlankPage> {
                         children: [
                           _SlideSwitch(
                             value: _displayMode == PageDisplayMode.preview,
+                            enabled: !_showPageSorter,
                             onChanged: (value) {
                               _changeDisplayMode(
                                 value
@@ -4767,6 +5219,12 @@ class _BlankPageState extends State<BlankPage> {
                                     key: const ValueKey('border-button'),
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
+                                      _ToolbarIconButton(
+                                        icon: Icons.auto_awesome_rounded,
+                                        enabled: pages.length > 1,
+                                        onPressed: _requestAiPageSort,
+                                      ),
+                                      const SizedBox(width: 8),
                                       _ToolbarIconButton(
                                         icon: _showPageBorder
                                             ? Icons.border_outer_rounded
@@ -4804,18 +5262,17 @@ class _BlankPageState extends State<BlankPage> {
                             onTap: () => _goToPage(_currentPageIndex - 1),
                           ),
                           const SizedBox(width: 8),
-                          Text(
-                            strings.t(
+                          _PageIndicatorButton(
+                            label: strings.t(
                               'pageIndicator',
                               args: <String, String>{
                                 'current': '${_currentPageIndex + 1}',
                                 'total': '${pages.length}',
                               },
                             ),
-                            style: const TextStyle(
-                              fontSize: 13,
-                              color: Colors.black54,
-                            ),
+                            selected: _showPageSorter,
+                            showBackIcon: _showPageSorter,
+                            onTap: _togglePageSorter,
                           ),
                           const SizedBox(width: 8),
                           _PageChangeButton(
@@ -4846,7 +5303,7 @@ class _BlankPageState extends State<BlankPage> {
                           ? maxFittingScale
                           : canvasScale;
 
-                      return Padding(
+                      final canvasView = Padding(
                         padding: const EdgeInsets.symmetric(
                           vertical: canvasVerticalGap,
                         ),
@@ -5065,6 +5522,8 @@ class _BlankPageState extends State<BlankPage> {
                                                 : const NeverScrollableScrollPhysics(),
                                             child: _PreviewCanvasStrip(
                                               pages: pages,
+                                              currentPageIndex:
+                                                  _currentPageIndex,
                                               viewportWidth: previewCanvasWidth,
                                               viewportHeight:
                                                   previewCanvasHeight,
@@ -5170,6 +5629,25 @@ class _BlankPageState extends State<BlankPage> {
                           ),
                         ),
                       );
+
+                      return Stack(
+                        children: [
+                          IgnorePointer(
+                            ignoring: _showPageSorter,
+                            child: canvasView,
+                          ),
+                          if (_showPageSorter)
+                            Positioned.fill(
+                              child: _PageSorterView(
+                                pages: pages,
+                                selectedPageId: _selectedSorterPageId,
+                                onTapPage: _toggleSorterPageSelection,
+                                onReorder: _reorderPages,
+                                onMoveSelectedPage: _moveSelectedSorterPage,
+                              ),
+                            ),
+                        ],
+                      );
                     },
                   ),
                 ),
@@ -5178,264 +5656,305 @@ class _BlankPageState extends State<BlankPage> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                    SizedBox(
-                      height: bottomTabRowHeight,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: Row(
-                            children: [
-                              for (var i = 0; i < bottomTabs.length; i++) ...[
-                                _BottomTab(
-                                  label: _tabLabel(context, bottomTabs[i]),
-                                  selected: _selectedBottomTab == bottomTabs[i],
-                                  onTap: () => _changeBottomTab(bottomTabs[i]),
-                                ),
-                                if (i != bottomTabs.length - 1)
-                                  const SizedBox(width: 18),
+                      SizedBox(
+                        height: bottomTabRowHeight,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Row(
+                              children: [
+                                for (var i = 0; i < bottomTabs.length; i++) ...[
+                                  _BottomTab(
+                                    label: _tabLabel(context, bottomTabs[i]),
+                                    selected:
+                                        _selectedBottomTab == bottomTabs[i],
+                                    onTap: () =>
+                                        _changeBottomTab(bottomTabs[i]),
+                                  ),
+                                  if (i != bottomTabs.length - 1)
+                                    const SizedBox(width: 18),
+                                ],
                               ],
-                            ],
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: bottomTabPanelGap),
-                    AnimatedSize(
-                      duration: const Duration(milliseconds: 220),
-                      curve: Curves.easeInOut,
-                      alignment: Alignment.topCenter,
-                      child: AnimatedSwitcher(
+                      const SizedBox(height: bottomTabPanelGap),
+                      AnimatedSize(
                         duration: const Duration(milliseconds: 220),
-                        child: Builder(
-                          key: ValueKey(_selectedBottomTab),
-                          builder: (context) {
-                            final pages = _selectedImageElement != null
-                            ? <Widget>[
-                                _PageTabPage(
-                                  page: currentPage,
-                                  onAspectSelected: (width, height) {
-                                    _updateCurrentPageAspect(
-                                      aspectWidth: width,
-                                      aspectHeight: height,
-                                    );
-                                  },
-                                  onColorSelected: (color, preset) {
-                                    _updateCurrentPageColor(
-                                      color,
-                                      preset: preset,
-                                    );
-                                  },
-                                  onCustomColorTap: _showCustomPageColorDialog,
-                                ),
-                                _TemplateTabPage(
-                                  page: currentPage,
-                                  onApplyTemplate: _applyTemplate,
-                                ),
-                                _ElementTabPage(
-                                  showTextOption: false,
-                                  onAddText: _addTextElement,
-                                  onImportImages: _importImages,
-                                  importedImagePaths: _importedImagePaths,
-                                  onTapImportedImage: _addImageElementFromPath,
-                                  onLongPressImportedImage:
-                                      _showImportedImagePreview,
-                                ),
-                                _ElementPositionTabPage(
-                                  range: _elementPositionSliderRange(
-                                    _selectedImageElement!,
-                                    pagePixelSize:
-                                        _elementPositionPagePixelSize(
+                        curve: Curves.easeInOut,
+                        alignment: Alignment.topCenter,
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 220),
+                          child: Builder(
+                            key: ValueKey(_selectedBottomTab),
+                            builder: (context) {
+                              final pages = _selectedImageElement != null
+                                  ? <Widget>[
+                                      _PageTabPage(
+                                        page: currentPage,
+                                        onAspectSelected: (width, height) {
+                                          _updateCurrentPageAspect(
+                                            aspectWidth: width,
+                                            aspectHeight: height,
+                                          );
+                                        },
+                                        onColorSelected: (color, preset) {
+                                          _updateCurrentPageColor(
+                                            color,
+                                            preset: preset,
+                                          );
+                                        },
+                                        onCustomColorTap:
+                                            _showCustomPageColorDialog,
+                                      ),
+                                      _TemplateTabPage(
+                                        page: currentPage,
+                                        onApplyTemplate: _applyTemplate,
+                                      ),
+                                      _ElementTabPage(
+                                        showTextOption: false,
+                                        onAddText: _addTextElement,
+                                        onImportImages: _importImages,
+                                        importedImagePaths: _importedImagePaths,
+                                        onTapImportedImage:
+                                            _addImageElementFromPath,
+                                        onLongPressImportedImage:
+                                            _showImportedImagePreview,
+                                      ),
+                                      _ElementPositionTabPage(
+                                        range: _elementPositionSliderRange(
                                           _selectedImageElement!,
-                                          singleCanvasWidth: singleCanvasWidth,
-                                          previewCanvasWidth:
-                                              previewCanvasWidth,
+                                          pagePixelSize:
+                                              _elementPositionPagePixelSize(
+                                                _selectedImageElement!,
+                                                singleCanvasWidth:
+                                                    singleCanvasWidth,
+                                                previewCanvasWidth:
+                                                    previewCanvasWidth,
+                                              ),
                                         ),
-                                  ),
-                                  onNudge: _nudgeSelectedImage,
-                                  onPositionChanged: (x, y) {
-                                    _updateSelectedImagePositionFromSlider(
-                                      x: x,
-                                      y: y,
-                                      persist: false,
-                                    );
-                                  },
-                                  onPositionChangeEnd: (x, y) {
-                                    _updateSelectedImagePositionFromSlider(
-                                      x: x,
-                                      y: y,
-                                      persist: true,
-                                    );
-                                  },
-                                ),
-                                _ImageSettingsTabPage(
-                                  selectedElement: _selectedImageElement!,
-                                  sizeRange: _imageSizeSliderRange(
-                                    _selectedImageElement!,
-                                  ),
-                                  isCropping:
-                                      _croppingElementId ==
-                                      _selectedImageElement!.id,
-                                  onStartCrop: _startCroppingSelectedImage,
-                                  onFinishCrop: _finishCroppingSelectedImage,
-                                  onAspectSelected: _updateSelectedImageAspect,
-                                  onSizeChanged: (value) {
-                                    _updateSelectedImageSizeFromSlider(
-                                      value,
-                                      persist: false,
-                                    );
-                                  },
-                                  onSizeChangeEnd: (value) {
-                                    _updateSelectedImageSizeFromSlider(
-                                      value,
-                                      persist: true,
-                                    );
-                                  },
-                                ),
-                              ]
-                            : _selectedTextElement != null
-                            ? <Widget>[
-                                _PageTabPage(
-                                  page: currentPage,
-                                  onAspectSelected: (width, height) {
-                                    _updateCurrentPageAspect(
-                                      aspectWidth: width,
-                                      aspectHeight: height,
-                                    );
-                                  },
-                                  onColorSelected: (color, preset) {
-                                    _updateCurrentPageColor(
-                                      color,
-                                      preset: preset,
-                                    );
-                                  },
-                                  onCustomColorTap: _showCustomPageColorDialog,
-                                ),
-                                _TemplateTabPage(
-                                  page: currentPage,
-                                  onApplyTemplate: _applyTemplate,
-                                ),
-                                _ElementTabPage(
-                                  showTextOption: true,
-                                  onAddText: _addTextElement,
-                                  onImportImages: _importImages,
-                                  importedImagePaths: _importedImagePaths,
-                                  onTapImportedImage: _addImageElementFromPath,
-                                  onLongPressImportedImage:
-                                      _showImportedImagePreview,
-                                ),
-                                _ElementPositionTabPage(
-                                  range: _elementPositionSliderRange(
-                                    _selectedTextElement!,
-                                    pagePixelSize:
-                                        _elementPositionPagePixelSize(
+                                        onNudge: _nudgeSelectedImage,
+                                        onPositionChanged: (x, y) {
+                                          _updateSelectedImagePositionFromSlider(
+                                            x: x,
+                                            y: y,
+                                            persist: false,
+                                          );
+                                        },
+                                        onPositionChangeEnd: (x, y) {
+                                          _updateSelectedImagePositionFromSlider(
+                                            x: x,
+                                            y: y,
+                                            persist: true,
+                                          );
+                                        },
+                                      ),
+                                      _ImageSettingsTabPage(
+                                        selectedElement: _selectedImageElement!,
+                                        sizeRange:
+                                            _croppingElementId ==
+                                                _selectedImageElement!.id
+                                            ? (
+                                                value: _cropScaleToSliderValue(
+                                                  _cropScaleFromData(
+                                                    _selectedImageElement!.data,
+                                                  ),
+                                                ),
+                                                min: 0.0,
+                                                max: 1.0,
+                                              )
+                                            : _imageSizeSliderRange(
+                                                _selectedImageElement!,
+                                              ),
+                                        isCropping:
+                                            _croppingElementId ==
+                                            _selectedImageElement!.id,
+                                        onStartCrop:
+                                            _startCroppingSelectedImage,
+                                        onFinishCrop:
+                                            _finishCroppingSelectedImage,
+                                        onAspectSelected:
+                                            _updateSelectedImageAspect,
+                                        onSizeChanged: (value) {
+                                          if (_croppingElementId ==
+                                              _selectedImageElement!.id) {
+                                            _updateImageCropScale(
+                                              elementId:
+                                                  _selectedImageElement!.id,
+                                              scale: _cropScaleFromSliderValue(
+                                                value,
+                                              ),
+                                              persist: false,
+                                            );
+                                          } else {
+                                            _updateSelectedImageSizeFromSlider(
+                                              value,
+                                              persist: false,
+                                            );
+                                          }
+                                        },
+                                        onSizeChangeEnd: (value) {
+                                          if (_croppingElementId ==
+                                              _selectedImageElement!.id) {
+                                            _updateImageCropScale(
+                                              elementId:
+                                                  _selectedImageElement!.id,
+                                              scale: _cropScaleFromSliderValue(
+                                                value,
+                                              ),
+                                              persist: true,
+                                            );
+                                          } else {
+                                            _updateSelectedImageSizeFromSlider(
+                                              value,
+                                              persist: true,
+                                            );
+                                          }
+                                        },
+                                      ),
+                                    ]
+                                  : _selectedTextElement != null
+                                  ? <Widget>[
+                                      _PageTabPage(
+                                        page: currentPage,
+                                        onAspectSelected: (width, height) {
+                                          _updateCurrentPageAspect(
+                                            aspectWidth: width,
+                                            aspectHeight: height,
+                                          );
+                                        },
+                                        onColorSelected: (color, preset) {
+                                          _updateCurrentPageColor(
+                                            color,
+                                            preset: preset,
+                                          );
+                                        },
+                                        onCustomColorTap:
+                                            _showCustomPageColorDialog,
+                                      ),
+                                      _TemplateTabPage(
+                                        page: currentPage,
+                                        onApplyTemplate: _applyTemplate,
+                                      ),
+                                      _ElementTabPage(
+                                        showTextOption: true,
+                                        onAddText: _addTextElement,
+                                        onImportImages: _importImages,
+                                        importedImagePaths: _importedImagePaths,
+                                        onTapImportedImage:
+                                            _addImageElementFromPath,
+                                        onLongPressImportedImage:
+                                            _showImportedImagePreview,
+                                      ),
+                                      _ElementPositionTabPage(
+                                        range: _elementPositionSliderRange(
                                           _selectedTextElement!,
-                                          singleCanvasWidth: singleCanvasWidth,
-                                          previewCanvasWidth:
-                                              previewCanvasWidth,
+                                          pagePixelSize:
+                                              _elementPositionPagePixelSize(
+                                                _selectedTextElement!,
+                                                singleCanvasWidth:
+                                                    singleCanvasWidth,
+                                                previewCanvasWidth:
+                                                    previewCanvasWidth,
+                                              ),
                                         ),
-                                  ),
-                                  onNudge: _nudgeSelectedText,
-                                  onPositionChanged: (x, y) {
-                                    _updateSelectedTextPositionFromSlider(
-                                      x: x,
-                                      y: y,
-                                      persist: false,
-                                    );
-                                  },
-                                  onPositionChangeEnd: (x, y) {
-                                    _updateSelectedTextPositionFromSlider(
-                                      x: x,
-                                      y: y,
-                                      persist: true,
-                                    );
-                                  },
-                                ),
-                                _TextSettingsTabPage(
-                                  selectedElement: _selectedTextElement!,
-                                  onEditText: () {
-                                    _showTextEditor(_selectedTextElement!.id);
-                                  },
-                                  onColorSelected: _updateSelectedTextColor,
-                                  onSizeChanged: (value) {
-                                    _updateSelectedTextSize(
-                                      value,
-                                      persist: false,
-                                    );
-                                  },
-                                  onSizeChangeEnd: (value) {
-                                    _updateSelectedTextSize(
-                                      value,
-                                      persist: true,
-                                    );
-                                  },
-                                ),
-                              ]
-                            : <Widget>[
-                                _PageTabPage(
-                                  page: currentPage,
-                                  onAspectSelected: (width, height) {
-                                    _updateCurrentPageAspect(
-                                      aspectWidth: width,
-                                      aspectHeight: height,
-                                    );
-                                  },
-                                  onColorSelected: (color, preset) {
-                                    _updateCurrentPageColor(
-                                      color,
-                                      preset: preset,
-                                    );
-                                  },
-                                  onCustomColorTap: _showCustomPageColorDialog,
-                                ),
-                                _TemplateTabPage(
-                                  page: currentPage,
-                                  onApplyTemplate: _applyTemplate,
-                                ),
-                                _ElementTabPage(
-                                  showTextOption: true,
-                                  onAddText: _addTextElement,
-                                  onImportImages: _importImages,
-                                  importedImagePaths: _importedImagePaths,
-                                  onTapImportedImage: _addImageElementFromPath,
-                                  onLongPressImportedImage:
-                                      _showImportedImagePreview,
-                                ),
-                              ];
-                            final index = bottomTabs.indexOf(_selectedBottomTab);
-                            if (index == -1 || index >= pages.length) {
-                              return const SizedBox.shrink();
-                            }
-                            return SizedBox(
-                              width: double.infinity,
-                              child: pages[index],
-                            );
-                          },
+                                        onNudge: _nudgeSelectedText,
+                                        onPositionChanged: (x, y) {
+                                          _updateSelectedTextPositionFromSlider(
+                                            x: x,
+                                            y: y,
+                                            persist: false,
+                                          );
+                                        },
+                                        onPositionChangeEnd: (x, y) {
+                                          _updateSelectedTextPositionFromSlider(
+                                            x: x,
+                                            y: y,
+                                            persist: true,
+                                          );
+                                        },
+                                      ),
+                                      _TextSettingsTabPage(
+                                        selectedElement: _selectedTextElement!,
+                                        onEditText: () {
+                                          _showTextEditor(
+                                            _selectedTextElement!.id,
+                                          );
+                                        },
+                                        onColorSelected:
+                                            _updateSelectedTextColor,
+                                        onSizeChanged: (value) {
+                                          _updateSelectedTextSize(
+                                            value,
+                                            persist: false,
+                                          );
+                                        },
+                                        onSizeChangeEnd: (value) {
+                                          _updateSelectedTextSize(
+                                            value,
+                                            persist: true,
+                                          );
+                                        },
+                                      ),
+                                    ]
+                                  : <Widget>[
+                                      _PageTabPage(
+                                        page: currentPage,
+                                        onAspectSelected: (width, height) {
+                                          _updateCurrentPageAspect(
+                                            aspectWidth: width,
+                                            aspectHeight: height,
+                                          );
+                                        },
+                                        onColorSelected: (color, preset) {
+                                          _updateCurrentPageColor(
+                                            color,
+                                            preset: preset,
+                                          );
+                                        },
+                                        onCustomColorTap:
+                                            _showCustomPageColorDialog,
+                                      ),
+                                      _TemplateTabPage(
+                                        page: currentPage,
+                                        onApplyTemplate: _applyTemplate,
+                                      ),
+                                      _ElementTabPage(
+                                        showTextOption: true,
+                                        onAddText: _addTextElement,
+                                        onImportImages: _importImages,
+                                        importedImagePaths: _importedImagePaths,
+                                        onTapImportedImage:
+                                            _addImageElementFromPath,
+                                        onLongPressImportedImage:
+                                            _showImportedImagePreview,
+                                      ),
+                                    ];
+                              final index = bottomTabs.indexOf(
+                                _selectedBottomTab,
+                              );
+                              if (index == -1 || index >= pages.length) {
+                                return const SizedBox.shrink();
+                              }
+                              return SizedBox(
+                                width: double.infinity,
+                                child: pages[index],
+                              );
+                            },
+                          ),
                         ),
                       ),
-                    ),
-                    SizedBox(
-                      height: bottomPadding,
-                      child: _appVersion.isNotEmpty
-                          ? Container(
-                              alignment: Alignment.center,
-                              padding: EdgeInsets.only(bottom: bottomSafePadding),
-                              child: Text(
-                                _appVersion,
-                                style: const TextStyle(
-                                  color: Color(0xFFB0B0B0),
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            )
-                          : const SizedBox.shrink(),
-                    ),
-                  ],
+                      SizedBox(
+                        height: bottomPadding,
+                        child: const SizedBox.shrink(),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
+              ],
+            ),
             if (_isPreparingImage)
               Positioned.fill(
                 child: AbsorbPointer(
@@ -5520,7 +6039,18 @@ class _CanvasViewport extends StatelessWidget {
   final void Function(String elementId, double x, double y, bool persist)
   onCropMove;
   final void Function(String elementId, double scale, bool persist) onCropScale;
-  final void Function(String elementId, double x, double y, double width, double height, double cropOffsetX, double cropOffsetY, double cropScale, bool persist) onCropBoundsChanged;
+  final void Function(
+    String elementId,
+    double x,
+    double y,
+    double width,
+    double height,
+    double cropOffsetX,
+    double cropOffsetY,
+    double cropScale,
+    bool persist,
+  )
+  onCropBoundsChanged;
   final ValueChanged<String> onDeleteElement;
   final ValueChanged<String> onConfirmDeleteElement;
   final ValueChanged<String> onCancelDeleteElement;
@@ -5629,9 +6159,20 @@ class _CanvasViewport extends StatelessWidget {
                                   onCropScale: (scale, persist) {
                                     onCropScale(element.id, scale, persist);
                                   },
-                                  onCropBoundsChanged: (x, y, w, h, cx, cy, cs, persist) {
-                                    onCropBoundsChanged(element.id, x, y, w, h, cx, cy, cs, persist);
-                                  },
+                                  onCropBoundsChanged:
+                                      (x, y, w, h, cx, cy, cs, persist) {
+                                        onCropBoundsChanged(
+                                          element.id,
+                                          x,
+                                          y,
+                                          w,
+                                          h,
+                                          cx,
+                                          cy,
+                                          cs,
+                                          persist,
+                                        );
+                                      },
                                   onDelete: () => onDeleteElement(element.id),
                                   onConfirmDelete: () =>
                                       onConfirmDeleteElement(element.id),
@@ -5700,6 +6241,7 @@ class _CanvasViewport extends StatelessWidget {
 class _PreviewCanvasStrip extends StatelessWidget {
   const _PreviewCanvasStrip({
     required this.pages,
+    required this.currentPageIndex,
     required this.viewportWidth,
     required this.viewportHeight,
     required this.exportPageId,
@@ -5722,6 +6264,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
   });
 
   final List<ProjectPage> pages;
+  final int currentPageIndex;
   final double viewportWidth;
   final double viewportHeight;
   final String exportPageId;
@@ -5765,161 +6308,178 @@ class _PreviewCanvasStrip extends StatelessWidget {
         clipBehavior: Clip.none,
         children: [
           for (var i = 0; i < pages.length; i++) ...[
-            Positioned(
-              left: viewportWidth * i,
-              top:
-                  ((viewportHeight -
-                      (viewportWidth *
-                          (pages[i].aspectHeight / pages[i].aspectWidth))) /
-                  2),
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: onTapCanvas,
-                child: RepaintBoundary(
-                  key: pages[i].id == exportPageId ? exportRepaintKey : null,
-                  child: Container(
-                    width: viewportWidth,
-                    height:
-                        viewportWidth *
-                        (pages[i].aspectHeight / pages[i].aspectWidth),
-                    decoration: BoxDecoration(
-                      color: _pageBackgroundColorFromExtras(pages[i].extras),
-                      border: showBorder
-                          ? Border.all(color: const Color(0xFF8F8F8F), width: 1)
-                          : null,
-                    ),
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        return IgnorePointer(
-                          child: ClipRect(
-                            child: Stack(
-                              clipBehavior: Clip.hardEdge,
-                              children: [
-                                for (
-                                  var sourceIndex = 0;
-                                  sourceIndex < pages.length;
-                                  sourceIndex++
-                                )
-                                  for (final element
-                                      in pages[sourceIndex].elements)
-                                    if (element.type == 'image' &&
-                                        _shouldPaintCrossPageElement(
+            if (_shouldBuildPreviewPage(
+              pageIndex: i,
+              currentPageIndex: currentPageIndex,
+            ))
+              Positioned(
+                left: viewportWidth * i,
+                top:
+                    ((viewportHeight -
+                        (viewportWidth *
+                            (pages[i].aspectHeight / pages[i].aspectWidth))) /
+                    2),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: onTapCanvas,
+                  child: RepaintBoundary(
+                    key: pages[i].id == exportPageId ? exportRepaintKey : null,
+                    child: Container(
+                      width: viewportWidth,
+                      height:
+                          viewportWidth *
+                          (pages[i].aspectHeight / pages[i].aspectWidth),
+                      decoration: BoxDecoration(
+                        color: _pageBackgroundColorFromExtras(pages[i].extras),
+                        border: showBorder
+                            ? Border.all(
+                                color: const Color(0xFF8F8F8F),
+                                width: 1,
+                              )
+                            : null,
+                      ),
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          return IgnorePointer(
+                            child: ClipRect(
+                              child: Stack(
+                                clipBehavior: Clip.hardEdge,
+                                children: [
+                                  for (
+                                    var sourceIndex = 0;
+                                    sourceIndex < pages.length;
+                                    sourceIndex++
+                                  )
+                                    for (final element
+                                        in pages[sourceIndex].elements)
+                                      if (element.type == 'image' &&
+                                          _shouldPaintCrossPageElement(
+                                            element: element,
+                                            sourcePageIndex: sourceIndex,
+                                            targetPageIndex: i,
+                                          ))
+                                        _PreviewImageElementWidget(
                                           element: element,
-                                          sourcePageIndex: sourceIndex,
-                                          targetPageIndex: i,
-                                        ))
-                                      _PreviewImageElementWidget(
-                                        element: element,
-                                        isSelected: false,
-                                        isDeleteArmed: false,
-                                        isCropMode: false,
-                                        pageWidth: constraints.maxWidth,
-                                        pageHeight: constraints.maxHeight,
-                                        pageOffsetX:
-                                            (sourceIndex - i) *
-                                            constraints.maxWidth,
-                                        pageOffsetY: 0,
-                                        onTap: () {},
-                                        onDoubleTap: () {},
-                                        onMove: (_, _, _) {},
-                                        onResize: (_, _) {},
-                                        onCropMove: (_, _, _) {},
-                                        onCropScale: (_, _) {},
-                                        onDelete: () {},
-                                        onConfirmDelete: () {},
-                                        onCancelDelete: () {},
-                                      ),
-                              ],
+                                          isSelected: false,
+                                          isDeleteArmed: false,
+                                          isCropMode: false,
+                                          pageWidth: constraints.maxWidth,
+                                          pageHeight: constraints.maxHeight,
+                                          pageOffsetX:
+                                              (sourceIndex - i) *
+                                              constraints.maxWidth,
+                                          pageOffsetY: 0,
+                                          onTap: () {},
+                                          onDoubleTap: () {},
+                                          onMove: (_, _, _) {},
+                                          onResize: (_, _) {},
+                                          onCropMove: (_, _, _) {},
+                                          onCropScale: (_, _) {},
+                                          onDelete: () {},
+                                          onConfirmDelete: () {},
+                                          onCancelDelete: () {},
+                                        ),
+                                ],
+                              ),
                             ),
-                          ),
-                        );
-                      },
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
           ],
           for (var i = 0; i < pages.length; i++)
-            for (final element in pages[i].elements) ...[
-              if (element.type == 'image')
-                _PreviewImageElementWidget(
-                  key: ValueKey('preview_${element.id}'),
-                  element: element,
-                  isSelected: selectedElementId == element.id,
-                  isDeleteArmed: deleteArmedElementId == element.id,
-                  isCropMode: croppingElementId == element.id,
-                  pageWidth: viewportWidth,
-                  pageHeight:
-                      viewportWidth *
-                      (pages[i].aspectHeight / pages[i].aspectWidth),
-                  pageOffsetX: viewportWidth * i,
-                  pageOffsetY:
-                      ((viewportHeight -
-                          (viewportWidth *
-                              (pages[i].aspectHeight / pages[i].aspectWidth))) /
-                      2),
-                  onTap: () => onTapElement(element.id),
-                  onDoubleTap: () => onDoubleTapElement(element.id),
-                  onMove: (x, y, persist) {
-                    onMoveElement(pages[i].id, element.id, x, y, persist);
-                  },
-                  onResize: (width, persist) {
-                    onResizeElement(pages[i].id, element.id, width, persist);
-                  },
-                  onCropMove: (x, y, persist) {
-                    onCropMove(element.id, x, y, persist);
-                  },
-                  onCropScale: (scale, persist) {
-                    onCropScale(element.id, scale, persist);
-                  },
-                  onDelete: () => onDeleteElement(pages[i].id, element.id),
-                  onConfirmDelete: () =>
-                      onConfirmDeleteElement(pages[i].id, element.id),
-                  onCancelDelete: () => onCancelDeleteElement(element.id),
-                ),
-              if (element.type == 'text')
-                _TextElementWidget(
-                  key: ValueKey('preview_text_${element.id}'),
-                  element: element,
-                  isSelected: selectedElementId == element.id,
-                  isDeleteArmed: deleteArmedElementId == element.id,
-                  pageWidth: viewportWidth,
-                  pageHeight:
-                      viewportWidth *
-                      (pages[i].aspectHeight / pages[i].aspectWidth),
-                  pageOffsetX: viewportWidth * i,
-                  pageOffsetY:
-                      ((viewportHeight -
-                          (viewportWidth *
-                              (pages[i].aspectHeight / pages[i].aspectWidth))) /
-                      2),
-                  onTap: () => onTapElement(element.id),
-                  onDoubleTap: () => onDoubleTapElement(element.id),
-                  onMove: (x, y, persist) {
-                    onMoveElement(pages[i].id, element.id, x, y, persist);
-                  },
-                  onDelete: () => onDeleteElement(pages[i].id, element.id),
-                  onConfirmDelete: () =>
-                      onConfirmDeleteElement(pages[i].id, element.id),
-                  onCancelDelete: () => onCancelDeleteElement(element.id),
-                ),
-            ],
-          for (var i = 0; i < pages.length; i++)
-            _SnapGuideOverlay(
-              guides: snapGuides,
+            if (_shouldBuildPreviewPage(
               pageIndex: i,
-              pageWidth: viewportWidth,
-              pageHeight:
-                  viewportWidth *
-                  (pages[i].aspectHeight / pages[i].aspectWidth),
-              pageOffsetX: viewportWidth * i,
-              pageOffsetY:
-                  ((viewportHeight -
-                      (viewportWidth *
-                          (pages[i].aspectHeight / pages[i].aspectWidth))) /
-                  2),
-            ),
+              currentPageIndex: currentPageIndex,
+            ))
+              for (final element in pages[i].elements) ...[
+                if (element.type == 'image')
+                  _PreviewImageElementWidget(
+                    key: ValueKey('preview_${element.id}'),
+                    element: element,
+                    isSelected: selectedElementId == element.id,
+                    isDeleteArmed: deleteArmedElementId == element.id,
+                    isCropMode: croppingElementId == element.id,
+                    pageWidth: viewportWidth,
+                    pageHeight:
+                        viewportWidth *
+                        (pages[i].aspectHeight / pages[i].aspectWidth),
+                    pageOffsetX: viewportWidth * i,
+                    pageOffsetY:
+                        ((viewportHeight -
+                            (viewportWidth *
+                                (pages[i].aspectHeight /
+                                    pages[i].aspectWidth))) /
+                        2),
+                    onTap: () => onTapElement(element.id),
+                    onDoubleTap: () => onDoubleTapElement(element.id),
+                    onMove: (x, y, persist) {
+                      onMoveElement(pages[i].id, element.id, x, y, persist);
+                    },
+                    onResize: (width, persist) {
+                      onResizeElement(pages[i].id, element.id, width, persist);
+                    },
+                    onCropMove: (x, y, persist) {
+                      onCropMove(element.id, x, y, persist);
+                    },
+                    onCropScale: (scale, persist) {
+                      onCropScale(element.id, scale, persist);
+                    },
+                    onDelete: () => onDeleteElement(pages[i].id, element.id),
+                    onConfirmDelete: () =>
+                        onConfirmDeleteElement(pages[i].id, element.id),
+                    onCancelDelete: () => onCancelDeleteElement(element.id),
+                  ),
+                if (element.type == 'text')
+                  _TextElementWidget(
+                    key: ValueKey('preview_text_${element.id}'),
+                    element: element,
+                    isSelected: selectedElementId == element.id,
+                    isDeleteArmed: deleteArmedElementId == element.id,
+                    pageWidth: viewportWidth,
+                    pageHeight:
+                        viewportWidth *
+                        (pages[i].aspectHeight / pages[i].aspectWidth),
+                    pageOffsetX: viewportWidth * i,
+                    pageOffsetY:
+                        ((viewportHeight -
+                            (viewportWidth *
+                                (pages[i].aspectHeight /
+                                    pages[i].aspectWidth))) /
+                        2),
+                    onTap: () => onTapElement(element.id),
+                    onDoubleTap: () => onDoubleTapElement(element.id),
+                    onMove: (x, y, persist) {
+                      onMoveElement(pages[i].id, element.id, x, y, persist);
+                    },
+                    onDelete: () => onDeleteElement(pages[i].id, element.id),
+                    onConfirmDelete: () =>
+                        onConfirmDeleteElement(pages[i].id, element.id),
+                    onCancelDelete: () => onCancelDeleteElement(element.id),
+                  ),
+              ],
+          for (var i = 0; i < pages.length; i++)
+            if (_shouldBuildPreviewPage(
+              pageIndex: i,
+              currentPageIndex: currentPageIndex,
+            ))
+              _SnapGuideOverlay(
+                guides: snapGuides,
+                pageIndex: i,
+                pageWidth: viewportWidth,
+                pageHeight:
+                    viewportWidth *
+                    (pages[i].aspectHeight / pages[i].aspectWidth),
+                pageOffsetX: viewportWidth * i,
+                pageOffsetY:
+                    ((viewportHeight -
+                        (viewportWidth *
+                            (pages[i].aspectHeight / pages[i].aspectWidth))) /
+                    2),
+              ),
         ],
       ),
     );
@@ -6264,7 +6824,17 @@ class _ImageElementWidget extends StatefulWidget {
   final void Function(double width, bool persist) onResize;
   final void Function(double x, double y, bool persist) onCropMove;
   final void Function(double scale, bool persist) onCropScale;
-  final void Function(double x, double y, double width, double height, double cropOffsetX, double cropOffsetY, double cropScale, bool persist) onCropBoundsChanged;
+  final void Function(
+    double x,
+    double y,
+    double width,
+    double height,
+    double cropOffsetX,
+    double cropOffsetY,
+    double cropScale,
+    bool persist,
+  )
+  onCropBoundsChanged;
   final VoidCallback onDelete;
   final VoidCallback onConfirmDelete;
   final VoidCallback onCancelDelete;
@@ -6302,8 +6872,11 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
     final totalDy = details.globalPosition.dy - _edgeDragStartGlobalPosition.dy;
 
     final startWidth = _edgeDragStartElement.width;
-    final startAspectRatio = (_edgeDragStartElement.data['aspectRatio'] as num?)?.toDouble() ?? 1.0;
-    final startHeight = startAspectRatio > 0 ? startWidth / startAspectRatio : startWidth;
+    final startAspectRatio =
+        (_edgeDragStartElement.data['aspectRatio'] as num?)?.toDouble() ?? 1.0;
+    final startHeight = startAspectRatio > 0
+        ? startWidth / startAspectRatio
+        : startWidth;
     final startX = _edgeDragStartElement.x;
     final startY = _edgeDragStartElement.y;
 
@@ -6341,15 +6914,19 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
     final frameHeight = newHeight * widget.canvasHeight;
     final frameAspectRatio = frameWidth / frameHeight;
 
-    final sourceAspectRatio = (_edgeDragStartElement.data['originalAspectRatio'] as num?)?.toDouble() ??
-                              (_edgeDragStartElement.data['aspectRatio'] as num?)?.toDouble() ??
-                              newAspectRatio;
-    final safeSourceAspectRatio = sourceAspectRatio <= 0 ? frameAspectRatio : sourceAspectRatio;
+    final sourceAspectRatio =
+        (_edgeDragStartElement.data['originalAspectRatio'] as num?)
+            ?.toDouble() ??
+        (_edgeDragStartElement.data['aspectRatio'] as num?)?.toDouble() ??
+        newAspectRatio;
+    final safeSourceAspectRatio = sourceAspectRatio <= 0
+        ? frameAspectRatio
+        : sourceAspectRatio;
 
     final oldFrameWidth = startWidth * widget.canvasWidth;
     final oldFrameHeight = startHeight * widget.canvasHeight;
     final oldFrameAspectRatio = oldFrameWidth / oldFrameHeight;
-    
+
     double oldBaseImageWidth;
     if (safeSourceAspectRatio > oldFrameAspectRatio) {
       oldBaseImageWidth = oldFrameHeight * safeSourceAspectRatio;
@@ -6358,7 +6935,7 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
     }
     final oldCropScale = _cropScaleFromData(_edgeDragStartElement.data);
     final currentImageWidth = oldBaseImageWidth * oldCropScale;
-    
+
     double newBaseImageWidth;
     if (safeSourceAspectRatio > frameAspectRatio) {
       newBaseImageWidth = frameHeight * safeSourceAspectRatio;
@@ -6369,15 +6946,25 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
 
     final oldCropOffsetX = _cropOffsetXFromData(_edgeDragStartElement.data);
     final oldCropOffsetY = _cropOffsetYFromData(_edgeDragStartElement.data);
-    
-    final currentVisualLeft = ((oldFrameWidth - currentImageWidth) / 2) + (oldCropOffsetX * oldFrameWidth);
-    final currentVisualTop = ((oldFrameHeight - (currentImageWidth / safeSourceAspectRatio)) / 2) + (oldCropOffsetY * oldFrameHeight);
-    
-    final newVisualLeft = currentVisualLeft - (newX - startX) * widget.canvasWidth;
-    final newVisualTop = currentVisualTop - (newY - startY) * widget.canvasHeight;
 
-    final newCropOffsetX = (newVisualLeft - (frameWidth - currentImageWidth) / 2) / frameWidth;
-    final newCropOffsetY = (newVisualTop - (frameHeight - (currentImageWidth / safeSourceAspectRatio)) / 2) / frameHeight;
+    final currentVisualLeft =
+        ((oldFrameWidth - currentImageWidth) / 2) +
+        (oldCropOffsetX * oldFrameWidth);
+    final currentVisualTop =
+        ((oldFrameHeight - (currentImageWidth / safeSourceAspectRatio)) / 2) +
+        (oldCropOffsetY * oldFrameHeight);
+
+    final newVisualLeft =
+        currentVisualLeft - (newX - startX) * widget.canvasWidth;
+    final newVisualTop =
+        currentVisualTop - (newY - startY) * widget.canvasHeight;
+
+    final newCropOffsetX =
+        (newVisualLeft - (frameWidth - currentImageWidth) / 2) / frameWidth;
+    final newCropOffsetY =
+        (newVisualTop -
+            (frameHeight - (currentImageWidth / safeSourceAspectRatio)) / 2) /
+        frameHeight;
 
     widget.onCropBoundsChanged(
       newX,
@@ -6393,12 +6980,15 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
 
   void _onCropEdgePanEnd(DragEndDetails details) {
     _isEdgeDragging = false;
-    final aspectRatio = (widget.element.data['aspectRatio'] as num?)?.toDouble() ?? 1.0;
+    final aspectRatio =
+        (widget.element.data['aspectRatio'] as num?)?.toDouble() ?? 1.0;
     widget.onCropBoundsChanged(
       widget.element.x,
       widget.element.y,
       widget.element.width,
-      aspectRatio > 0 ? widget.element.width / aspectRatio : widget.element.width,
+      aspectRatio > 0
+          ? widget.element.width / aspectRatio
+          : widget.element.width,
       _cropOffsetXFromData(widget.element.data),
       _cropOffsetYFromData(widget.element.data),
       _cropScaleFromData(widget.element.data),
@@ -6686,38 +7276,22 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
               Positioned(
                 top: -12,
                 left: width / 2 - 24,
-                child: _buildEdgeHandle(
-                  width: 48,
-                  height: 24,
-                  edge: 'top',
-                ),
+                child: _buildEdgeHandle(width: 48, height: 24, edge: 'top'),
               ),
               Positioned(
                 bottom: -12,
                 left: width / 2 - 24,
-                child: _buildEdgeHandle(
-                  width: 48,
-                  height: 24,
-                  edge: 'bottom',
-                ),
+                child: _buildEdgeHandle(width: 48, height: 24, edge: 'bottom'),
               ),
               Positioned(
                 left: -12,
                 top: height / 2 - 24,
-                child: _buildEdgeHandle(
-                  width: 24,
-                  height: 48,
-                  edge: 'left',
-                ),
+                child: _buildEdgeHandle(width: 24, height: 48, edge: 'left'),
               ),
               Positioned(
                 right: -12,
                 top: height / 2 - 24,
-                child: _buildEdgeHandle(
-                  width: 24,
-                  height: 48,
-                  edge: 'right',
-                ),
+                child: _buildEdgeHandle(width: 24, height: 48, edge: 'right'),
               ),
             ],
           ],
@@ -7285,6 +7859,221 @@ class _DeleteConfirmButton extends StatelessWidget {
   }
 }
 
+class _AiSortOrderPreview extends StatelessWidget {
+  const _AiSortOrderPreview({required this.title, required this.value});
+
+  final String title;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE0E0E0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF7A7A7A),
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF252525),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ExportSelectionSummary extends StatelessWidget {
+  const _ExportSelectionSummary({
+    required this.totalCount,
+    required this.selectedIndexes,
+    required this.reverseOrder,
+  });
+
+  final int totalCount;
+  final Set<int> selectedIndexes;
+  final bool reverseOrder;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = selectedIndexes.toList()..sort();
+    final ordered = reverseOrder ? selected.reversed.toList() : selected;
+    final orderLabel = ordered.isEmpty
+        ? '尚未選取頁面'
+        : ordered.map((index) => '${index + 1}').join(', ');
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE4E4E4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '已選 ${selected.length}/$totalCount 頁',
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF252525),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '輸出順序：$orderLabel',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 12,
+              height: 1.3,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF6A6A6A),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ExportPageSelectionStrip extends StatelessWidget {
+  const _ExportPageSelectionStrip({
+    required this.pages,
+    required this.selectedIndexes,
+    required this.onToggle,
+  });
+
+  final List<ProjectPage> pages;
+  final Set<int> selectedIndexes;
+  final ValueChanged<int> onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 118,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: pages.length,
+        separatorBuilder: (context, index) => const SizedBox(width: 10),
+        itemBuilder: (context, index) {
+          return _ExportPageSelectionTile(
+            page: pages[index],
+            pageNumber: index + 1,
+            selected: selectedIndexes.contains(index),
+            onTap: () => onToggle(index),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ExportPageSelectionTile extends StatelessWidget {
+  const _ExportPageSelectionTile({
+    required this.page,
+    required this.pageNumber,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final ProjectPage page;
+  final int pageNumber;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    const previewHeight = 82.0;
+    final previewWidth =
+        (previewHeight * (page.aspectWidth / page.aspectHeight))
+            .clamp(52.0, 96.0)
+            .toDouble();
+    return _PressableScale(
+      onTap: onTap,
+      pressedScale: 0.96,
+      child: SizedBox(
+        width: previewWidth + 14,
+        child: Column(
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              padding: const EdgeInsets.all(5),
+              decoration: BoxDecoration(
+                color: selected
+                    ? kPrimaryAccentColor.withValues(alpha: 0.22)
+                    : Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: selected
+                      ? kPrimaryAccentColor
+                      : const Color(0xFFE0E0E0),
+                  width: selected ? 2 : 1,
+                ),
+              ),
+              child: Stack(
+                children: [
+                  _MiniPagePreview(
+                    page: page,
+                    width: previewWidth,
+                    height: previewHeight,
+                  ),
+                  if (selected)
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: Container(
+                        width: 20,
+                        height: 20,
+                        decoration: BoxDecoration(
+                          color: kPrimaryAccentColor,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: const Icon(
+                          Icons.check_rounded,
+                          size: 14,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 5),
+            Text(
+              '$pageNumber',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF4A4A4A),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ExportProgressPanel extends StatelessWidget {
   const _ExportProgressPanel({
     required this.progress,
@@ -7507,13 +8296,13 @@ class _ToolbarIconButton extends StatelessWidget {
         width: 44,
         height: 32,
         decoration: BoxDecoration(
-          color: enabled ? const Color(0xFFD8D8D8) : const Color(0xFFE2E2E2),
+          color: enabled ? const Color(0xFFF8F8F8) : const Color(0xFFECECEC),
           borderRadius: BorderRadius.circular(999),
         ),
         child: Icon(
           icon,
           size: 16,
-          color: enabled ? Colors.black87 : Colors.black38,
+          color: enabled ? const Color(0xFF4A4A4A) : Colors.black38,
         ),
       ),
     );
@@ -7562,29 +8351,36 @@ class _DialogIconActionButton extends StatelessWidget {
     required this.icon,
     required this.onTap,
     this.isPrimary = false,
+    this.enabled = true,
   });
 
   final IconData icon;
   final VoidCallback onTap;
   final bool isPrimary;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
     return _PressableScale(
-      onTap: onTap,
+      onTap: enabled ? onTap : null,
+      enabled: enabled,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),
         curve: Curves.easeInOut,
         height: 42,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: isPrimary ? kPrimaryAccentColor : Colors.white,
+          color: enabled
+              ? (isPrimary ? kPrimaryAccentColor : Colors.white)
+              : const Color(0xFFE2E2E2),
           borderRadius: BorderRadius.circular(999),
         ),
         child: Icon(
           icon,
           size: 18,
-          color: isPrimary ? Colors.white : const Color(0xFF1F1F1F),
+          color: enabled
+              ? (isPrimary ? Colors.white : const Color(0xFF1F1F1F))
+              : Colors.black38,
         ),
       ),
     );
@@ -7627,16 +8423,498 @@ class _PageChangeButton extends StatelessWidget {
   }
 }
 
-class _SlideSwitch extends StatelessWidget {
-  const _SlideSwitch({required this.value, required this.onChanged});
+class _PageIndicatorButton extends StatelessWidget {
+  const _PageIndicatorButton({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.showBackIcon = false,
+  });
 
-  final bool value;
-  final ValueChanged<bool> onChanged;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final bool showBackIcon;
 
   @override
   Widget build(BuildContext context) {
     return _PressableScale(
-      onTap: () => onChanged(!value),
+      onTap: onTap,
+      pressedScale: 0.95,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeInOut,
+        height: 32,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected ? kPrimaryAccentColor : const Color(0xFFD8D8D8),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: showBackIcon
+            ? Stack(
+                alignment: Alignment.center,
+                children: [
+                  Opacity(
+                    opacity: 0,
+                    child: Text(
+                      label,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  const Icon(
+                    Icons.arrow_back_rounded,
+                    size: 17,
+                    color: Colors.white,
+                  ),
+                ],
+              )
+            : Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: selected ? Colors.white : Colors.black54,
+                ),
+              ),
+      ),
+    );
+  }
+}
+
+class _PageSorterView extends StatelessWidget {
+  const _PageSorterView({
+    required this.pages,
+    required this.selectedPageId,
+    required this.onTapPage,
+    required this.onReorder,
+    required this.onMoveSelectedPage,
+  });
+
+  final List<ProjectPage> pages;
+  final String? selectedPageId;
+  final ValueChanged<int> onTapPage;
+  final void Function(int oldIndex, int newIndex) onReorder;
+  final ValueChanged<int> onMoveSelectedPage;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final selectedIndex = selectedPageId == null
+            ? -1
+            : pages.indexWhere((page) => page.id == selectedPageId);
+        final hasSelectedPage = selectedIndex != -1;
+        final controlsHeight = hasSelectedPage ? 38.0 : 0.0;
+        final listHeight = (constraints.maxHeight - controlsHeight)
+            .clamp(150.0, 196.0)
+            .toDouble();
+        final horizontalPadding = (constraints.maxWidth * 0.04)
+            .clamp(12.0, 22.0)
+            .toDouble();
+        final frameGap = (constraints.maxWidth * 0.035)
+            .clamp(10.0, 18.0)
+            .toDouble();
+
+        return Container(
+          color: const Color(0xFFEAEAEA),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: constraints.maxWidth,
+                  height: listHeight,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: EdgeInsets.symmetric(
+                      horizontal: horizontalPadding,
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        for (var index = 0; index < pages.length; index++) ...[
+                          _PageDropTarget(
+                            key: ValueKey('page_drop_${pages[index].id}'),
+                            index: index,
+                            onDrop: onReorder,
+                            child: _PageThumbnailCard(
+                              key: ValueKey('page_sorter_${pages[index].id}'),
+                              page: pages[index],
+                              pageNumber: index + 1,
+                              selected: pages[index].id == selectedPageId,
+                              onTap: () => onTapPage(index),
+                            ),
+                          ),
+                          if (index != pages.length - 1)
+                            SizedBox(width: frameGap),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 160),
+                  child: hasSelectedPage
+                      ? Padding(
+                          key: const ValueKey('page-move-controls'),
+                          padding: const EdgeInsets.only(top: 4),
+                          child: _PageSorterMoveControls(
+                            canMoveLeft: selectedIndex > 0,
+                            canMoveRight: selectedIndex < pages.length - 1,
+                            onMoveLeft: () => onMoveSelectedPage(-1),
+                            onMoveRight: () => onMoveSelectedPage(1),
+                          ),
+                        )
+                      : const SizedBox(
+                          key: ValueKey('page-move-controls-empty'),
+                          height: 0,
+                        ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _PageSorterMoveControls extends StatelessWidget {
+  const _PageSorterMoveControls({
+    required this.canMoveLeft,
+    required this.canMoveRight,
+    required this.onMoveLeft,
+    required this.onMoveRight,
+  });
+
+  final bool canMoveLeft;
+  final bool canMoveRight;
+  final VoidCallback onMoveLeft;
+  final VoidCallback onMoveRight;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 34,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _PageChangeButton(
+            icon: Icons.chevron_left_rounded,
+            enabled: canMoveLeft,
+            onTap: onMoveLeft,
+          ),
+          const SizedBox(width: 18),
+          _PageChangeButton(
+            icon: Icons.chevron_right_rounded,
+            enabled: canMoveRight,
+            onTap: onMoveRight,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PageDropTarget extends StatelessWidget {
+  const _PageDropTarget({
+    super.key,
+    required this.index,
+    required this.onDrop,
+    required this.child,
+  });
+
+  final int index;
+  final void Function(int oldIndex, int newIndex) onDrop;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return DragTarget<int>(
+      hitTestBehavior: HitTestBehavior.translucent,
+      onWillAcceptWithDetails: (details) => details.data != index,
+      onAcceptWithDetails: (details) => onDrop(details.data, index),
+      builder: (context, candidateData, rejectedData) {
+        final isTarget = candidateData.isNotEmpty;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeInOut,
+          padding: EdgeInsets.symmetric(horizontal: isTarget ? 3 : 0),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 120),
+                width: isTarget ? 3 : 0,
+                height: 178,
+                decoration: BoxDecoration(
+                  color: kPrimaryAccentColor,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+              if (isTarget) const SizedBox(width: 8),
+              child,
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _PageThumbnailCard extends StatelessWidget {
+  const _PageThumbnailCard({
+    super.key,
+    required this.page,
+    required this.pageNumber,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final ProjectPage page;
+  final int pageNumber;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final aspectRatio = page.aspectWidth / page.aspectHeight;
+    const previewHeight = 152.0;
+    const framePadding = 8.0;
+    final previewWidth = (previewHeight * aspectRatio)
+        .clamp(88.0, 172.0)
+        .toDouble();
+    final card = _PageThumbnailContent(
+      page: page,
+      pageNumber: pageNumber,
+      selected: selected,
+      previewWidth: previewWidth,
+      previewHeight: previewHeight,
+      framePadding: framePadding,
+    );
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: LongPressDraggable<int>(
+        data: pageNumber - 1,
+        feedback: Material(
+          color: Colors.transparent,
+          child: Transform.scale(scale: 1.04, child: card),
+        ),
+        childWhenDragging: Opacity(opacity: 0.35, child: card),
+        child: _PressableScale(onTap: onTap, pressedScale: 0.97, child: card),
+      ),
+    );
+  }
+}
+
+class _PageThumbnailContent extends StatelessWidget {
+  const _PageThumbnailContent({
+    required this.page,
+    required this.pageNumber,
+    required this.selected,
+    required this.previewWidth,
+    required this.previewHeight,
+    required this.framePadding,
+  });
+
+  final ProjectPage page;
+  final int pageNumber;
+  final bool selected;
+  final double previewWidth;
+  final double previewHeight;
+  final double framePadding;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: previewWidth + (framePadding * 2) + 4,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            curve: Curves.easeInOut,
+            padding: EdgeInsets.all(framePadding),
+            decoration: BoxDecoration(
+              color: selected ? const Color(0xFFE7F0FF) : Colors.white,
+              border: Border.all(
+                color: selected ? kPrimaryAccentColor : const Color(0xFFE0E0E0),
+                width: selected ? 2 : 1,
+              ),
+            ),
+            child: _MiniPagePreview(
+              page: page,
+              width: previewWidth,
+              height: previewHeight,
+            ),
+          ),
+          const SizedBox(height: 7),
+          Text(
+            '$pageNumber',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF4A4A4A),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MiniPagePreview extends StatelessWidget {
+  const _MiniPagePreview({
+    required this.page,
+    required this.width,
+    required this.height,
+  });
+
+  final ProjectPage page;
+  final double width;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: _pageBackgroundColorFromExtras(page.extras),
+        border: Border.all(color: const Color(0xFFD6D6D6), width: 1),
+      ),
+      clipBehavior: Clip.hardEdge,
+      child: Stack(
+        clipBehavior: Clip.hardEdge,
+        children: [
+          for (final element in page.elements)
+            if (element.type == 'image')
+              _MiniImageElement(
+                element: element,
+                pageWidth: width,
+                pageHeight: height,
+              )
+            else if (element.type == 'text')
+              _MiniTextElement(
+                element: element,
+                pageWidth: width,
+                pageHeight: height,
+              ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MiniImageElement extends StatelessWidget {
+  const _MiniImageElement({
+    required this.element,
+    required this.pageWidth,
+    required this.pageHeight,
+  });
+
+  final CanvasElement element;
+  final double pageWidth;
+  final double pageHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    final src = element.data['src'] as String? ?? '';
+    final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
+    final left = element.x * pageWidth;
+    final top = element.y * pageHeight;
+    final width = element.width * pageWidth;
+    final height = aspectRatio != null && aspectRatio > 0
+        ? width / aspectRatio
+        : element.height * pageHeight;
+
+    return Positioned(
+      left: left,
+      top: top,
+      width: width,
+      height: height,
+      child: src.isEmpty
+          ? Container(color: const Color(0xFFF0F0F0))
+          : _CroppedImageFile(
+              path: src,
+              frameWidth: width,
+              frameHeight: height,
+              sourceAspectRatio:
+                  (element.data['originalAspectRatio'] as num?)?.toDouble() ??
+                  (element.data['aspectRatio'] as num?)?.toDouble() ??
+                  (width / height),
+              cropOffsetX: _cropOffsetXFromData(element.data),
+              cropOffsetY: _cropOffsetYFromData(element.data),
+              cropScale: _cropScaleFromData(element.data),
+              cacheWidth: 180,
+            ),
+    );
+  }
+}
+
+class _MiniTextElement extends StatelessWidget {
+  const _MiniTextElement({
+    required this.element,
+    required this.pageWidth,
+    required this.pageHeight,
+  });
+
+  final CanvasElement element;
+  final double pageWidth;
+  final double pageHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = _textContentFromData(element.data);
+    final left = element.x * pageWidth;
+    final top = element.y * pageHeight;
+    final width = element.width * pageWidth;
+    final fontSize = (_textFontSizeRatioFromData(element.data) * pageWidth)
+        .clamp(4.0, 13.0)
+        .toDouble();
+
+    return Positioned(
+      left: left,
+      top: top,
+      width: width,
+      child: Text(
+        text,
+        maxLines: _textLineCount(text),
+        overflow: TextOverflow.clip,
+        style: TextStyle(
+          color: _textColorFromData(element.data),
+          fontSize: fontSize,
+          height: 1.05,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _SlideSwitch extends StatelessWidget {
+  const _SlideSwitch({
+    required this.value,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final iconColor = enabled ? Colors.black54 : Colors.black26;
+    return _PressableScale(
+      onTap: enabled ? () => onChanged(!value) : null,
+      enabled: enabled,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeInOut,
@@ -7644,19 +8922,19 @@ class _SlideSwitch extends StatelessWidget {
         height: 32,
         padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
-          color: const Color(0xFFD8D8D8),
+          color: enabled ? const Color(0xFFD8D8D8) : const Color(0xFFE2E2E2),
           borderRadius: BorderRadius.circular(999),
         ),
         child: Stack(
           children: [
-            const Row(
+            Row(
               children: [
                 Expanded(
                   child: Center(
                     child: Icon(
                       Icons.crop_portrait_rounded,
                       size: 14,
-                      color: Colors.black54,
+                      color: iconColor,
                     ),
                   ),
                 ),
@@ -7665,7 +8943,7 @@ class _SlideSwitch extends StatelessWidget {
                     child: Icon(
                       Icons.view_carousel_rounded,
                       size: 14,
-                      color: Colors.black54,
+                      color: iconColor,
                     ),
                   ),
                 ),
@@ -7679,7 +8957,7 @@ class _SlideSwitch extends StatelessWidget {
                 width: 40,
                 height: 24,
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: enabled ? Colors.white : const Color(0xFFF4F4F4),
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Icon(
@@ -7687,7 +8965,7 @@ class _SlideSwitch extends StatelessWidget {
                       ? Icons.view_carousel_rounded
                       : Icons.crop_portrait_rounded,
                   size: 14,
-                  color: Colors.black87,
+                  color: enabled ? Colors.black87 : Colors.black38,
                 ),
               ),
             ),
@@ -9103,67 +10381,50 @@ class _ImportedImageCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onLongPress;
 
-  Future<ui.Size?> _decodeSize() async {
-    final bytes = await File(imagePath).readAsBytes();
-    final completer = Completer<ui.Size?>();
-    ui.decodeImageFromList(bytes, (image) {
-      completer.complete(
-        ui.Size(image.width.toDouble(), image.height.toDouble()),
-      );
-    });
-    return completer.future;
-  }
-
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<ui.Size?>(
-      future: _decodeSize(),
-      builder: (context, snapshot) {
-        const imageHeight = 56.0;
-        final ratio = snapshot.data == null || snapshot.data!.height == 0
-            ? 1.0
-            : snapshot.data!.width / snapshot.data!.height;
-        final imageWidth = (imageHeight * ratio).clamp(32.0, 180.0).toDouble();
+    const imageSize = 56.0;
 
-        return _PressableScale(
-          onTap: onTap,
-          onLongPress: onLongPress,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 160),
-            curve: Curves.easeInOut,
-            width: imageWidth + 12,
-            height: 75,
-            padding: const EdgeInsets.all(6),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Padding(
-              padding: const EdgeInsets.all(2),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.file(
-                  File(imagePath),
-                  width: imageWidth,
-                  height: imageHeight,
-                  fit: BoxFit.fitHeight,
-                  gaplessPlayback: true,
-                  errorBuilder: (context, error, stackTrace) => const SizedBox(
-                    width: 56,
-                    height: 56,
-                    child: Icon(
-                      Icons.broken_image_outlined,
-                      size: 20,
-                      color: Color(0xFF8A8A8A),
-                    ),
-                  ),
+    return _PressableScale(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeInOut,
+        width: 68,
+        height: 75,
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.all(2),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.file(
+              File(imagePath),
+              width: imageSize,
+              height: imageSize,
+              fit: BoxFit.cover,
+              cacheWidth: 112,
+              cacheHeight: 112,
+              filterQuality: FilterQuality.low,
+              gaplessPlayback: true,
+              errorBuilder: (context, error, stackTrace) => const SizedBox(
+                width: imageSize,
+                height: imageSize,
+                child: Icon(
+                  Icons.broken_image_outlined,
+                  size: 20,
+                  color: Color(0xFF8A8A8A),
                 ),
               ),
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 }
