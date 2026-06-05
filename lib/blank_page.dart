@@ -6061,6 +6061,7 @@ class _CanvasViewport extends StatelessWidget {
         .clamp(1.0, viewportWidth)
         .toDouble();
     final pageHeight = pageWidth * (page.aspectHeight / page.aspectWidth);
+    final canvasTop = (viewportHeight - pageHeight) / 2;
 
     return Align(
       alignment: Alignment.center,
@@ -6219,10 +6220,27 @@ class _CanvasViewport extends StatelessWidget {
                 ),
               ),
             ),
+            if (page.extras['aiCaption'] != null &&
+                (page.extras['aiCaption'] as String).isNotEmpty)
+              Positioned(
+                left: (viewportWidth - pageWidth) / 2 + 8,
+                bottom: viewportHeight - canvasTop + 8,
+                width: pageWidth - 16,
+                child: Text(
+                  page.extras['aiCaption'] as String,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF6B6F75),
+                    height: 1.35,
+                  ),
+                ),
+              ),
             if (showPageDivider && pageIndex < pages.length - 1)
               Positioned(
                 right: -1,
-                top: (viewportHeight - pageHeight) / 2,
+                top: canvasTop,
                 child: IgnorePointer(
                   child: Container(
                     width: 2,

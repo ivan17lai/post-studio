@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -56,9 +59,11 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> {
   static const String _projectsStorageKey = 'projects_v1';
   static const MethodChannel _shareChannel = MethodChannel('igapp/share');
+  static const MethodChannel _galleryChannel = MethodChannel('igapp/gallery');
 
   final List<ProjectRecord> _projects = <ProjectRecord>[];
   bool _isLoading = true;
+  bool _isAiCreating = false;
   bool _hasUpdate = false;
   String? _latestVersionUrl;
   String? _newVersionString;
@@ -260,20 +265,29 @@ class _MainPageState extends State<MainPage> {
   Future<void> _showCreateProjectDialogWithImportedImages([
     List<String> initialImportedSourcePaths = const <String>[],
   ]) async {
-    final name = await showDialog<String>(
+    final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (_) => _StyledCreateProjectDialog(
-        attachedPhotoCount: initialImportedSourcePaths.length,
+        initialPaths: initialImportedSourcePaths,
       ),
     );
 
-    if (!mounted || name == null || name.isEmpty) {
+    if (!mounted || result == null) {
+      return;
+    }
+
+    final name = result['name'] as String? ?? '';
+    final paths = List<String>.from(result['paths'] as Iterable? ?? []);
+    final isAi = result['isAi'] as bool? ?? false;
+
+    if (isAi && paths.isNotEmpty) {
+      await _createProjectWithAiLayout(name, paths);
       return;
     }
 
     final project = ProjectRecord(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
-      name: name,
+      name: name.isEmpty ? '未命名專案' : name,
       createdAt: DateTime.now(),
       pageCount: 1,
       pages: <ProjectPage>[
@@ -294,7 +308,7 @@ class _MainPageState extends State<MainPage> {
 
     await _openProject(
       project,
-      initialImportedSourcePaths: initialImportedSourcePaths,
+      initialImportedSourcePaths: paths,
     );
   }
 
@@ -311,6 +325,309 @@ class _MainPageState extends State<MainPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _createProjectWithAiLayout(String projectName, List<String> imagePaths) async {
+    final settings = AppSettingsController.instance;
+    if (!settings.aiSortEnabled || !settings.hasGeminiApiKey) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('請先到設定啟用 AI 並驗證 API Key')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isAiCreating = true;
+    });
+
+    try {
+      final projectId = DateTime.now().microsecondsSinceEpoch.toString();
+      final preparedPaths = <({String displayPath, String originalPath})>[];
+
+      for (final path in imagePaths) {
+        final prepared = await _prepareImageAsset(projectId, path);
+        preparedPaths.add(prepared);
+      }
+
+      // Send to Gemini
+      final parts = <Map<String, dynamic>>[
+        <String, String>{
+          'text':
+              'You are an AI layout designer. Arrange these N images into carousel pages. '
+              'For each page, you can choose to layout either 1 or 2 images. '
+              'The layout style for each page MUST be either: '
+              '1. "fill": A single image layout. '
+              '2. "split": A two-image layout (split top and bottom). '
+              'For each page, write a short, creative description sentence describing the content or narrative of this page in Traditional Chinese. '
+              'The description will be displayed above the images. '
+              'Return ONLY JSON in this exact format: '
+              '{"pages":[{"layout":"fill" or "split","imageIndexes":[0] or [1,2],"description":"one sentence description"}]}. '
+              'The imageIndexes arrays across all pages must use every original image index (0-based) exactly once.',
+        },
+      ];
+
+      for (var i = 0; i < preparedPaths.length; i++) {
+        final bytes = await File(preparedPaths[i].displayPath).readAsBytes();
+        parts
+          ..add(<String, String>{'text': 'Image index $i'})
+          ..add(<String, dynamic>{
+            'inlineData': <String, String>{
+              'mimeType': 'image/jpeg',
+              'data': base64Encode(bytes),
+            },
+          });
+      }
+
+      final uri = Uri.https(
+        'generativelanguage.googleapis.com',
+        '/v1beta/models/$kGeminiSortModel:generateContent',
+        <String, String>{'key': settings.geminiApiKey},
+      );
+      final response = await http
+          .post(
+            uri,
+            headers: const <String, String>{'Content-Type': 'application/json'},
+            body: jsonEncode(<String, dynamic>{
+              'contents': <Map<String, dynamic>>[
+                <String, dynamic>{'role': 'user', 'parts': parts},
+              ],
+              'generationConfig': <String, dynamic>{
+                'temperature': 0.2,
+                'responseMimeType': 'application/json',
+              },
+            }),
+          )
+          .timeout(const Duration(seconds: 45));
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception('Gemini request failed: ${response.statusCode}');
+      }
+
+      final responseData = jsonDecode(response.body) as Map<String, dynamic>;
+      final candidates = responseData['candidates'] as List<dynamic>?;
+      if (candidates == null || candidates.isEmpty) {
+        throw Exception('Missing Gemini candidates');
+      }
+      final content = (candidates.first as Map<String, dynamic>)['content'] as Map<String, dynamic>?;
+      final responseParts = content?['parts'] as List<dynamic>?;
+      var text = responseParts
+          ?.whereType<Map<String, dynamic>>()
+          .map((part) => part['text'])
+          .whereType<String>()
+          .join('\n')
+          .trim() ?? '';
+
+      // Parse JSON
+      var cleaned = text.trim();
+      final fenced = RegExp(r'```(?:json)?\s*([\s\S]*?)\s*```', caseSensitive: false).firstMatch(cleaned);
+      if (fenced != null) {
+        cleaned = fenced.group(1)!.trim();
+      }
+      final objectStart = cleaned.indexOf('{');
+      final objectEnd = cleaned.lastIndexOf('}');
+      if (objectStart != -1 && objectEnd > objectStart) {
+        cleaned = cleaned.substring(objectStart, objectEnd + 1);
+      }
+      final decodedResult = jsonDecode(cleaned) as Map<String, dynamic>;
+      final pagesList = decodedResult['pages'] as List<dynamic>?;
+      if (pagesList == null || pagesList.isEmpty) {
+        throw Exception('Invalid Gemini response: missing pages');
+      }
+
+      final List<ProjectPage> projectPages = [];
+      for (var pageIdx = 0; pageIdx < pagesList.length; pageIdx++) {
+        final pageData = pagesList[pageIdx] as Map<String, dynamic>;
+        final layout = pageData['layout'] as String? ?? 'fill';
+        final imageIndexes = List<int>.from(pageData['imageIndexes'] as Iterable? ?? []);
+        final description = pageData['description'] as String? ?? '';
+
+        final pageId = '${DateTime.now().microsecondsSinceEpoch}_page_$pageIdx';
+        final List<CanvasElement> elements = [];
+
+        // Add images elements
+        if (layout == 'split' && imageIndexes.length >= 2) {
+          final topImgIdx = imageIndexes[0];
+          final botImgIdx = imageIndexes[1];
+
+          if (topImgIdx >= 0 && topImgIdx < preparedPaths.length) {
+            final prep = preparedPaths[topImgIdx];
+            final aspect = await _getImageAspectRatio(prep.displayPath);
+            elements.add(CanvasElement(
+              id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_top',
+              type: 'image',
+              pageId: pageId,
+              x: 0.0,
+              y: 0.0,
+              width: 1.0,
+              height: 0.49,
+              allowCrossPage: true,
+              data: <String, dynamic>{
+                'src': prep.displayPath,
+                'originalSrc': prep.originalPath,
+                'aspectRatio': aspect,
+                'originalAspectRatio': aspect,
+              },
+            ));
+          }
+
+          if (botImgIdx >= 0 && botImgIdx < preparedPaths.length) {
+            final prep = preparedPaths[botImgIdx];
+            final aspect = await _getImageAspectRatio(prep.displayPath);
+            elements.add(CanvasElement(
+              id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_bot',
+              type: 'image',
+              pageId: pageId,
+              x: 0.0,
+              y: 0.51,
+              width: 1.0,
+              height: 0.49,
+              allowCrossPage: true,
+              data: <String, dynamic>{
+                'src': prep.displayPath,
+                'originalSrc': prep.originalPath,
+                'aspectRatio': aspect,
+                'originalAspectRatio': aspect,
+              },
+            ));
+          }
+        } else {
+          // Fill layout (or default fallback)
+          final imgIdx = imageIndexes.isNotEmpty ? imageIndexes[0] : 0;
+          if (imgIdx >= 0 && imgIdx < preparedPaths.length) {
+            final prep = preparedPaths[imgIdx];
+            final aspect = await _getImageAspectRatio(prep.displayPath);
+
+            const pageAspect = 3.0 / 4.0;
+            final targetRatio = aspect / pageAspect;
+
+            double wNorm, hNorm;
+            if (targetRatio > 1.0) {
+              // Width limited
+              wNorm = 1.0;
+              hNorm = pageAspect / aspect;
+            } else {
+              // Height limited
+              hNorm = 1.0;
+              wNorm = hNorm * targetRatio;
+            }
+
+            final xCoord = (1.0 - wNorm) / 2;
+            final yCoord = (1.0 - hNorm) / 2;
+
+            elements.add(CanvasElement(
+              id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_fill',
+              type: 'image',
+              pageId: pageId,
+              x: xCoord,
+              y: yCoord,
+              width: wNorm,
+              height: hNorm,
+              allowCrossPage: true,
+              data: <String, dynamic>{
+                'src': prep.displayPath,
+                'originalSrc': prep.originalPath,
+                'aspectRatio': aspect,
+                'originalAspectRatio': aspect,
+              },
+            ));
+          }
+        }
+
+        projectPages.add(ProjectPage(
+          id: pageId,
+          title: '頁面 ${pageIdx + 1}',
+          type: 'page',
+          aspectWidth: 3,
+          aspectHeight: 4,
+          elements: elements,
+          extras: <String, dynamic>{
+            'aiCaption': description,
+          },
+        ));
+      }
+
+      final List<Map<String, String>> importedImagesList = [];
+      for (final prep in preparedPaths) {
+        importedImagesList.add({
+          'src': prep.displayPath,
+          'originalSrc': prep.originalPath,
+        });
+      }
+
+      final project = ProjectRecord(
+        id: projectId,
+        name: projectName.isEmpty ? 'AI 建立專案' : projectName,
+        createdAt: DateTime.now(),
+        pageCount: projectPages.length,
+        pages: projectPages,
+        extras: {
+          'importedImages': importedImagesList,
+        },
+      );
+
+      setState(() {
+        _projects.insert(0, project);
+        _isAiCreating = false;
+      });
+
+      await _persistProjects();
+      if (!mounted) return;
+      await _openProject(project);
+
+    } catch (e) {
+      debugPrint('[AI Create] Error: $e');
+      if (mounted) {
+        setState(() {
+          _isAiCreating = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('AI 建立專案失敗：$e')),
+        );
+      }
+    }
+  }
+
+  Future<({String displayPath, String originalPath})> _prepareImageAsset(
+    String projectId,
+    String sourcePath,
+  ) async {
+    try {
+      final result =
+          await _galleryChannel.invokeMapMethod<String, dynamic>(
+            'prepareImageAsset',
+            <String, dynamic>{
+              'sourcePath': sourcePath,
+              'projectId': projectId,
+              'maxPreviewSide': 720,
+            },
+          ) ??
+          <String, dynamic>{};
+
+      final displayPath =
+          result['displayPath'] as String? ??
+          result['originalPath'] as String? ??
+          sourcePath;
+      final originalPath =
+          result['originalPath'] as String? ??
+          result['displayPath'] as String? ??
+          sourcePath;
+      return (displayPath: displayPath, originalPath: originalPath);
+    } catch (_) {
+      return (displayPath: sourcePath, originalPath: sourcePath);
+    }
+  }
+
+  Future<double> _getImageAspectRatio(String path) async {
+    try {
+      final bytes = await File(path).readAsBytes();
+      final completer = Completer<double>();
+      ui.decodeImageFromList(bytes, (image) {
+        completer.complete(image.width / image.height);
+      });
+      return await completer.future;
+    } catch (_) {
+      return 1.0;
+    }
   }
 
   Future<void> _openSettingsPage() async {
@@ -495,105 +812,157 @@ class _MainPageState extends State<MainPage> {
   Widget build(BuildContext context) {
     final width = MediaQuery.of(context).size.width;
     final strings = AppStrings.of(context);
+    final primary = AppSettingsController.instance.primaryColor;
 
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: const Color(0xFFEAEAEA),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: Stack(
-              clipBehavior: Clip.none,
+    return Stack(
+      children: [
+        Scaffold(
+          appBar: AppBar(
+            backgroundColor: const Color(0xFFEAEAEA),
+            actions: [
+              Padding(
+                padding: const EdgeInsets.only(right: 16),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    IconButton(
+                      onPressed: _openSettingsPage,
+                      icon: const Icon(
+                        Icons.settings_rounded,
+                        color: Color(0xFF5F5F5F),
+                      ),
+                    ),
+                    if (_hasUpdate)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: kPrimaryAccentColor,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: const Color(0xFFEAEAEA),
+          floatingActionButton: FloatingActionButton(
+            onPressed: _showCreateProjectDialog,
+            backgroundColor: primary,
+            foregroundColor: Colors.white,
+            shape: const CircleBorder(),
+            child: const Icon(Icons.add),
+          ),
+          body: SafeArea(
+            child: Column(
               children: [
-                IconButton(
-                  onPressed: _openSettingsPage,
-                  icon: const Icon(
-                    Icons.settings_rounded,
-                    color: Color(0xFF5F5F5F),
+                Padding(
+                  padding: const EdgeInsets.only(
+                    top: 20,
+                    left: 26,
+                    bottom: 20,
+                    right: 20,
+                  ),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      strings.t('allProjects'),
+                      textAlign: TextAlign.left,
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
                 ),
-                if (_hasUpdate)
-                  Positioned(
-                    top: 8,
-                    right: 8,
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: kPrimaryAccentColor,
-                        borderRadius: BorderRadius.circular(999),
+                Expanded(
+                  child: _isLoading
+                      ? const Center(child: CircularProgressIndicator())
+                      : ListView.separated(
+                          padding: const EdgeInsets.only(bottom: 100),
+                          itemCount: _projects.length,
+                          separatorBuilder: (_, _) => const SizedBox(height: 12),
+                          itemBuilder: (context, index) {
+                            final project = _projects[index];
+                            return _ProjectCard(
+                              key: ValueKey(project.id),
+                              width: width,
+                              project: project,
+                              onPressed: () => _openProject(project),
+                              onLongPress: () => _deleteProject(project),
+                            );
+                          },
+                        ),
+                ),
+                if (_appVersion.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: Text(
+                      _appVersion,
+                      style: const TextStyle(
+                        color: Color(0xFF9A9A9A),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
               ],
             ),
           ),
-        ],
-      ),
-      backgroundColor: const Color(0xFFEAEAEA),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showCreateProjectDialog,
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black87,
-        shape: const CircleBorder(),
-        child: const Icon(Icons.add),
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(
-                top: 20,
-                left: 26,
-                bottom: 20,
-                right: 20,
-              ),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  strings.t('allProjects'),
-                  textAlign: TextAlign.left,
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ),
-            Expanded(
-              child: _isLoading
-                  ? const Center(child: CircularProgressIndicator())
-                  : ListView.separated(
-                      padding: const EdgeInsets.only(bottom: 100),
-                      itemCount: _projects.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 12),
-                      itemBuilder: (context, index) {
-                        final project = _projects[index];
-                        return _ProjectCard(
-                          key: ValueKey(project.id),
-                          width: width,
-                          project: project,
-                          onPressed: () => _openProject(project),
-                          onLongPress: () => _deleteProject(project),
-                        );
-                      },
-                    ),
-            ),
-            if (_appVersion.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 14),
-                child: Text(
-                  _appVersion,
-                  style: const TextStyle(
-                    color: Color(0xFF9A9A9A),
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-          ],
         ),
-      ),
+        if (_isAiCreating)
+          Positioned.fill(
+            child: AbsorbPointer(
+              absorbing: true,
+              child: Container(
+                color: Colors.black.withValues(alpha: 0.10),
+                alignment: Alignment.center,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(22),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.08),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: const Column(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        width: 26,
+                        height: 26,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.4,
+                          color: Color(0xFF8F8F8F),
+                        ),
+                      ),
+                      SizedBox(height: 10),
+                      Text(
+                        'AI 建立專案中...',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF5F5F5F),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -615,6 +984,7 @@ class _ProjectCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
+    final primary = AppSettingsController.instance.primaryColor;
 
     return Center(
       child: SizedBox(
@@ -622,9 +992,9 @@ class _ProjectCard extends StatelessWidget {
         height: 80,
         child: Material(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(24),
           child: InkWell(
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(24),
             onTap: onPressed,
             onLongPress: onLongPress,
             child: Padding(
@@ -635,12 +1005,12 @@ class _ProjectCard extends StatelessWidget {
                     width: 48,
                     height: 48,
                     decoration: BoxDecoration(
-                      color: const Color(0xFFF1F1F1),
+                      color: primary,
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: const Icon(
                       Icons.folder_outlined,
-                      color: Colors.black87,
+                      color: Colors.white,
                       size: 28,
                     ),
                   ),
@@ -741,9 +1111,11 @@ class _CreateProjectDialogState extends State<_CreateProjectDialog> {
 }
 
 class _StyledCreateProjectDialog extends StatefulWidget {
-  const _StyledCreateProjectDialog({this.attachedPhotoCount = 0});
+  const _StyledCreateProjectDialog({
+    this.initialPaths = const <String>[],
+  });
 
-  final int attachedPhotoCount;
+  final List<String> initialPaths;
 
   @override
   State<_StyledCreateProjectDialog> createState() =>
@@ -753,11 +1125,14 @@ class _StyledCreateProjectDialog extends StatefulWidget {
 class _StyledCreateProjectDialogState
     extends State<_StyledCreateProjectDialog> {
   late final TextEditingController _controller;
+  final ImagePicker _imagePicker = ImagePicker();
+  List<String> _selectedPhotoPaths = [];
 
   @override
   void initState() {
     super.initState();
     _controller = TextEditingController();
+    _selectedPhotoPaths = List<String>.from(widget.initialPaths);
   }
 
   @override
@@ -766,20 +1141,47 @@ class _StyledCreateProjectDialogState
     super.dispose();
   }
 
-  void _submit() {
+  Future<void> _pickPhotos() async {
+    try {
+      final pickedFiles = await _imagePicker.pickMultiImage();
+      if (pickedFiles.isNotEmpty) {
+        setState(() {
+          _selectedPhotoPaths.addAll(pickedFiles.map((f) => f.path));
+        });
+      }
+    } catch (e) {
+      debugPrint('[Dialog Pick] Error picking photos: $e');
+    }
+  }
+
+  void _submitNormal() {
     FocusScope.of(context).unfocus();
-    Navigator.of(context).pop(_controller.text.trim());
+    Navigator.of(context).pop({
+      'name': _controller.text.trim(),
+      'paths': _selectedPhotoPaths,
+      'isAi': false,
+    });
+  }
+
+  void _submitAi() {
+    FocusScope.of(context).unfocus();
+    Navigator.of(context).pop({
+      'name': _controller.text.trim(),
+      'paths': _selectedPhotoPaths,
+      'isAi': true,
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
+    final hasSelectedPhotos = _selectedPhotoPaths.isNotEmpty;
 
     return Dialog(
       backgroundColor: Colors.transparent,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20),
       child: Container(
-        padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 14),
         decoration: BoxDecoration(
           color: const Color(0xFFF4F4F4),
           borderRadius: BorderRadius.circular(24),
@@ -810,36 +1212,140 @@ class _StyledCreateProjectDialogState
                 color: Color(0xFF1F1F1F),
               ),
             ),
-            if (widget.attachedPhotoCount > 0) ...[
-              const SizedBox(height: 6),
-              Text(
-                strings.t(
-                  'attachedPhotos',
-                  args: <String, String>{
-                    'count': '${widget.attachedPhotoCount}',
-                  },
-                ),
-                style: const TextStyle(fontSize: 13, color: Color(0xFF6A6A6A)),
-              ),
-            ],
             const SizedBox(height: 12),
             Container(
               decoration: BoxDecoration(
                 color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(24),
               ),
               padding: const EdgeInsets.symmetric(horizontal: 14),
               child: TextField(
                 controller: _controller,
                 autofocus: true,
                 textInputAction: TextInputAction.done,
-                onSubmitted: (_) => _submit(),
+                onSubmitted: (_) => _submitNormal(),
                 decoration: InputDecoration(
                   hintText: strings.t('enterProjectName'),
                   border: InputBorder.none,
                 ),
               ),
             ),
+            const SizedBox(height: 14),
+            const Padding(
+              padding: EdgeInsets.only(left: 2, bottom: 6),
+              child: Text(
+                '預選照片',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF7A7A7A),
+                ),
+              ),
+            ),
+            if (!hasSelectedPhotos)
+              GestureDetector(
+                onTap: _pickPhotos,
+                child: Container(
+                  width: double.infinity,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFE2E2E2)),
+                  ),
+                  child: const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.add_photo_alternate_outlined,
+                          color: Color(0xFF8F8F8F),
+                          size: 24,
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          '選擇要排版的照片 (非必選)',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF8F8F8F),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            else
+              SizedBox(
+                height: 80,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _selectedPhotoPaths.length + 1,
+                  itemBuilder: (context, index) {
+                    if (index == _selectedPhotoPaths.length) {
+                      return GestureDetector(
+                        onTap: _pickPhotos,
+                        child: Container(
+                          width: 60,
+                          margin: const EdgeInsets.only(right: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFE2E2E2)),
+                          ),
+                          child: const Icon(
+                            Icons.add_a_photo_outlined,
+                            color: Color(0xFF8F8F8F),
+                            size: 20,
+                          ),
+                        ),
+                      );
+                    }
+                    final path = _selectedPhotoPaths[index];
+                    return Stack(
+                      children: [
+                        Container(
+                          width: 60,
+                          height: 80,
+                          margin: const EdgeInsets.only(right: 8),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            image: DecorationImage(
+                              image: FileImage(File(path)),
+                              fit: BoxFit.cover,
+                            ),
+                            border: Border.all(color: const Color(0xFFE2E2E2)),
+                          ),
+                        ),
+                        Positioned(
+                          top: 2,
+                          right: 10,
+                          child: GestureDetector(
+                            onTap: () {
+                              setState(() {
+                                _selectedPhotoPaths.removeAt(index);
+                              });
+                            },
+                            child: Container(
+                              decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                              ),
+                              padding: const EdgeInsets.all(3),
+                              child: const Icon(
+                                Icons.close,
+                                color: Colors.white,
+                                size: 10,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
             const SizedBox(height: 18),
             Row(
               children: [
@@ -849,12 +1355,22 @@ class _StyledCreateProjectDialogState
                     onTap: () => Navigator.of(context).pop(),
                   ),
                 ),
-                const SizedBox(width: 10),
+                if (hasSelectedPhotos) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _DialogActionButton(
+                      label: '由 AI 建立',
+                      isPrimary: true,
+                      onTap: _submitAi,
+                    ),
+                  ),
+                ],
+                const SizedBox(width: 8),
                 Expanded(
                   child: _DialogActionButton(
                     label: strings.t('create'),
-                    isPrimary: true,
-                    onTap: _submit,
+                    isPrimary: !hasSelectedPhotos,
+                    onTap: _submitNormal,
                   ),
                 ),
               ],

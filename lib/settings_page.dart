@@ -1,0 +1,573 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
+
+import 'app_settings.dart';
+
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({
+    super.key,
+    required this.appVersion,
+    required this.hasUpdate,
+    required this.latestVersion,
+    required this.latestVersionUrl,
+    required this.onCheckForUpdates,
+  });
+
+  final String appVersion;
+  final bool hasUpdate;
+  final String? latestVersion;
+  final String? latestVersionUrl;
+  final Future<void> Function() onCheckForUpdates;
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  final AppSettingsController _settings = AppSettingsController.instance;
+  late final TextEditingController _apiKeyController;
+  bool _isCheckingApi = false;
+  bool _isCheckingUpdate = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _apiKeyController = TextEditingController(text: _settings.geminiApiKey);
+    _settings.addListener(_handleSettingsChanged);
+  }
+
+  @override
+  void dispose() {
+    _settings.removeListener(_handleSettingsChanged);
+    _apiKeyController.dispose();
+    super.dispose();
+  }
+
+  void _handleSettingsChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<bool> _verifyGeminiApiKey(String apiKey) async {
+    final trimmedKey = apiKey.trim();
+    if (trimmedKey.isEmpty) {
+      return false;
+    }
+
+    final uri = Uri.https(
+      'generativelanguage.googleapis.com',
+      '/v1beta/models/$kGeminiSortModel:generateContent',
+      <String, String>{'key': trimmedKey},
+    );
+
+    try {
+      final response = await http
+          .post(
+            uri,
+            headers: const <String, String>{'Content-Type': 'application/json'},
+            body: jsonEncode(<String, dynamic>{
+              'contents': <Map<String, dynamic>>[
+                <String, dynamic>{
+                  'role': 'user',
+                  'parts': <Map<String, String>>[
+                    <String, String>{'text': 'Reply with OK only.'},
+                  ],
+                },
+              ],
+              'generationConfig': <String, dynamic>{
+                'temperature': 0,
+                'maxOutputTokens': 8,
+              },
+            }),
+          )
+          .timeout(const Duration(seconds: 18));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return false;
+      }
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final candidates = data['candidates'] as List<dynamic>?;
+      return candidates != null && candidates.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _saveApiKey() async {
+    await _settings.setGeminiApiKey(_apiKeyController.text);
+    if (!_settings.hasGeminiApiKey) {
+      await _settings.setAiSortEnabled(false);
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('設定已儲存')));
+    }
+  }
+
+  Future<void> _toggleAiSort(bool enabled) async {
+    await _settings.setGeminiApiKey(_apiKeyController.text);
+    if (!enabled) {
+      await _settings.setAiSortEnabled(false);
+      return;
+    }
+
+    if (!_settings.hasGeminiApiKey) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('請先輸入 Gemini API Key')));
+      }
+      return;
+    }
+
+    setState(() {
+      _isCheckingApi = true;
+    });
+    final isValid = await _verifyGeminiApiKey(_settings.geminiApiKey);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isCheckingApi = false;
+    });
+
+    if (isValid) {
+      await _settings.setAiSortEnabled(true);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('AI 協作已啟用')));
+      }
+    } else {
+      await _settings.setAiSortEnabled(false);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('API 無法使用，AI 協作無法啟用')));
+      }
+    }
+  }
+
+  Future<void> _checkUpdates() async {
+    if (widget.hasUpdate && widget.latestVersionUrl != null) {
+      await launchUrl(
+        Uri.parse(widget.latestVersionUrl!),
+        mode: LaunchMode.externalApplication,
+      );
+      return;
+    }
+    setState(() {
+      _isCheckingUpdate = true;
+    });
+    await widget.onCheckForUpdates();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isCheckingUpdate = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = _settings.primaryColor;
+    return Scaffold(
+      backgroundColor: const Color(0xFFF1F2F4),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFFF1F2F4),
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_rounded, color: Color(0xFF2A2A2A)),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        title: const Text(
+          '設定',
+          style: TextStyle(
+            color: Color(0xFF222222),
+            fontSize: 20,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      ),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(22, 12, 22, 28),
+          children: [
+            _SettingsSectionTitle(title: '主題色調'),
+            const SizedBox(height: 10),
+            _ThemeColorGrid(primary: primary, settings: _settings),
+            const SizedBox(height: 22),
+            _SettingsSectionTitle(title: '擴充功能'),
+            const SizedBox(height: 10),
+            _SettingsCard(
+              primary: primary,
+              icon: Icons.auto_awesome_rounded,
+              title: 'AI 協作',
+              subtitle: _settings.aiSortEnabled
+                  ? '演算法交織的視覺交響，為你的排版尋找最完美的敘事順序。'
+                  : '打破常規，用智慧啟發靈感。請先驗證 Gemini API 金鑰。',
+              trailing: _isCheckingApi
+                  ? const SizedBox(
+                      width: 26,
+                      height: 26,
+                      child: CircularProgressIndicator(strokeWidth: 2.4),
+                    )
+                  : Switch(
+                      value: _settings.aiSortEnabled,
+                      activeThumbColor: primary,
+                      onChanged: _toggleAiSort,
+                    ),
+            ),
+            const SizedBox(height: 4),
+            _SettingsInputCard(
+              primary: primary,
+              controller: _apiKeyController,
+              onSave: _saveApiKey,
+            ),
+            const Divider(height: 1, thickness: 1, color: Color(0xFFF1F2F4), indent: 18, endIndent: 18),
+            _SettingsCostCard(
+              primary: primary,
+              aiSortCount: _settings.aiSortCount,
+              onReset: () async {
+                await _settings.resetAiSortCount();
+              },
+            ),
+            const SizedBox(height: 22),
+            _SettingsSectionTitle(title: '版本與更新'),
+            const SizedBox(height: 10),
+            _SettingsCard(
+              primary: primary,
+              icon: Icons.system_update_rounded,
+              title: '版本與更新',
+              subtitle: widget.hasUpdate
+                  ? '目前 ${widget.appVersion}，可更新到 ${widget.latestVersion ?? '新版本'}'
+                  : '目前版本 ${widget.appVersion}',
+              trailing: TextButton(
+                onPressed: _isCheckingUpdate ? null : _checkUpdates,
+                style: TextButton.styleFrom(
+                  backgroundColor: primary.withValues(alpha: 0.16),
+                  foregroundColor: const Color(0xFF222222),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                child: Text(
+                  widget.hasUpdate && widget.latestVersionUrl != null
+                      ? '前往更新'
+                      : _isCheckingUpdate
+                      ? '檢查中'
+                      : '檢查更新',
+                ),
+              ),
+            ),
+            // const SizedBox(height: 18),
+            // _SettingsCard(
+            //   primary: primary,
+            //   icon: Icons.info_outline_rounded,
+            //   title: '關於',
+            //   subtitle: '設定只有你會看到，AI 排序只會在你主動按下時送出頁面縮圖。',
+            // ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// _SettingsHeader has been removed
+
+class _SettingsSectionTitle extends StatelessWidget {
+  const _SettingsSectionTitle({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      title,
+      style: const TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w800,
+        color: Color(0xFF2E3033),
+      ),
+    );
+  }
+}
+
+class _SettingsCard extends StatelessWidget {
+  const _SettingsCard({
+    required this.primary,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    this.trailing,
+  });
+
+  final Color primary;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(18, 16, 14, 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: primary.withValues(alpha: 0.22),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Icon(icon, color: primary, size: 25),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF25272A),
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    height: 1.35,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF6B6F75),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (trailing != null) ...[const SizedBox(width: 10), trailing!],
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsInputCard extends StatelessWidget {
+  const _SettingsInputCard({
+    required this.primary,
+    required this.controller,
+    required this.onSave,
+  });
+
+  final Color primary;
+  final TextEditingController controller;
+  final VoidCallback onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(24),
+          topRight: Radius.circular(24),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Gemini API Key',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF25272A),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: controller,
+            obscureText: true,
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: const Color(0xFFF4F5F7),
+              hintText: 'AIza...',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(18),
+                borderSide: BorderSide.none,
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 12,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: onSave,
+              style: FilledButton.styleFrom(
+                backgroundColor: primary,
+                foregroundColor: const Color(0xFF1F1F1F),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+              child: const Text('儲存 API Key'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ThemeColorGrid extends StatelessWidget {
+  const _ThemeColorGrid({required this.primary, required this.settings});
+
+  final Color primary;
+  final AppSettingsController settings;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Wrap(
+        spacing: 12,
+        runSpacing: 12,
+        children: [
+          for (final color in kPrimaryAccentPalette)
+            GestureDetector(
+              onTap: () => unawaited(settings.setPrimaryColor(color)),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 160),
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                    color: color.toARGB32() == settings.primaryColor.toARGB32()
+                        ? const Color(0xFF202124)
+                        : Colors.transparent,
+                    width: 3,
+                  ),
+                ),
+                child: color.toARGB32() == settings.primaryColor.toARGB32()
+                    ? const Icon(Icons.check_rounded, size: 20)
+                    : null,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsCostCard extends StatelessWidget {
+  const _SettingsCostCard({
+    required this.primary,
+    required this.aiSortCount,
+    required this.onReset,
+  });
+
+  final Color primary;
+  final int aiSortCount;
+  final VoidCallback onReset;
+
+  @override
+  Widget build(BuildContext context) {
+    final double estimatedCost = aiSortCount * 0.0000002;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 16, 14, 16),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.only(
+          bottomLeft: Radius.circular(24),
+          bottomRight: Radius.circular(24),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: primary.withValues(alpha: 0.22),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Icon(Icons.calculate_rounded, color: primary, size: 25),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'AI 用量與費用估算',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF25272A),
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  '預估花費：\$${estimatedCost.toStringAsFixed(6)} USD',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    height: 1.35,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF6B6F75),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (aiSortCount > 0) ...[
+            const SizedBox(width: 10),
+            TextButton(
+              onPressed: onReset,
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.red.withValues(alpha: 0.08),
+                foregroundColor: Colors.red[700],
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              ),
+              child: const Text(
+                '重設',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
