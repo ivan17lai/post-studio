@@ -1695,6 +1695,7 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   Future<bool?> _showAiSortConfirmationDialog(List<int> order) {
+    final strings = AppStrings.of(context);
     final currentOrder = <int>[
       for (var i = 0; i < _project.pages.length; i++) i,
     ];
@@ -1716,31 +1717,37 @@ class _BlankPageState extends State<BlankPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'AI 建議排序',
-                  style: TextStyle(
+                Text(
+                  strings.t('aiSortSuggestion'),
+                  style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w800,
                     color: Color(0xFF1F1F1F),
                   ),
                 ),
                 const SizedBox(height: 14),
-                _AiSortOrderPreview(title: '目前順序', value: currentLabel),
+                _AiSortOrderPreview(
+                  title: strings.t('currentOrder'),
+                  value: currentLabel,
+                ),
                 const SizedBox(height: 8),
-                _AiSortOrderPreview(title: '建議順序', value: nextLabel),
+                _AiSortOrderPreview(
+                  title: strings.t('suggestedOrder'),
+                  value: nextLabel,
+                ),
                 const SizedBox(height: 18),
                 Row(
                   children: [
                     Expanded(
                       child: _DialogActionButton(
-                        label: '取消',
+                        label: strings.t('cancel'),
                         onTap: () => Navigator.of(context).pop(false),
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: _DialogActionButton(
-                        label: '接受',
+                        label: strings.t('accept'),
                         isPrimary: true,
                         onTap: () => Navigator.of(context).pop(true),
                       ),
@@ -5307,12 +5314,6 @@ class _BlankPageState extends State<BlankPage> {
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
                                       _ToolbarIconButton(
-                                        icon: Icons.auto_awesome_rounded,
-                                        enabled: pages.length > 1,
-                                        onPressed: _requestAiPageSort,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      _ToolbarIconButton(
                                         icon: _showPageBorder
                                             ? Icons.border_outer_rounded
                                             : Icons.crop_square_rounded,
@@ -5343,6 +5344,12 @@ class _BlankPageState extends State<BlankPage> {
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          _ToolbarIconButton(
+                            icon: Icons.auto_awesome_rounded,
+                            enabled: pages.length > 1,
+                            onPressed: _requestAiPageSort,
+                          ),
+                          const SizedBox(width: 8),
                           _PageChangeButton(
                             icon: Icons.chevron_left_rounded,
                             enabled: _currentPageIndex > 0,

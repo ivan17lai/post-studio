@@ -593,14 +593,7 @@ class _MainPageState extends State<MainPage> {
           _isAiCreating = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              strings.t(
-                'aiProjectCreationFailed',
-                args: {'error': e.toString()},
-              ),
-            ),
-          ),
+          SnackBar(content: Text(strings.t('aiProjectCreationFailed'))),
         );
       }
     }
