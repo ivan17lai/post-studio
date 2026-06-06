@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-const String kAppDisplayVersion = '1.5.1';
+const String kAppDisplayVersion = '1.5.2';
 const String kGeminiSortModel = 'gemini-3.5-flash';
 const Color kDefaultPrimaryAccentColor = Color(0xFFC3AEFF);
 
@@ -23,12 +23,14 @@ class AppSettingsController extends ChangeNotifier {
   static const String _aiSortEnabledKey = 'settings_ai_sort_enabled';
   static const String _primaryColorKey = 'settings_primary_color';
   static const String _aiSortCountKey = 'settings_ai_sort_count';
+  static const String _languageKey = 'settings_language';
 
   bool _loaded = false;
   String _geminiApiKey = '';
   bool _aiSortEnabled = false;
   int _primaryColorValue = kDefaultPrimaryAccentColor.toARGB32();
   int _aiSortCount = 0;
+  String _language = 'system';
 
   bool get loaded => _loaded;
   String get geminiApiKey => _geminiApiKey;
@@ -36,6 +38,7 @@ class AppSettingsController extends ChangeNotifier {
   Color get primaryColor => Color(_primaryColorValue);
   bool get hasGeminiApiKey => _geminiApiKey.trim().isNotEmpty;
   int get aiSortCount => _aiSortCount;
+  String get language => _language;
 
   Future<void> load() async {
     if (_loaded) {
@@ -47,7 +50,15 @@ class AppSettingsController extends ChangeNotifier {
     _primaryColorValue =
         prefs.getInt(_primaryColorKey) ?? kDefaultPrimaryAccentColor.toARGB32();
     _aiSortCount = prefs.getInt(_aiSortCountKey) ?? 0;
+    _language = prefs.getString(_languageKey) ?? 'system';
     _loaded = true;
+    notifyListeners();
+  }
+
+  Future<void> setLanguage(String value) async {
+    _language = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_languageKey, value);
     notifyListeners();
   }
 

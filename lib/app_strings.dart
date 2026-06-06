@@ -1,6 +1,7 @@
 import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
+import 'app_settings.dart';
 
 class AppStrings {
   const AppStrings._();
@@ -56,6 +57,65 @@ class AppStrings {
     'snapImageEdges': '圖片貼邊',
     'pageTitle': '第 {index} 頁',
     'attachedPhotos': '附帶 {count} 張照片',
+
+    // New localization keys
+    'settingsTitle': '設定',
+    'themeColor': '主題色調',
+    'extensions': '擴充功能',
+    'aiCollaboration': 'AI 協作',
+    'aiCollaborationSubtitleActive': '演算法交織的視覺交響，為你的排版尋找最完美的敘事順序。',
+    'aiCollaborationSubtitleInactive': '打破常規，用智慧啟發靈感。請先驗證 Gemini API 金鑰。',
+    'versionUpdate': '版本與更新',
+    'updateAvailable': '目前 {version}，可更新到 {latest}',
+    'currentVersion': '目前版本 {version}',
+    'goToUpdate': '前往更新',
+    'checking': '檢查中',
+    'checkUpdates': '檢查更新',
+    'geminiApiKey': 'Gemini API Key',
+    'saveApiKey': '儲存 API Key',
+    'aiUsageEstimate': 'AI 用量與費用估算',
+    'estimatedCost': '預估花費：\${cost} USD',
+    'reset': '重設',
+    'settingsSaved': '設定已儲存',
+    'enterApiKeyFirst': '請先輸入 Gemini API Key',
+    'aiCollaborationEnabled': 'AI 協作已啟用',
+    'apiUnavailable': 'API 無法使用，AI 協作無法啟用',
+    'alreadyLatestVersion': '目前已是最新版本',
+    'updateCheckFailed': '檢查更新失敗，請稍後再試',
+    'networkError': '網路連線錯誤',
+    'newVersionFound': '發現新版本',
+    'updatePrompt': '最新版本為 v{version}，是否前往下載更新？',
+    'askMeLater': '稍後再說',
+    'downloadNow': '前往下載',
+    'unnamedProject': '未命名專案',
+    'enableAiFirst': '請先到設定啟用 AI 並驗證 API Key',
+    'aiCreatedProject': 'AI 建立專案',
+    'aiCreatingProject': 'AI 建立專案中...',
+    'aiProjectCreationFailed': 'AI 建立專案失敗：{error}',
+    'preselectedPhotos': '預選照片',
+    'selectPhotosOptional': '選擇要排版的照片 (非必選)',
+    'createByAi': '由 AI 建立',
+    'imagePosition': '圖片位置',
+    'textPosition': '文字位置',
+    'changePageRatio': '變更頁面比例',
+    'changeRatioWarning': '目前專案已有內容，變更頁面比例可能會讓圖片位置或大小看起來位移。要繼續嗎？',
+    'continueLabel': '繼續',
+    'editText': '編輯文字',
+    'applyTemplate': '套用模板',
+    'applyTemplateWarning': '目前頁面已有內容，套用模板會清空原有圖片與文字。確定要清空並套用嗎？',
+    'clearAndApply': '清空套用',
+    'done': '完成',
+    'nudgePosition': '位置微調',
+    'crop': '裁切',
+    'size': '大小',
+    'textColor': '文字顏色',
+    'edit': '編輯',
+    'aiSortFailed': 'AI 排序失敗，請確認 API Key 或稍後再試',
+    'languageSetting': '語言設定',
+    'languageFollowSystem': '跟隨系統',
+    'languageTraditionalChinese': '繁體中文',
+    'languageEnglish': 'English',
+    'languageChangeNotice': '變更語言後將會立即套用。',
   };
 
   static const Map<String, String> _en = <String, String>{
@@ -110,6 +170,71 @@ class AppStrings {
     'snapImageEdges': 'Image Edges',
     'pageTitle': 'Page {index}',
     'attachedPhotos': '{count} attached photos',
+
+    // New localization keys
+    'settingsTitle': 'Settings',
+    'themeColor': 'Theme Color',
+    'extensions': 'Extensions',
+    'aiCollaboration': 'AI Collaboration',
+    'aiCollaborationSubtitleActive':
+        'An algorithmic visual symphony, seeking the perfect narrative order for your layout.',
+    'aiCollaborationSubtitleInactive':
+        'Break conventions and inspire with intelligence. Please verify your Gemini API key first.',
+    'versionUpdate': 'Version & Updates',
+    'updateAvailable': 'Current {version}, update available to {latest}',
+    'currentVersion': 'Current version {version}',
+    'goToUpdate': 'Go to Update',
+    'checking': 'Checking',
+    'checkUpdates': 'Check for Updates',
+    'geminiApiKey': 'Gemini API Key',
+    'saveApiKey': 'Save API Key',
+    'aiUsageEstimate': 'AI Usage & Cost Estimate',
+    'estimatedCost': 'Estimated cost: \${cost} USD',
+    'reset': 'Reset',
+    'settingsSaved': 'Settings saved',
+    'enterApiKeyFirst': 'Please enter Gemini API Key first',
+    'aiCollaborationEnabled': 'AI Collaboration enabled',
+    'apiUnavailable': 'API not available, AI Collaboration cannot be enabled',
+    'alreadyLatestVersion': 'Already the latest version',
+    'updateCheckFailed': 'Update check failed, please try again later',
+    'networkError': 'Network connection error',
+    'newVersionFound': 'New Version Found',
+    'updatePrompt': 'Latest version is v{version}. Go to download page?',
+    'askMeLater': 'Ask Me Later',
+    'downloadNow': 'Download Now',
+    'unnamedProject': 'Unnamed Project',
+    'enableAiFirst':
+        'Please go to Settings to enable AI and verify API Key first',
+    'aiCreatedProject': 'AI Created Project',
+    'aiCreatingProject': 'AI creating project...',
+    'aiProjectCreationFailed': 'AI project creation failed: {error}',
+    'preselectedPhotos': 'Pre-selected Photos',
+    'selectPhotosOptional': 'Select photos for layout (optional)',
+    'createByAi': 'Create by AI',
+    'imagePosition': 'Image Position',
+    'textPosition': 'Text Position',
+    'changePageRatio': 'Change Page Ratio',
+    'changeRatioWarning':
+        'The current project already has content, changing the page ratio might cause image positions or sizes to shift. Continue?',
+    'continueLabel': 'Continue',
+    'editText': 'Edit Text',
+    'applyTemplate': 'Apply Template',
+    'applyTemplateWarning':
+        'The current page already has content, applying the template will clear existing images and text. Clear and apply?',
+    'clearAndApply': 'Clear & Apply',
+    'done': 'Done',
+    'nudgePosition': 'Nudge Position',
+    'crop': 'Crop',
+    'size': 'Size',
+    'textColor': 'Text Color',
+    'edit': 'Edit',
+    'aiSortFailed':
+        'AI sorting failed, please check API Key or try again later',
+    'languageSetting': 'Language Settings',
+    'languageFollowSystem': 'Follow System',
+    'languageTraditionalChinese': '繁體中文',
+    'languageEnglish': 'English',
+    'languageChangeNotice': 'Language changes will be applied immediately.',
   };
 
   static AppStrings of(BuildContext context) {
@@ -121,7 +246,22 @@ class AppStrings {
   }
 
   String t(String key, {Map<String, String> args = const <String, String>{}}) {
-    var value = _zh[key] ?? key;
+    final language = AppSettingsController.instance.language;
+    String targetLang;
+    if (language == 'system') {
+      final systemLang = PlatformDispatcher.instance.locale.languageCode
+          .toLowerCase();
+      if (systemLang.startsWith('zh')) {
+        targetLang = 'zh';
+      } else {
+        targetLang = 'en';
+      }
+    } else {
+      targetLang = language;
+    }
+
+    final map = (targetLang == 'zh') ? _zh : _en;
+    var value = map[key] ?? key;
     for (final entry in args.entries) {
       value = value.replaceAll('{${entry.key}}', entry.value);
     }

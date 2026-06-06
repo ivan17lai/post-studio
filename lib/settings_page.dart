@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
 import 'app_settings.dart';
+import 'app_strings.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({
@@ -98,6 +99,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _saveApiKey() async {
+    final strings = AppStrings.of(context);
     await _settings.setGeminiApiKey(_apiKeyController.text);
     if (!_settings.hasGeminiApiKey) {
       await _settings.setAiSortEnabled(false);
@@ -105,11 +107,12 @@ class _SettingsPageState extends State<SettingsPage> {
     if (mounted) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('設定已儲存')));
+      ).showSnackBar(SnackBar(content: Text(strings.t('settingsSaved'))));
     }
   }
 
   Future<void> _toggleAiSort(bool enabled) async {
+    final strings = AppStrings.of(context);
     await _settings.setGeminiApiKey(_apiKeyController.text);
     if (!enabled) {
       await _settings.setAiSortEnabled(false);
@@ -120,7 +123,7 @@ class _SettingsPageState extends State<SettingsPage> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('請先輸入 Gemini API Key')));
+        ).showSnackBar(SnackBar(content: Text(strings.t('enterApiKeyFirst'))));
       }
       return;
     }
@@ -139,16 +142,16 @@ class _SettingsPageState extends State<SettingsPage> {
     if (isValid) {
       await _settings.setAiSortEnabled(true);
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('AI 協作已啟用')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(strings.t('aiCollaborationEnabled'))),
+        );
       }
     } else {
       await _settings.setAiSortEnabled(false);
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('API 無法使用，AI 協作無法啟用')));
+        ).showSnackBar(SnackBar(content: Text(strings.t('apiUnavailable'))));
       }
     }
   }
@@ -176,6 +179,7 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     final primary = _settings.primaryColor;
+    final strings = AppStrings.of(context);
     return Scaffold(
       backgroundColor: const Color(0xFFF1F2F4),
       appBar: AppBar(
@@ -185,9 +189,9 @@ class _SettingsPageState extends State<SettingsPage> {
           icon: const Icon(Icons.arrow_back_rounded, color: Color(0xFF2A2A2A)),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: const Text(
-          '設定',
-          style: TextStyle(
+        title: Text(
+          strings.t('settingsTitle'),
+          style: const TextStyle(
             color: Color(0xFF222222),
             fontSize: 20,
             fontWeight: FontWeight.w800,
@@ -198,19 +202,30 @@ class _SettingsPageState extends State<SettingsPage> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(22, 12, 22, 28),
           children: [
-            _SettingsSectionTitle(title: '主題色調'),
+            _SettingsSectionTitle(title: strings.t('themeColor')),
             const SizedBox(height: 10),
             _ThemeColorGrid(primary: primary, settings: _settings),
             const SizedBox(height: 22),
-            _SettingsSectionTitle(title: '擴充功能'),
+            _SettingsSectionTitle(title: strings.t('languageSetting')),
+            const SizedBox(height: 10),
+            _LanguageSelectionCard(
+              primary: primary,
+              language: _settings.language,
+              onLanguageChanged: (value) async {
+                await _settings.setLanguage(value);
+              },
+              strings: strings,
+            ),
+            const SizedBox(height: 22),
+            _SettingsSectionTitle(title: strings.t('extensions')),
             const SizedBox(height: 10),
             _SettingsCard(
               primary: primary,
               icon: Icons.auto_awesome_rounded,
-              title: 'AI 協作',
+              title: strings.t('aiCollaboration'),
               subtitle: _settings.aiSortEnabled
-                  ? '演算法交織的視覺交響，為你的排版尋找最完美的敘事順序。'
-                  : '打破常規，用智慧啟發靈感。請先驗證 Gemini API 金鑰。',
+                  ? strings.t('aiCollaborationSubtitleActive')
+                  : strings.t('aiCollaborationSubtitleInactive'),
               trailing: _isCheckingApi
                   ? const SizedBox(
                       width: 26,
@@ -229,7 +244,13 @@ class _SettingsPageState extends State<SettingsPage> {
               controller: _apiKeyController,
               onSave: _saveApiKey,
             ),
-            const Divider(height: 1, thickness: 1, color: Color(0xFFF1F2F4), indent: 18, endIndent: 18),
+            const Divider(
+              height: 1,
+              thickness: 1,
+              color: Color(0xFFF1F2F4),
+              indent: 18,
+              endIndent: 18,
+            ),
             _SettingsCostCard(
               primary: primary,
               aiSortCount: _settings.aiSortCount,
@@ -238,15 +259,24 @@ class _SettingsPageState extends State<SettingsPage> {
               },
             ),
             const SizedBox(height: 22),
-            _SettingsSectionTitle(title: '版本與更新'),
+            _SettingsSectionTitle(title: strings.t('versionUpdate')),
             const SizedBox(height: 10),
             _SettingsCard(
               primary: primary,
               icon: Icons.system_update_rounded,
-              title: '版本與更新',
+              title: strings.t('versionUpdate'),
               subtitle: widget.hasUpdate
-                  ? '目前 ${widget.appVersion}，可更新到 ${widget.latestVersion ?? '新版本'}'
-                  : '目前版本 ${widget.appVersion}',
+                  ? strings.t(
+                      'updateAvailable',
+                      args: {
+                        'version': widget.appVersion,
+                        'latest': widget.latestVersion ?? 'New Version',
+                      },
+                    )
+                  : strings.t(
+                      'currentVersion',
+                      args: {'version': widget.appVersion},
+                    ),
               trailing: TextButton(
                 onPressed: _isCheckingUpdate ? null : _checkUpdates,
                 style: TextButton.styleFrom(
@@ -258,28 +288,19 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 child: Text(
                   widget.hasUpdate && widget.latestVersionUrl != null
-                      ? '前往更新'
+                      ? strings.t('goToUpdate')
                       : _isCheckingUpdate
-                      ? '檢查中'
-                      : '檢查更新',
+                      ? strings.t('checking')
+                      : strings.t('checkUpdates'),
                 ),
               ),
             ),
-            // const SizedBox(height: 18),
-            // _SettingsCard(
-            //   primary: primary,
-            //   icon: Icons.info_outline_rounded,
-            //   title: '關於',
-            //   subtitle: '設定只有你會看到，AI 排序只會在你主動按下時送出頁面縮圖。',
-            // ),
           ],
         ),
       ),
     );
   }
 }
-
-// _SettingsHeader has been removed
 
 class _SettingsSectionTitle extends StatelessWidget {
   const _SettingsSectionTitle({required this.title});
@@ -381,6 +402,7 @@ class _SettingsInputCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
     return Container(
       padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
       decoration: const BoxDecoration(
@@ -431,7 +453,7 @@ class _SettingsInputCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(999),
                 ),
               ),
-              child: const Text('儲存 API Key'),
+              child: Text(strings.t('saveApiKey')),
             ),
           ),
         ],
@@ -499,6 +521,7 @@ class _SettingsCostCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
     final double estimatedCost = aiSortCount * 0.0000002;
 
     return Container(
@@ -527,9 +550,9 @@ class _SettingsCostCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'AI 用量與費用估算',
-                  style: TextStyle(
+                Text(
+                  strings.t('aiUsageEstimate'),
+                  style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w800,
                     color: Color(0xFF25272A),
@@ -537,7 +560,10 @@ class _SettingsCostCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 5),
                 Text(
-                  '預估花費：\$${estimatedCost.toStringAsFixed(6)} USD',
+                  strings.t(
+                    'estimatedCost',
+                    args: {'cost': estimatedCost.toStringAsFixed(6)},
+                  ),
                   style: const TextStyle(
                     fontSize: 12,
                     height: 1.35,
@@ -558,14 +584,104 @@ class _SettingsCostCard extends StatelessWidget {
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(999),
                 ),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
               ),
-              child: const Text(
-                '重設',
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+              child: Text(
+                strings.t('reset'),
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _LanguageSelectionCard extends StatelessWidget {
+  const _LanguageSelectionCard({
+    required this.primary,
+    required this.language,
+    required this.onLanguageChanged,
+    required this.strings,
+  });
+
+  final Color primary;
+  final String language;
+  final ValueChanged<String> onLanguageChanged;
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              for (final opt in ['system', 'zh', 'en']) ...[
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => onLanguageChanged(opt),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      height: 40,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: language == opt
+                            ? primary.withValues(alpha: 0.16)
+                            : const Color(0xFFF4F5F7),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: language == opt ? primary : Colors.transparent,
+                          width: 1.6,
+                        ),
+                      ),
+                      child: Text(
+                        opt == 'system'
+                            ? strings.t('languageFollowSystem')
+                            : opt == 'zh'
+                            ? strings.t('languageTraditionalChinese')
+                            : strings.t('languageEnglish'),
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: language == opt
+                              ? const Color(0xFF222222)
+                              : const Color(0xFF6B6F75),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                if (opt != 'en') const SizedBox(width: 8),
+              ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.only(left: 4, top: 4),
+            child: Text(
+              strings.t('languageChangeNotice'),
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF9A9A9A),
+              ),
+            ),
+          ),
         ],
       ),
     );

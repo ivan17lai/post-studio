@@ -804,11 +804,11 @@ class _BlankPageState extends State<BlankPage> {
       _tabElements =>
         _selectedImageElement == null
             ? strings.t('elements')
-            : '\u66ff\u63db\u5716\u7247',
+            : strings.t('replaceImage'),
       _tabImageSource => strings.t('imageSource'),
-      _tabImagePosition => '\u5716\u7247\u4f4d\u7f6e',
-      _tabImageSettings => '\u5716\u7247\u8a2d\u5b9a',
-      _tabTextPosition => '\u6587\u5b57\u4f4d\u7f6e',
+      _tabImagePosition => strings.t('imagePosition'),
+      _tabImageSettings => strings.t('imageSettings'),
+      _tabTextPosition => strings.t('textPosition'),
       _tabTextSettings => strings.t('text'),
       _ => tabKey,
     };
@@ -1536,6 +1536,7 @@ class _BlankPageState extends State<BlankPage> {
 
   Future<void> _requestAiPageSort() async {
     final settings = AppSettingsController.instance;
+    final strings = AppStrings.of(context);
     if (_project.pages.length < 2) {
       return;
     }
@@ -1545,7 +1546,7 @@ class _BlankPageState extends State<BlankPage> {
       }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('請先到設定啟用 AI 排序並驗證 API Key')));
+      ).showSnackBar(SnackBar(content: Text(strings.t('enableAiFirst'))));
       return;
     }
 
@@ -1572,9 +1573,9 @@ class _BlankPageState extends State<BlankPage> {
       setState(() {
         _isPreparingImage = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('AI 排序失敗，請確認 API Key 或稍後再試')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(strings.t('aiSortFailed'))));
     }
   }
 
@@ -1787,14 +1788,10 @@ class _BlankPageState extends State<BlankPage> {
       return true;
     }
 
-    const title = '\u8b8a\u66f4\u9801\u9762\u6bd4\u4f8b';
-    const message =
-        '\u76ee\u524d\u5c08\u6848\u5df2\u6709\u5167\u5bb9\uff0c'
-        '\u8b8a\u66f4\u9801\u9762\u6bd4\u4f8b\u53ef\u80fd\u6703'
-        '\u8b93\u5716\u7247\u4f4d\u7f6e\u6216\u5927\u5c0f'
-        '\u770b\u8d77\u4f86\u4f4d\u79fb\u3002\u8981\u7e7c\u7e8c\u55ce\uff1f';
-    const continueLabel = '\u7e7c\u7e8c';
     final strings = AppStrings.of(context);
+    final title = strings.t('changePageRatio');
+    final message = strings.t('changeRatioWarning');
+    final continueLabel = strings.t('continueLabel');
     final shouldContinue = await showDialog<bool>(
       context: context,
       builder: (context) {
@@ -1825,18 +1822,18 @@ class _BlankPageState extends State<BlankPage> {
                   ),
                 ),
                 const SizedBox(height: 14),
-                const Text(
+                Text(
                   title,
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
                     color: Color(0xFF1F1F1F),
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   message,
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 14,
                     height: 1.4,
                     color: Color(0xFF6A6A6A),
@@ -2391,16 +2388,31 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final aspectRatio = size.width / size.height;
+    final isFillSlot = selectedImage.data['templateSlot'] == 'fill';
     final hasTemplateSlot = selectedImage.data['templateSlot'] != null;
     final hasAspectPreset = selectedImage.data['aspectPreset'] != null;
-    final shouldKeepFrame = hasTemplateSlot || hasAspectPreset;
+    final shouldKeepFrame = (hasTemplateSlot || hasAspectPreset) && !isFillSlot;
 
-    var width = shouldKeepFrame
-        ? selectedImage.width
-        : selectedImage.width.clamp(0.12, 0.7);
+    var width = selectedImage.width;
     var height = selectedImage.height;
+    var x = selectedImage.x;
+    var y = selectedImage.y;
 
-    if (!shouldKeepFrame) {
+    if (isFillSlot) {
+      const pageAspect = 3.0 / 4.0;
+      final targetRatio = aspectRatio / pageAspect;
+
+      if (targetRatio > 1.0) {
+        width = 1.0;
+        height = pageAspect / aspectRatio;
+      } else {
+        height = 1.0;
+        width = height * targetRatio;
+      }
+      x = (1.0 - width) / 2;
+      y = (1.0 - height) / 2;
+    } else if (!shouldKeepFrame) {
+      width = selectedImage.width.clamp(0.12, 0.7);
       height = width / aspectRatio;
 
       if (height > 0.84) {
@@ -2410,6 +2422,8 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final updatedElement = selectedImage.copyWith(
+      x: x,
+      y: y,
       width: width,
       height: height,
       data: <String, dynamic>{
@@ -2419,10 +2433,12 @@ class _BlankPageState extends State<BlankPage> {
         'cropOffsetX': 0.0,
         'cropOffsetY': 0.0,
         'cropScale': 1.0,
-        'aspectRatio': shouldKeepFrame
-            ? ((selectedImage.data['aspectRatio'] as num?)?.toDouble() ??
-                  aspectRatio)
-            : aspectRatio,
+        'aspectRatio': isFillSlot
+            ? aspectRatio
+            : (shouldKeepFrame
+                  ? ((selectedImage.data['aspectRatio'] as num?)?.toDouble() ??
+                        aspectRatio)
+                  : aspectRatio),
         'originalAspectRatio': aspectRatio,
       },
     );
@@ -2670,11 +2686,12 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
+    final strings = AppStrings.of(context);
     final nextText = await showDialog<String>(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text('\u7de8\u8f2f\u6587\u5b57'),
+          title: Text(strings.t('editText')),
           content: _TextEditorField(
             initialText: _textContentFromData(element.data),
           ),
@@ -3836,21 +3853,18 @@ class _BlankPageState extends State<BlankPage> {
                   ),
                 ),
                 const SizedBox(height: 14),
-                const Text(
-                  '\u5957\u7528\u6a21\u677f',
-                  style: TextStyle(
+                Text(
+                  strings.t('applyTemplate'),
+                  style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
                     color: Color(0xFF1F1F1F),
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  '\u76ee\u524d\u9801\u9762\u5df2\u6709\u5167\u5bb9\uff0c'
-                  '\u5957\u7528\u6a21\u677f\u6703\u6e05\u7a7a\u539f\u6709'
-                  '\u5716\u7247\u8207\u6587\u5b57\u3002\u78ba\u5b9a\u8981'
-                  '\u6e05\u7a7a\u4e26\u5957\u7528\u55ce\uff1f',
-                  style: TextStyle(
+                Text(
+                  strings.t('applyTemplateWarning'),
+                  style: const TextStyle(
                     fontSize: 14,
                     height: 1.4,
                     color: Color(0xFF6A6A6A),
@@ -3868,7 +3882,7 @@ class _BlankPageState extends State<BlankPage> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: _DialogActionButton(
-                        label: '\u6e05\u7a7a\u5957\u7528',
+                        label: strings.t('clearAndApply'),
                         isPrimary: true,
                         onTap: () => Navigator.of(context).pop(true),
                       ),
@@ -3893,9 +3907,82 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     _storeUndoSnapshot();
+
+    final existingImages = currentPage.elements
+        .where(
+          (e) =>
+              e.type == 'image' &&
+              e.data['src'] != null &&
+              (e.data['src'] as String).isNotEmpty,
+        )
+        .toList();
+    final existingTexts = currentPage.elements
+        .where((e) => e.type == 'text')
+        .toList();
+
     final templateElements = option.buildElements(currentPage.id, currentPage);
+    final updatedElements = <CanvasElement>[];
+
+    int imgPtr = 0;
+    for (final element in templateElements) {
+      if (element.type == 'image' && imgPtr < existingImages.length) {
+        final existingImg = existingImages[imgPtr];
+        imgPtr++;
+
+        final existingData = Map<String, dynamic>.from(existingImg.data);
+        final src = existingData['src'] as String? ?? '';
+        final originalSrc = existingData['originalSrc'] as String? ?? '';
+        final originalAspect =
+            existingData['originalAspectRatio'] as double? ??
+            existingData['aspectRatio'] as double? ??
+            1.0;
+
+        final newData = Map<String, dynamic>.from(element.data);
+        newData['src'] = src;
+        newData['originalSrc'] = originalSrc;
+        newData['originalAspectRatio'] = originalAspect;
+
+        if (option.id == 'page_fill') {
+          const pageAspect = 3.0 / 4.0;
+          final targetRatio = originalAspect / pageAspect;
+
+          double wNorm, hNorm;
+          if (targetRatio > 1.0) {
+            wNorm = 1.0;
+            hNorm = pageAspect / originalAspect;
+          } else {
+            hNorm = 1.0;
+            wNorm = hNorm * targetRatio;
+          }
+
+          final xCoord = (1.0 - wNorm) / 2;
+          final yCoord = (1.0 - hNorm) / 2;
+
+          newData['aspectRatio'] = originalAspect;
+          newData.remove('aspectPreset');
+
+          updatedElements.add(
+            element.copyWith(
+              x: xCoord,
+              y: yCoord,
+              width: wNorm,
+              height: hNorm,
+              data: newData,
+            ),
+          );
+        } else {
+          newData['aspectRatio'] = originalAspect;
+          updatedElements.add(element.copyWith(data: newData));
+        }
+      } else {
+        updatedElements.add(element);
+      }
+    }
+
+    updatedElements.addAll(existingTexts);
+
     final updatedPage = currentPage.copyWith(
-      elements: templateElements,
+      elements: updatedElements,
       extras: <String, dynamic>{...currentPage.extras, 'templateId': option.id},
     );
 
@@ -7783,6 +7870,7 @@ class _TextEditorFieldState extends State<_TextEditorField> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -7805,14 +7893,14 @@ class _TextEditorFieldState extends State<_TextEditorField> {
             Expanded(
               child: TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('\u53d6\u6d88'),
+                child: Text(strings.t('cancel')),
               ),
             ),
             const SizedBox(width: 8),
             Expanded(
               child: TextButton(
                 onPressed: () => Navigator.of(context).pop(_draftText),
-                child: const Text('\u5b8c\u6210'),
+                child: Text(strings.t('done')),
               ),
             ),
           ],
@@ -9501,14 +9589,15 @@ class _ElementPositionTabPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Text(
-            '\u4f4d\u7f6e\u5fae\u8abf',
-            style: TextStyle(
+            strings.t('nudgePosition'),
+            style: const TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w600,
               color: Color(0xFF6A6A6A),
@@ -9662,6 +9751,7 @@ class _ImageSettingsTabPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
     final selectedKey =
         selectedElement.data['aspectPreset'] as String? ?? 'original';
     return Column(
@@ -9674,7 +9764,7 @@ class _ImageSettingsTabPage extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _CropActionCard(
-                label: isCropping ? '\u5b8c\u6210' : '\u88c1\u5207',
+                label: isCropping ? strings.t('done') : strings.t('crop'),
                 icon: isCropping ? Icons.check_rounded : Icons.crop_rounded,
                 selected: isCropping,
                 onTap: isCropping ? onFinishCrop : onStartCrop,
@@ -9700,9 +9790,9 @@ class _ImageSettingsTabPage extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
-              const Text(
-                '\u5927\u5c0f',
-                style: TextStyle(
+              Text(
+                strings.t('size'),
+                style: const TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
                   color: Color(0xFF6A6A6A),
@@ -9758,14 +9848,15 @@ class _TextSettingsTabPage extends StatelessWidget {
       Color(0xFF4361EE),
     ];
 
+    final strings = AppStrings.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Text(
-            '\u6587\u5b57\u984f\u8272',
-            style: TextStyle(
+            strings.t('textColor'),
+            style: const TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w600,
               color: Color(0xFF6A6A6A),
@@ -9780,7 +9871,7 @@ class _TextSettingsTabPage extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _CropActionCard(
-                label: '\u7de8\u8f2f',
+                label: strings.t('edit'),
                 icon: Icons.edit_rounded,
                 selected: false,
                 onTap: onEditText,
@@ -9804,9 +9895,9 @@ class _TextSettingsTabPage extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
-              const Text(
-                '\u5927\u5c0f',
-                style: TextStyle(
+              Text(
+                strings.t('size'),
+                style: const TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
                   color: Color(0xFF6A6A6A),

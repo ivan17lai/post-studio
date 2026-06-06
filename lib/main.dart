@@ -267,9 +267,8 @@ class _MainPageState extends State<MainPage> {
   ]) async {
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (_) => _StyledCreateProjectDialog(
-        initialPaths: initialImportedSourcePaths,
-      ),
+      builder: (_) =>
+          _StyledCreateProjectDialog(initialPaths: initialImportedSourcePaths),
     );
 
     if (!mounted || result == null) {
@@ -287,7 +286,7 @@ class _MainPageState extends State<MainPage> {
 
     final project = ProjectRecord(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
-      name: name.isEmpty ? '未命名專案' : name,
+      name: name.isEmpty ? AppStrings.of(context).t('unnamedProject') : name,
       createdAt: DateTime.now(),
       pageCount: 1,
       pages: <ProjectPage>[
@@ -306,10 +305,7 @@ class _MainPageState extends State<MainPage> {
       return;
     }
 
-    await _openProject(
-      project,
-      initialImportedSourcePaths: paths,
-    );
+    await _openProject(project, initialImportedSourcePaths: paths);
   }
 
   Future<void> _openProject(
@@ -327,12 +323,16 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
-  Future<void> _createProjectWithAiLayout(String projectName, List<String> imagePaths) async {
+  Future<void> _createProjectWithAiLayout(
+    String projectName,
+    List<String> imagePaths,
+  ) async {
     final settings = AppSettingsController.instance;
+    final strings = AppStrings.of(context);
     if (!settings.aiSortEnabled || !settings.hasGeminiApiKey) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('請先到設定啟用 AI 並驗證 API Key')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(strings.t('enableAiFirst'))));
       return;
     }
 
@@ -408,18 +408,25 @@ class _MainPageState extends State<MainPage> {
       if (candidates == null || candidates.isEmpty) {
         throw Exception('Missing Gemini candidates');
       }
-      final content = (candidates.first as Map<String, dynamic>)['content'] as Map<String, dynamic>?;
+      final content =
+          (candidates.first as Map<String, dynamic>)['content']
+              as Map<String, dynamic>?;
       final responseParts = content?['parts'] as List<dynamic>?;
-      var text = responseParts
-          ?.whereType<Map<String, dynamic>>()
-          .map((part) => part['text'])
-          .whereType<String>()
-          .join('\n')
-          .trim() ?? '';
+      var text =
+          responseParts
+              ?.whereType<Map<String, dynamic>>()
+              .map((part) => part['text'])
+              .whereType<String>()
+              .join('\n')
+              .trim() ??
+          '';
 
       // Parse JSON
       var cleaned = text.trim();
-      final fenced = RegExp(r'```(?:json)?\s*([\s\S]*?)\s*```', caseSensitive: false).firstMatch(cleaned);
+      final fenced = RegExp(
+        r'```(?:json)?\s*([\s\S]*?)\s*```',
+        caseSensitive: false,
+      ).firstMatch(cleaned);
       if (fenced != null) {
         cleaned = fenced.group(1)!.trim();
       }
@@ -438,7 +445,9 @@ class _MainPageState extends State<MainPage> {
       for (var pageIdx = 0; pageIdx < pagesList.length; pageIdx++) {
         final pageData = pagesList[pageIdx] as Map<String, dynamic>;
         final layout = pageData['layout'] as String? ?? 'fill';
-        final imageIndexes = List<int>.from(pageData['imageIndexes'] as Iterable? ?? []);
+        final imageIndexes = List<int>.from(
+          pageData['imageIndexes'] as Iterable? ?? [],
+        );
         final description = pageData['description'] as String? ?? '';
 
         final pageId = '${DateTime.now().microsecondsSinceEpoch}_page_$pageIdx';
@@ -452,43 +461,47 @@ class _MainPageState extends State<MainPage> {
           if (topImgIdx >= 0 && topImgIdx < preparedPaths.length) {
             final prep = preparedPaths[topImgIdx];
             final aspect = await _getImageAspectRatio(prep.displayPath);
-            elements.add(CanvasElement(
-              id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_top',
-              type: 'image',
-              pageId: pageId,
-              x: 0.0,
-              y: 0.0,
-              width: 1.0,
-              height: 0.49,
-              allowCrossPage: true,
-              data: <String, dynamic>{
-                'src': prep.displayPath,
-                'originalSrc': prep.originalPath,
-                'aspectRatio': aspect,
-                'originalAspectRatio': aspect,
-              },
-            ));
+            elements.add(
+              CanvasElement(
+                id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_top',
+                type: 'image',
+                pageId: pageId,
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 0.49,
+                allowCrossPage: true,
+                data: <String, dynamic>{
+                  'src': prep.displayPath,
+                  'originalSrc': prep.originalPath,
+                  'aspectRatio': aspect,
+                  'originalAspectRatio': aspect,
+                },
+              ),
+            );
           }
 
           if (botImgIdx >= 0 && botImgIdx < preparedPaths.length) {
             final prep = preparedPaths[botImgIdx];
             final aspect = await _getImageAspectRatio(prep.displayPath);
-            elements.add(CanvasElement(
-              id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_bot',
-              type: 'image',
-              pageId: pageId,
-              x: 0.0,
-              y: 0.51,
-              width: 1.0,
-              height: 0.49,
-              allowCrossPage: true,
-              data: <String, dynamic>{
-                'src': prep.displayPath,
-                'originalSrc': prep.originalPath,
-                'aspectRatio': aspect,
-                'originalAspectRatio': aspect,
-              },
-            ));
+            elements.add(
+              CanvasElement(
+                id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_bot',
+                type: 'image',
+                pageId: pageId,
+                x: 0.0,
+                y: 0.51,
+                width: 1.0,
+                height: 0.49,
+                allowCrossPage: true,
+                data: <String, dynamic>{
+                  'src': prep.displayPath,
+                  'originalSrc': prep.originalPath,
+                  'aspectRatio': aspect,
+                  'originalAspectRatio': aspect,
+                },
+              ),
+            );
           }
         } else {
           // Fill layout (or default fallback)
@@ -514,36 +527,38 @@ class _MainPageState extends State<MainPage> {
             final xCoord = (1.0 - wNorm) / 2;
             final yCoord = (1.0 - hNorm) / 2;
 
-            elements.add(CanvasElement(
-              id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_fill',
-              type: 'image',
-              pageId: pageId,
-              x: xCoord,
-              y: yCoord,
-              width: wNorm,
-              height: hNorm,
-              allowCrossPage: true,
-              data: <String, dynamic>{
-                'src': prep.displayPath,
-                'originalSrc': prep.originalPath,
-                'aspectRatio': aspect,
-                'originalAspectRatio': aspect,
-              },
-            ));
+            elements.add(
+              CanvasElement(
+                id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_fill',
+                type: 'image',
+                pageId: pageId,
+                x: xCoord,
+                y: yCoord,
+                width: wNorm,
+                height: hNorm,
+                allowCrossPage: true,
+                data: <String, dynamic>{
+                  'src': prep.displayPath,
+                  'originalSrc': prep.originalPath,
+                  'aspectRatio': aspect,
+                  'originalAspectRatio': aspect,
+                },
+              ),
+            );
           }
         }
 
-        projectPages.add(ProjectPage(
-          id: pageId,
-          title: '頁面 ${pageIdx + 1}',
-          type: 'page',
-          aspectWidth: 3,
-          aspectHeight: 4,
-          elements: elements,
-          extras: <String, dynamic>{
-            'aiCaption': description,
-          },
-        ));
+        projectPages.add(
+          ProjectPage(
+            id: pageId,
+            title: '頁面 ${pageIdx + 1}',
+            type: 'page',
+            aspectWidth: 3,
+            aspectHeight: 4,
+            elements: elements,
+            extras: <String, dynamic>{'aiCaption': description},
+          ),
+        );
       }
 
       final List<Map<String, String>> importedImagesList = [];
@@ -556,13 +571,11 @@ class _MainPageState extends State<MainPage> {
 
       final project = ProjectRecord(
         id: projectId,
-        name: projectName.isEmpty ? 'AI 建立專案' : projectName,
+        name: projectName.isEmpty ? strings.t('aiCreatedProject') : projectName,
         createdAt: DateTime.now(),
         pageCount: projectPages.length,
         pages: projectPages,
-        extras: {
-          'importedImages': importedImagesList,
-        },
+        extras: {'importedImages': importedImagesList},
       );
 
       setState(() {
@@ -573,7 +586,6 @@ class _MainPageState extends State<MainPage> {
       await _persistProjects();
       if (!mounted) return;
       await _openProject(project);
-
     } catch (e) {
       debugPrint('[AI Create] Error: $e');
       if (mounted) {
@@ -581,7 +593,14 @@ class _MainPageState extends State<MainPage> {
           _isAiCreating = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('AI 建立專案失敗：$e')),
+          SnackBar(
+            content: Text(
+              strings.t(
+                'aiProjectCreationFailed',
+                args: {'error': e.toString()},
+              ),
+            ),
+          ),
         );
       }
     }
@@ -645,6 +664,7 @@ class _MainPageState extends State<MainPage> {
   }
 
   Future<void> _checkForUpdates({bool isSilent = false}) async {
+    final strings = AppStrings.of(context);
     if (!isSilent) {
       showDialog<void>(
         context: context,
@@ -685,16 +705,16 @@ class _MainPageState extends State<MainPage> {
           }
         } else {
           if (!isSilent) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(const SnackBar(content: Text('目前已是最新版本')));
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(strings.t('alreadyLatestVersion'))),
+            );
           }
         }
       } else {
         if (!isSilent) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('妾㈡煡鏇存柊澶辨晽锛岃珛绋嶅緦鍐嶈│')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(strings.t('updateCheckFailed'))),
+          );
         }
       }
     } catch (e) {
@@ -703,7 +723,7 @@ class _MainPageState extends State<MainPage> {
         Navigator.of(context).pop();
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('缍茶矾閫ｇ窔閷')));
+        ).showSnackBar(SnackBar(content: Text(strings.t('networkError'))));
       }
     }
   }
@@ -728,6 +748,7 @@ class _MainPageState extends State<MainPage> {
   }
 
   void _showUpdateDialog(String newVersion, String url) {
+    final strings = AppStrings.of(context);
     showDialog<void>(
       context: context,
       builder: (context) {
@@ -758,9 +779,9 @@ class _MainPageState extends State<MainPage> {
                   ),
                 ),
                 const SizedBox(height: 14),
-                const Text(
-                  '發現新版本',
-                  style: TextStyle(
+                Text(
+                  strings.t('newVersionFound'),
+                  style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
                     color: Color(0xFF1F1F1F),
@@ -768,7 +789,7 @@ class _MainPageState extends State<MainPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '最新版本為 v$newVersion，是否前往下載更新？',
+                  strings.t('updatePrompt', args: {'version': newVersion}),
                   style: const TextStyle(
                     fontSize: 14,
                     height: 1.4,
@@ -780,14 +801,14 @@ class _MainPageState extends State<MainPage> {
                   children: [
                     Expanded(
                       child: _DialogActionButton(
-                        label: '绋嶅緦鍐嶈',
+                        label: strings.t('askMeLater'),
                         onTap: () => Navigator.of(context).pop(),
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: _DialogActionButton(
-                        label: '鍓嶅線涓嬭級',
+                        label: strings.t('downloadNow'),
                         isPrimary: true,
                         onTap: () {
                           Navigator.of(context).pop();
@@ -886,7 +907,8 @@ class _MainPageState extends State<MainPage> {
                       : ListView.separated(
                           padding: const EdgeInsets.only(bottom: 100),
                           itemCount: _projects.length,
-                          separatorBuilder: (_, _) => const SizedBox(height: 12),
+                          separatorBuilder: (_, _) =>
+                              const SizedBox(height: 12),
                           itemBuilder: (context, index) {
                             final project = _projects[index];
                             return _ProjectCard(
@@ -923,7 +945,10 @@ class _MainPageState extends State<MainPage> {
                 color: Colors.black.withValues(alpha: 0.10),
                 alignment: Alignment.center,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 16,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(22),
@@ -935,11 +960,11 @@ class _MainPageState extends State<MainPage> {
                       ),
                     ],
                   ),
-                  child: const Column(
+                  child: Column(
                     mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      SizedBox(
+                      const SizedBox(
                         width: 26,
                         height: 26,
                         child: CircularProgressIndicator(
@@ -947,10 +972,10 @@ class _MainPageState extends State<MainPage> {
                           color: Color(0xFF8F8F8F),
                         ),
                       ),
-                      SizedBox(height: 10),
+                      const SizedBox(height: 10),
                       Text(
-                        'AI 建立專案中...',
-                        style: TextStyle(
+                        strings.t('aiCreatingProject'),
+                        style: const TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
                           color: Color(0xFF5F5F5F),
@@ -1111,9 +1136,7 @@ class _CreateProjectDialogState extends State<_CreateProjectDialog> {
 }
 
 class _StyledCreateProjectDialog extends StatefulWidget {
-  const _StyledCreateProjectDialog({
-    this.initialPaths = const <String>[],
-  });
+  const _StyledCreateProjectDialog({this.initialPaths = const <String>[]});
 
   final List<String> initialPaths;
 
@@ -1231,11 +1254,11 @@ class _StyledCreateProjectDialogState
               ),
             ),
             const SizedBox(height: 14),
-            const Padding(
-              padding: EdgeInsets.only(left: 2, bottom: 6),
+            Padding(
+              padding: const EdgeInsets.only(left: 2, bottom: 6),
               child: Text(
-                '預選照片',
-                style: TextStyle(
+                strings.t('preselectedPhotos'),
+                style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
                   color: Color(0xFF7A7A7A),
@@ -1253,19 +1276,19 @@ class _StyledCreateProjectDialogState
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(color: const Color(0xFFE2E2E2)),
                   ),
-                  child: const Center(
+                  child: Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(
+                        const Icon(
                           Icons.add_photo_alternate_outlined,
                           color: Color(0xFF8F8F8F),
                           size: 24,
                         ),
-                        SizedBox(height: 4),
+                        const SizedBox(height: 4),
                         Text(
-                          '選擇要排版的照片 (非必選)',
-                          style: TextStyle(
+                          strings.t('selectPhotosOptional'),
+                          style: const TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
                             color: Color(0xFF8F8F8F),
@@ -1359,7 +1382,7 @@ class _StyledCreateProjectDialogState
                   const SizedBox(width: 8),
                   Expanded(
                     child: _DialogActionButton(
-                      label: '由 AI 建立',
+                      label: strings.t('createByAi'),
                       isPrimary: true,
                       onTap: _submitAi,
                     ),
