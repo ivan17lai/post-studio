@@ -60,6 +60,7 @@ class AppStrings {
 
     // New localization keys
     'settingsTitle': '設定',
+    'appTagline': '輕鬆製作貼文',
     'themeColor': '主題色調',
     'extensions': '擴充功能',
     'aiCollaboration': 'AI 協作',
@@ -180,6 +181,7 @@ class AppStrings {
 
     // New localization keys
     'settingsTitle': 'Settings',
+    'appTagline': 'Easily create posts',
     'themeColor': 'Theme Color',
     'extensions': 'Extensions',
     'aiCollaboration': 'AI Collaboration',

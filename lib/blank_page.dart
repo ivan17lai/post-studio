@@ -5525,6 +5525,8 @@ class _BlankPageState extends State<BlankPage> {
                           _ToolbarIconButton(
                             icon: Icons.add,
                             onPressed: _addPage,
+                            backgroundColor: _showPageSorter ? null : kPrimaryAccentColor,
+                            iconColor: _showPageSorter ? null : Colors.white,
                           ),
                         ],
                       ),
@@ -8657,11 +8659,15 @@ class _ToolbarIconButton extends StatelessWidget {
     required this.icon,
     required this.onPressed,
     this.enabled = true,
+    this.backgroundColor,
+    this.iconColor,
   });
 
   final IconData icon;
   final VoidCallback onPressed;
   final bool enabled;
+  final Color? backgroundColor;
+  final Color? iconColor;
 
   @override
   Widget build(BuildContext context) {
@@ -8674,13 +8680,17 @@ class _ToolbarIconButton extends StatelessWidget {
         width: 44,
         height: 32,
         decoration: BoxDecoration(
-          color: enabled ? const Color(0xFFF8F8F8) : const Color(0xFFECECEC),
+          color: enabled
+              ? (backgroundColor ?? const Color(0xFFF8F8F8))
+              : const Color(0xFFECECEC),
           borderRadius: BorderRadius.circular(999),
         ),
         child: Icon(
           icon,
           size: 16,
-          color: enabled ? const Color(0xFF4A4A4A) : Colors.black38,
+          color: enabled
+              ? (iconColor ?? const Color(0xFF4A4A4A))
+              : Colors.black38,
         ),
       ),
     );
@@ -8816,6 +8826,18 @@ class _PageIndicatorButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final primary = kPrimaryAccentColor;
+    final isDefaultPurple = primary.toARGB32() == const Color(0xFFC3AEFF).toARGB32();
+    final darkAccent = isDefaultPurple ? const Color(0xFF6B4EE6) : primary;
+
+    final bgColor = selected
+        ? primary.withValues(alpha: 0.28)
+        : const Color(0xFFD8D8D8);
+
+    final contentColor = selected
+        ? (isDefaultPurple ? darkAccent : const Color(0xFF222222))
+        : Colors.black54;
+
     return _PressableScale(
       onTap: onTap,
       pressedScale: 0.95,
@@ -8826,7 +8848,7 @@ class _PageIndicatorButton extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 14),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: selected ? kPrimaryAccentColor : const Color(0xFFD8D8D8),
+          color: bgColor,
           borderRadius: BorderRadius.circular(999),
         ),
         child: showBackIcon
@@ -8843,10 +8865,10 @@ class _PageIndicatorButton extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const Icon(
+                  Icon(
                     Icons.arrow_back_rounded,
                     size: 17,
-                    color: Colors.white,
+                    color: contentColor,
                   ),
                 ],
               )
@@ -8855,7 +8877,7 @@ class _PageIndicatorButton extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
-                  color: selected ? Colors.white : Colors.black54,
+                  color: contentColor,
                 ),
               ),
       ),

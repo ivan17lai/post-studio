@@ -822,6 +822,187 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
+  Widget _buildHeader(BuildContext context, Color primary, AppStrings strings) {
+    final statusBarHeight = MediaQuery.of(context).padding.top;
+    final horizontalPadding = MediaQuery.of(context).size.width * 0.05;
+    return Container(
+      padding: EdgeInsets.fromLTRB(
+        horizontalPadding + 4,
+        statusBarHeight + 18,
+        horizontalPadding + 4,
+        22,
+      ),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            primary.withValues(alpha: 0.22),
+            primary.withValues(alpha: 0.02),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: const BorderRadius.only(
+          bottomLeft: Radius.circular(32),
+          bottomRight: Radius.circular(32),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                      boxShadow: [
+                        BoxShadow(
+                          color: primary.withValues(alpha: 0.16),
+                          blurRadius: 8,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
+                    ),
+                    child: Icon(
+                      Icons.auto_awesome_mosaic_rounded,
+                      color: primary,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.baseline,
+                        textBaseline: TextBaseline.alphabetic,
+                        children: [
+                          const Text(
+                            'Post Studio',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w900,
+                              color: Color(0xFF222222),
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'v$_appVersion',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF9A9A9A),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        strings.t('appTagline'),
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF7B7D82),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  GestureDetector(
+                    onTap: _openSettingsPage,
+                    child: Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.04),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: const Icon(
+                        Icons.settings_rounded,
+                        color: Color(0xFF4A4D54),
+                        size: 22,
+                      ),
+                    ),
+                  ),
+                  if (_hasUpdate)
+                    Positioned(
+                      top: -2,
+                      right: -2,
+                      child: Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(
+                          color: primary,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 26),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(
+                strings.t('allProjects'),
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w900,
+                  color: Color(0xFF222222),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: primary.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '${_projects.length}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: primary.toARGB32() == const Color(0xFFC3AEFF).toARGB32()
+                        ? const Color(0xFF6B4EE6)
+                        : primary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.of(context).size.width;
@@ -831,40 +1012,7 @@ class _MainPageState extends State<MainPage> {
     return Stack(
       children: [
         Scaffold(
-          appBar: AppBar(
-            backgroundColor: const Color(0xFFEAEAEA),
-            actions: [
-              Padding(
-                padding: const EdgeInsets.only(right: 16),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    IconButton(
-                      onPressed: _openSettingsPage,
-                      icon: const Icon(
-                        Icons.settings_rounded,
-                        color: Color(0xFF5F5F5F),
-                      ),
-                    ),
-                    if (_hasUpdate)
-                      Positioned(
-                        top: 8,
-                        right: 8,
-                        child: Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: kPrimaryAccentColor,
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          backgroundColor: const Color(0xFFEAEAEA),
+          backgroundColor: const Color(0xFFF1F2F4),
           floatingActionButton: FloatingActionButton(
             onPressed: _showCreateProjectDialog,
             backgroundColor: primary,
@@ -872,62 +1020,31 @@ class _MainPageState extends State<MainPage> {
             shape: const CircleBorder(),
             child: const Icon(Icons.add),
           ),
-          body: SafeArea(
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.only(
-                    top: 20,
-                    left: 26,
-                    bottom: 20,
-                    right: 20,
-                  ),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      strings.t('allProjects'),
-                      textAlign: TextAlign.left,
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
+          body: Column(
+            children: [
+              _buildHeader(context, primary, strings),
+              Expanded(
+                child: _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : ListView.separated(
+                        padding: const EdgeInsets.only(top: 16, bottom: 100),
+                        itemCount: _projects.length,
+                        separatorBuilder: (_, _) =>
+                            const SizedBox(height: 12),
+                        itemBuilder: (context, index) {
+                          final project = _projects[index];
+                          return _ProjectCard(
+                            key: ValueKey(project.id),
+                            width: width,
+                            project: project,
+                            onPressed: () => _openProject(project),
+                            onLongPress: () => _deleteProject(project),
+                          );
+                        },
                       ),
-                    ),
-                  ),
-                ),
-                Expanded(
-                  child: _isLoading
-                      ? const Center(child: CircularProgressIndicator())
-                      : ListView.separated(
-                          padding: const EdgeInsets.only(bottom: 100),
-                          itemCount: _projects.length,
-                          separatorBuilder: (_, _) =>
-                              const SizedBox(height: 12),
-                          itemBuilder: (context, index) {
-                            final project = _projects[index];
-                            return _ProjectCard(
-                              key: ValueKey(project.id),
-                              width: width,
-                              project: project,
-                              onPressed: () => _openProject(project),
-                              onLongPress: () => _deleteProject(project),
-                            );
-                          },
-                        ),
-                ),
-                if (_appVersion.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 14),
-                    child: Text(
-                      _appVersion,
-                      style: const TextStyle(
-                        color: Color(0xFF9A9A9A),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
+              ),
+
+            ],
           ),
         ),
         if (_isAiCreating)
