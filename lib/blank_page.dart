@@ -3085,41 +3085,7 @@ class _BlankPageState extends State<BlankPage> {
       }
     }
 
-    // Equidistant horizontal spacing/boundaries snapping
-    final hBoundaries = <double>[0.0, 1.0];
-    for (final other in page.elements) {
-      if (other.id != element.id && other.type == 'image') {
-        hBoundaries.add(other.x);
-        hBoundaries.add(other.x + other.width);
-      }
-    }
-    final uniqueHBoundaries = hBoundaries.toSet().toList()..sort();
-    for (var i = 0; i < uniqueHBoundaries.length; i++) {
-      for (var j = i + 1; j < uniqueHBoundaries.length; j++) {
-        final L = uniqueHBoundaries[i];
-        final R = uniqueHBoundaries[j];
-        final targetX = (L + R - element.width) / 2;
-        final distance = (targetX - x).abs();
-        if (distance < bestXDistance) {
-          bestXDistance = distance;
-          snappedX = targetX;
-          xGuides
-            ..clear()
-            ..add(_SnapGuide(
-              axis: _SnapGuideAxis.vertical,
-              value: pageIndex + L,
-            ))
-            ..add(_SnapGuide(
-              axis: _SnapGuideAxis.vertical,
-              value: pageIndex + R,
-            ))
-            ..add(_SnapGuide(
-              axis: _SnapGuideAxis.vertical,
-              value: pageIndex + (L + R) / 2,
-            ));
-        }
-      }
-    }
+
 
     final yGuides = <_SnapGuide>[];
     var snappedY = y;
@@ -3158,42 +3124,7 @@ class _BlankPageState extends State<BlankPage> {
       }
     }
 
-    // Equidistant vertical spacing/boundaries snapping
-    final vBoundaries = <double>[0.0, 1.0];
-    for (final other in page.elements) {
-      if (other.id != element.id && other.type == 'image') {
-        final otherHeight = _elementRenderedHeight(other, page);
-        vBoundaries.add(other.y);
-        vBoundaries.add(other.y + otherHeight);
-      }
-    }
-    final uniqueVBoundaries = vBoundaries.toSet().toList()..sort();
-    for (var i = 0; i < uniqueVBoundaries.length; i++) {
-      for (var j = i + 1; j < uniqueVBoundaries.length; j++) {
-        final T = uniqueVBoundaries[i];
-        final B = uniqueVBoundaries[j];
-        final targetY = (T + B - elementHeight) / 2;
-        final distance = (targetY - y).abs();
-        if (distance < bestYDistance) {
-          bestYDistance = distance;
-          snappedY = targetY;
-          yGuides
-            ..clear()
-            ..add(_SnapGuide(
-              axis: _SnapGuideAxis.horizontal,
-              value: T,
-            ))
-            ..add(_SnapGuide(
-              axis: _SnapGuideAxis.horizontal,
-              value: B,
-            ))
-            ..add(_SnapGuide(
-              axis: _SnapGuideAxis.horizontal,
-              value: (T + B) / 2,
-            ));
-        }
-      }
-    }
+
 
     return _SnapResult(
       x: _displayMode == PageDisplayMode.single
