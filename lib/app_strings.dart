@@ -109,6 +109,7 @@ class AppStrings {
     'crop': '裁切',
     'size': '大小',
     'textColor': '文字顏色',
+    'imageCornerRadius': '圖片圓角',
     'edit': '編輯',
     'aiSortFailed': 'AI 排序失敗，請確認 API Key 或稍後再試',
     'aiSortSuggestion': 'AI 建議排序',
@@ -120,6 +121,8 @@ class AppStrings {
     'languageTraditionalChinese': '繁體中文',
     'languageEnglish': 'English',
     'languageChangeNotice': '變更語言後將會立即套用。',
+    'layers': '圖層',
+    'noLayers': '目前頁面沒有圖層',
   };
 
   static const Map<String, String> _en = <String, String>{
@@ -232,6 +235,7 @@ class AppStrings {
     'crop': 'Crop',
     'size': 'Size',
     'textColor': 'Text Color',
+    'imageCornerRadius': 'Corner Radius',
     'edit': 'Edit',
     'aiSortFailed':
         'AI sorting failed, please check API Key or try again later',
@@ -244,6 +248,8 @@ class AppStrings {
     'languageTraditionalChinese': '繁體中文',
     'languageEnglish': 'English',
     'languageChangeNotice': 'Language changes will be applied immediately.',
+    'layers': 'Layers',
+    'noLayers': 'No layers on this page',
   };
 
   static AppStrings of(BuildContext context) {

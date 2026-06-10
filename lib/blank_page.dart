@@ -236,6 +236,7 @@ Uint8List _renderPageJpgBytes(Map<String, dynamic> payload) {
       cropOffsetX: (element['cropOffsetX'] as num?)?.toDouble() ?? 0,
       cropOffsetY: (element['cropOffsetY'] as num?)?.toDouble() ?? 0,
       cropScale: (element['cropScale'] as num?)?.toDouble() ?? 1,
+      borderRadiusRatio: (element['borderRadiusRatio'] as num?)?.toDouble() ?? 0,
     );
   }
 
@@ -318,6 +319,48 @@ img.Image _cropSourceToFrame({
   );
 }
 
+void _applyRoundCorners(img.Image image, double radius) {
+  if (radius <= 0) return;
+  final w = image.width;
+  final h = image.height;
+  final clampedRadius = radius.clamp(0.0, (w < h ? w : h) / 2.0);
+
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      var isOutside = false;
+      if (x < clampedRadius && y < clampedRadius) {
+        final dx = clampedRadius - x;
+        final dy = clampedRadius - y;
+        if (dx * dx + dy * dy > clampedRadius * clampedRadius) {
+          isOutside = true;
+        }
+      } else if (x >= w - clampedRadius && y < clampedRadius) {
+        final dx = x - (w - clampedRadius);
+        final dy = clampedRadius - y;
+        if (dx * dx + dy * dy > clampedRadius * clampedRadius) {
+          isOutside = true;
+        }
+      } else if (x < clampedRadius && y >= h - clampedRadius) {
+        final dx = clampedRadius - x;
+        final dy = y - (h - clampedRadius);
+        if (dx * dx + dy * dy > clampedRadius * clampedRadius) {
+          isOutside = true;
+        }
+      } else if (x >= w - clampedRadius && y >= h - clampedRadius) {
+        final dx = x - (w - clampedRadius);
+        final dy = y - (h - clampedRadius);
+        if (dx * dx + dy * dy > clampedRadius * clampedRadius) {
+          isOutside = true;
+        }
+      }
+
+      if (isOutside) {
+        image.setPixel(x, y, img.ColorRgba8(0, 0, 0, 0));
+      }
+    }
+  }
+}
+
 void _compositeClippedImage({
   required img.Image canvas,
   required img.Image sourceImage,
@@ -330,6 +373,7 @@ void _compositeClippedImage({
   double cropOffsetX = 0,
   double cropOffsetY = 0,
   double cropScale = 1,
+  double borderRadiusRatio = 0,
 }) {
   if (targetWidth <= 0 || targetHeight <= 0) {
     return;
@@ -359,6 +403,11 @@ void _compositeClippedImage({
     height: targetHeight,
     interpolation: interpolation,
   );
+
+  if (borderRadiusRatio > 0) {
+    final radius = borderRadiusRatio * (targetWidth < targetHeight ? targetWidth : targetHeight);
+    _applyRoundCorners(resizedImage, radius);
+  }
 
   final cropX = (clippedLeft - targetX).clamp(0, targetWidth - 1);
   final cropY = (clippedTop - targetY).clamp(0, targetHeight - 1);
@@ -476,6 +525,7 @@ Uint8List _renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
         cropOffsetX: (element['cropOffsetX'] as num?)?.toDouble() ?? 0,
         cropOffsetY: (element['cropOffsetY'] as num?)?.toDouble() ?? 0,
         cropScale: (element['cropScale'] as num?)?.toDouble() ?? 1,
+        borderRadiusRatio: (element['borderRadiusRatio'] as num?)?.toDouble() ?? 0,
       );
     }
   }
@@ -631,6 +681,7 @@ class _BlankPageState extends State<BlankPage> {
   static const String _tabImageSettings = 'image_settings';
   static const String _tabTextPosition = 'text_position';
   static const String _tabTextSettings = 'text_settings';
+  static const String _tabLayers = 'layers';
   static const double _singlePagePeekViewportFraction = 0.78;
   static const double _singlePagePeekGap = 8.0;
   int _currentPageIndex = 0;
@@ -715,16 +766,23 @@ class _BlankPageState extends State<BlankPage> {
     if (tab == _tabTextSettings) {
       return 165.0;
     }
+    if (tab == _tabLayers) {
+      return 75.0;
+    }
     return 75.0;
   }
 
   bool _isImageTab(String tab) =>
       tab == _tabElements ||
+      tab == _tabLayers ||
       tab == _tabImagePosition ||
       tab == _tabImageSettings;
 
   bool _isTextTab(String tab) =>
-      tab == _tabElements || tab == _tabTextPosition || tab == _tabTextSettings;
+      tab == _tabElements ||
+      tab == _tabLayers ||
+      tab == _tabTextPosition ||
+      tab == _tabTextSettings;
 
   bool _isElementTab(String tab) {
     final selectedImage = _selectedImageElement;
@@ -810,6 +868,7 @@ class _BlankPageState extends State<BlankPage> {
       _tabImageSettings => strings.t('imageSettings'),
       _tabTextPosition => strings.t('textPosition'),
       _tabTextSettings => strings.t('text'),
+      _tabLayers => strings.t('layers'),
       _ => tabKey,
     };
   }
@@ -1121,6 +1180,7 @@ class _BlankPageState extends State<BlankPage> {
         _tabElements,
         _tabImagePosition,
         _tabImageSettings,
+        _tabLayers,
       ];
     }
     if (_selectedTextElement != null) {
@@ -1130,9 +1190,10 @@ class _BlankPageState extends State<BlankPage> {
         _tabElements,
         _tabTextPosition,
         _tabTextSettings,
+        _tabLayers,
       ];
     }
-    return const <String>[_tabPage, _tabTemplate, _tabElements];
+    return const <String>[_tabPage, _tabTemplate, _tabElements, _tabLayers];
   }
 
   CanvasElement? get _selectedElement {
@@ -1529,6 +1590,43 @@ class _BlankPageState extends State<BlankPage> {
       _deleteArmedElementId = null;
       _activeSnapGuides = const <_SnapGuide>[];
       _refreshPageControllerViewportIfNeeded();
+    });
+
+    unawaited(_saveProject(updatedProject));
+  }
+
+  void _reorderElements(int oldIndex, int newIndex) {
+    final currentPage = _project.pages[_currentPageIndex];
+    if (oldIndex < 0 ||
+        oldIndex >= currentPage.elements.length ||
+        newIndex < 0 ||
+        newIndex > currentPage.elements.length) {
+      return;
+    }
+    if (oldIndex == newIndex || oldIndex == newIndex - 1) {
+      return;
+    }
+
+    _storeUndoSnapshot();
+
+    final updatedElements = List<CanvasElement>.from(currentPage.elements);
+    final movedElement = updatedElements.removeAt(oldIndex);
+    
+    // Adjust target index after removal (since list visual order is reversed and newIndex represents the slot)
+    final targetIndex = oldIndex < newIndex ? newIndex - 1 : newIndex;
+    updatedElements.insert(targetIndex, movedElement);
+
+    final updatedPage = currentPage.copyWith(elements: updatedElements);
+    final updatedPages = List<ProjectPage>.from(_project.pages);
+    updatedPages[_currentPageIndex] = updatedPage;
+
+    final updatedProject = _project.copyWith(
+      pages: updatedPages,
+      pageCount: updatedPages.length,
+    );
+
+    setState(() {
+      _project = updatedProject;
     });
 
     unawaited(_saveProject(updatedProject));
@@ -2522,8 +2620,6 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     CanvasElement? selectedElement;
-    var selectedPageIndex = -1;
-    var selectedElementIndex = -1;
     for (var pageIndex = 0; pageIndex < _project.pages.length; pageIndex++) {
       final page = _project.pages[pageIndex];
       for (
@@ -2534,8 +2630,6 @@ class _BlankPageState extends State<BlankPage> {
         final element = page.elements[elementIndex];
         if (element.id == elementId) {
           selectedElement = element;
-          selectedPageIndex = pageIndex;
-          selectedElementIndex = elementIndex;
           break;
         }
       }
@@ -2544,34 +2638,7 @@ class _BlankPageState extends State<BlankPage> {
       }
     }
 
-    ProjectRecord? reorderedProject;
-    if (selectedElement != null &&
-        (selectedElement.type == 'image' || selectedElement.type == 'text') &&
-        selectedPageIndex != -1) {
-      final selectedPage = _project.pages[selectedPageIndex];
-      final isAlreadyTop =
-          selectedElementIndex == selectedPage.elements.length - 1;
-      if (!isAlreadyTop) {
-        final updatedElements = List<CanvasElement>.from(selectedPage.elements);
-        final movedElement = updatedElements.removeAt(selectedElementIndex);
-        updatedElements.add(movedElement);
-
-        final updatedPages = List<ProjectPage>.from(_project.pages);
-        updatedPages[selectedPageIndex] = selectedPage.copyWith(
-          elements: updatedElements,
-        );
-        reorderedProject = _project.copyWith(
-          pages: updatedPages,
-          pageCount: updatedPages.length,
-        );
-      }
-    }
-
-    final projectToSave = reorderedProject;
     setState(() {
-      if (projectToSave != null) {
-        _project = projectToSave;
-      }
       if (selectedElement != null &&
           _elementCrossesPageBoundary(selectedElement) &&
           _displayMode != PageDisplayMode.preview) {
@@ -2604,9 +2671,6 @@ class _BlankPageState extends State<BlankPage> {
       }
       _refreshPageControllerViewportIfNeeded();
     });
-    if (projectToSave != null) {
-      unawaited(_saveProject(projectToSave));
-    }
     if (selectedElement != null &&
         _elementCrossesPageBoundary(selectedElement)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2984,21 +3048,24 @@ class _BlankPageState extends State<BlankPage> {
       }
     }
 
+    final xGuides = <_SnapGuide>[];
     var snappedX = x;
     var bestXDistance = snapThreshold;
-    _SnapGuide? xGuide;
+
     for (final target in xTargets) {
       for (final candidate in xCandidates) {
         final distance = (target.value - candidate).abs();
         if (distance < bestXDistance) {
           bestXDistance = distance;
           snappedX = x + (target.value - candidate);
-          xGuide = _SnapGuide(
-            axis: target.axis,
-            value: target.guideValue,
-            start: target.guideStart,
-            end: target.guideEnd,
-          );
+          xGuides
+            ..clear()
+            ..add(_SnapGuide(
+              axis: target.axis,
+              value: target.guideValue,
+              start: target.guideStart,
+              end: target.guideEnd,
+            ));
         }
       }
     }
@@ -3007,30 +3074,71 @@ class _BlankPageState extends State<BlankPage> {
       if (distance < bestXDistance) {
         bestXDistance = distance;
         snappedX = target.value;
-        xGuide = _SnapGuide(
-          axis: target.axis,
-          value: target.guideValue,
-          start: target.guideStart,
-          end: target.guideEnd,
-        );
+        xGuides
+          ..clear()
+          ..add(_SnapGuide(
+            axis: target.axis,
+            value: target.guideValue,
+            start: target.guideStart,
+            end: target.guideEnd,
+          ));
       }
     }
 
+    // Equidistant horizontal spacing/boundaries snapping
+    final hBoundaries = <double>[0.0, 1.0];
+    for (final other in page.elements) {
+      if (other.id != element.id && other.type == 'image') {
+        hBoundaries.add(other.x);
+        hBoundaries.add(other.x + other.width);
+      }
+    }
+    final uniqueHBoundaries = hBoundaries.toSet().toList()..sort();
+    for (var i = 0; i < uniqueHBoundaries.length; i++) {
+      for (var j = i + 1; j < uniqueHBoundaries.length; j++) {
+        final L = uniqueHBoundaries[i];
+        final R = uniqueHBoundaries[j];
+        final targetX = (L + R - element.width) / 2;
+        final distance = (targetX - x).abs();
+        if (distance < bestXDistance) {
+          bestXDistance = distance;
+          snappedX = targetX;
+          xGuides
+            ..clear()
+            ..add(_SnapGuide(
+              axis: _SnapGuideAxis.vertical,
+              value: pageIndex + L,
+            ))
+            ..add(_SnapGuide(
+              axis: _SnapGuideAxis.vertical,
+              value: pageIndex + R,
+            ))
+            ..add(_SnapGuide(
+              axis: _SnapGuideAxis.vertical,
+              value: pageIndex + (L + R) / 2,
+            ));
+        }
+      }
+    }
+
+    final yGuides = <_SnapGuide>[];
     var snappedY = y;
     var bestYDistance = snapThreshold;
-    _SnapGuide? yGuide;
+
     for (final target in yTargets) {
       for (final candidate in yCandidates) {
         final distance = (target.value - candidate).abs();
         if (distance < bestYDistance) {
           bestYDistance = distance;
           snappedY = y + (target.value - candidate);
-          yGuide = _SnapGuide(
-            axis: target.axis,
-            value: target.guideValue,
-            start: target.guideStart,
-            end: target.guideEnd,
-          );
+          yGuides
+            ..clear()
+            ..add(_SnapGuide(
+              axis: target.axis,
+              value: target.guideValue,
+              start: target.guideStart,
+              end: target.guideEnd,
+            ));
         }
       }
     }
@@ -3039,12 +3147,51 @@ class _BlankPageState extends State<BlankPage> {
       if (distance < bestYDistance) {
         bestYDistance = distance;
         snappedY = target.value;
-        yGuide = _SnapGuide(
-          axis: target.axis,
-          value: target.guideValue,
-          start: target.guideStart,
-          end: target.guideEnd,
-        );
+        yGuides
+          ..clear()
+          ..add(_SnapGuide(
+            axis: target.axis,
+            value: target.guideValue,
+            start: target.guideStart,
+            end: target.guideEnd,
+          ));
+      }
+    }
+
+    // Equidistant vertical spacing/boundaries snapping
+    final vBoundaries = <double>[0.0, 1.0];
+    for (final other in page.elements) {
+      if (other.id != element.id && other.type == 'image') {
+        final otherHeight = _elementRenderedHeight(other, page);
+        vBoundaries.add(other.y);
+        vBoundaries.add(other.y + otherHeight);
+      }
+    }
+    final uniqueVBoundaries = vBoundaries.toSet().toList()..sort();
+    for (var i = 0; i < uniqueVBoundaries.length; i++) {
+      for (var j = i + 1; j < uniqueVBoundaries.length; j++) {
+        final T = uniqueVBoundaries[i];
+        final B = uniqueVBoundaries[j];
+        final targetY = (T + B - elementHeight) / 2;
+        final distance = (targetY - y).abs();
+        if (distance < bestYDistance) {
+          bestYDistance = distance;
+          snappedY = targetY;
+          yGuides
+            ..clear()
+            ..add(_SnapGuide(
+              axis: _SnapGuideAxis.horizontal,
+              value: T,
+            ))
+            ..add(_SnapGuide(
+              axis: _SnapGuideAxis.horizontal,
+              value: B,
+            ))
+            ..add(_SnapGuide(
+              axis: _SnapGuideAxis.horizontal,
+              value: (T + B) / 2,
+            ));
+        }
       }
     }
 
@@ -3054,8 +3201,8 @@ class _BlankPageState extends State<BlankPage> {
           : snappedX.clamp(-0.95, 1.95),
       y: snappedY.clamp(0.0, maxY),
       guides: <_SnapGuide>[
-        if (xGuide != null) xGuide,
-        if (yGuide != null) yGuide,
+        ...xGuides,
+        ...yGuides,
       ],
     );
   }
@@ -3511,6 +3658,29 @@ class _BlankPageState extends State<BlankPage> {
       elementId: selectedImage.id,
       width: width,
       persist: persist,
+    );
+  }
+
+  void _updateSelectedImageBorderRadius(double ratio, {required bool persist}) {
+    final selectedImage = _selectedImageElement;
+    if (selectedImage == null) {
+      return;
+    }
+    if (!persist && !_hasPendingElementUndoSnapshot) {
+      _storeUndoSnapshot();
+      _hasPendingElementUndoSnapshot = true;
+    }
+
+    final updatedData = <String, dynamic>{
+      ...selectedImage.data,
+      'borderRadiusRatio': ratio.clamp(0.0, 0.5).toDouble(),
+    };
+    final updatedElement = selectedImage.copyWith(data: updatedData);
+    unawaited(
+      _replaceElement(
+        updatedElement,
+        persist: persist,
+      ),
     );
   }
 
@@ -4463,6 +4633,7 @@ class _BlankPageState extends State<BlankPage> {
               'cropOffsetX': _cropOffsetXFromData(element.data),
               'cropOffsetY': _cropOffsetYFromData(element.data),
               'cropScale': _cropScaleFromData(element.data),
+              'borderRadiusRatio': (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0,
             },
           )
           .toList(),
@@ -4579,6 +4750,18 @@ class _BlankPageState extends State<BlankPage> {
               cropOffsetY: _cropOffsetYFromData(element.data),
               cropScale: _cropScaleFromData(element.data),
             );
+            final borderRadiusRatio =
+                (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
+            final double radius = borderRadiusRatio *
+                (targetWidth < targetHeight ? targetWidth : targetHeight);
+            if (radius > 0) {
+              canvas.save();
+              final rrect = RRect.fromRectAndRadius(
+                Rect.fromLTWH(targetX, targetY, targetWidth, targetHeight),
+                Radius.circular(radius),
+              );
+              canvas.clipRRect(rrect);
+            }
             canvas.drawImageRect(
               sourceImage,
               Rect.fromLTWH(
@@ -4590,6 +4773,9 @@ class _BlankPageState extends State<BlankPage> {
               Rect.fromLTWH(targetX, targetY, targetWidth, targetHeight),
               Paint()..filterQuality = FilterQuality.high,
             );
+            if (radius > 0) {
+              canvas.restore();
+            }
           } else if (element.type == 'text') {
             final text = _textContentFromData(element.data);
             final fontSize =
@@ -4734,6 +4920,7 @@ class _BlankPageState extends State<BlankPage> {
                     'cropOffsetX': _cropOffsetXFromData(element.data),
                     'cropOffsetY': _cropOffsetYFromData(element.data),
                     'cropScale': _cropScaleFromData(element.data),
+                    'borderRadiusRatio': (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0,
                   },
                 )
                 .toList(),
@@ -5344,12 +5531,14 @@ class _BlankPageState extends State<BlankPage> {
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          _ToolbarIconButton(
-                            icon: Icons.auto_awesome_rounded,
-                            enabled: pages.length > 1,
-                            onPressed: _requestAiPageSort,
-                          ),
-                          const SizedBox(width: 8),
+                          if (AppSettingsController.instance.aiSortEnabled) ...[
+                            _ToolbarIconButton(
+                              icon: Icons.auto_awesome_rounded,
+                              enabled: pages.length > 1,
+                              onPressed: _requestAiPageSort,
+                            ),
+                            const SizedBox(width: 8),
+                          ],
                           _PageChangeButton(
                             icon: Icons.chevron_left_rounded,
                             enabled: _currentPageIndex > 0,
@@ -5907,6 +6096,32 @@ class _BlankPageState extends State<BlankPage> {
                                             );
                                           }
                                         },
+                                        onBorderRadiusChanged: (value) {
+                                          _updateSelectedImageBorderRadius(
+                                            value,
+                                            persist: false,
+                                          );
+                                        },
+                                        onBorderRadiusChangeEnd: (value) {
+                                          _updateSelectedImageBorderRadius(
+                                            value,
+                                            persist: true,
+                                          );
+                                        },
+                                      ),
+                                      _LayersTabPage(
+                                        page: currentPage,
+                                        selectedElementId: _selectedElementId,
+                                        onSelectElement: (elementId) {
+                                          if (_selectedElementId != elementId) {
+                                            setState(() {
+                                              _selectedElementId = elementId;
+                                              _croppingElementId = null;
+                                              _deleteArmedElementId = null;
+                                            });
+                                          }
+                                        },
+                                        onReorderElement: _reorderElements,
                                       ),
                                     ]
                                   : _selectedTextElement != null
@@ -5992,6 +6207,20 @@ class _BlankPageState extends State<BlankPage> {
                                           );
                                         },
                                       ),
+                                      _LayersTabPage(
+                                        page: currentPage,
+                                        selectedElementId: _selectedElementId,
+                                        onSelectElement: (elementId) {
+                                          if (_selectedElementId != elementId) {
+                                            setState(() {
+                                              _selectedElementId = elementId;
+                                              _croppingElementId = null;
+                                              _deleteArmedElementId = null;
+                                            });
+                                          }
+                                        },
+                                        onReorderElement: _reorderElements,
+                                      ),
                                     ]
                                   : <Widget>[
                                       _PageTabPage(
@@ -6024,6 +6253,20 @@ class _BlankPageState extends State<BlankPage> {
                                             _addImageElementFromPath,
                                         onLongPressImportedImage:
                                             _showImportedImagePreview,
+                                      ),
+                                      _LayersTabPage(
+                                        page: currentPage,
+                                        selectedElementId: _selectedElementId,
+                                        onSelectElement: (elementId) {
+                                          if (_selectedElementId != elementId) {
+                                            setState(() {
+                                              _selectedElementId = elementId;
+                                              _croppingElementId = null;
+                                              _deleteArmedElementId = null;
+                                            });
+                                          }
+                                        },
+                                        onReorderElement: _reorderElements,
                                       ),
                                     ];
                               final index = bottomTabs.indexOf(
@@ -7233,8 +7476,12 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                 color: src.isEmpty
                     ? const Color(0xFFF6F6F6)
                     : Colors.transparent,
+                borderRadius: BorderRadius.circular(
+                  ((widget.element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0) *
+                  (width < height ? width : height)
+                ),
               ),
-              clipBehavior: Clip.hardEdge,
+              clipBehavior: Clip.antiAlias,
               child: src.isEmpty
                   ? const Center(
                       child: Icon(
@@ -7280,6 +7527,13 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                     height: height + 4,
                     decoration: BoxDecoration(
                       border: Border.all(color: selectionColor, width: 4),
+                      borderRadius: BorderRadius.circular(
+                        (() {
+                          final rRatio = (widget.element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
+                          final rVal = rRatio * (width < height ? width : height);
+                          return rVal > 0 ? rVal + 2 : 0.0;
+                        })()
+                      ),
                     ),
                   ),
                 ),
@@ -7560,8 +7814,12 @@ class _PreviewImageElementWidgetState
                 color: src.isEmpty
                     ? const Color(0xFFF6F6F6)
                     : Colors.transparent,
+                borderRadius: BorderRadius.circular(
+                  ((widget.element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0) *
+                  (width < height ? width : height)
+                ),
               ),
-              clipBehavior: Clip.hardEdge,
+              clipBehavior: Clip.antiAlias,
               child: src.isEmpty
                   ? const Center(
                       child: Icon(
@@ -7607,6 +7865,13 @@ class _PreviewImageElementWidgetState
                     height: height + 4,
                     decoration: BoxDecoration(
                       border: Border.all(color: selectionColor, width: 4),
+                      borderRadius: BorderRadius.circular(
+                        (() {
+                          final rRatio = (widget.element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
+                          final rVal = rRatio * (width < height ? width : height);
+                          return rVal > 0 ? rVal + 2 : 0.0;
+                        })()
+                      ),
                     ),
                   ),
                 ),
@@ -8947,26 +9212,32 @@ class _MiniImageElement extends StatelessWidget {
         ? width / aspectRatio
         : element.height * pageHeight;
 
+    final borderRadiusRatio = (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
+    final borderRadiusValue = borderRadiusRatio * (width < height ? width : height);
+
     return Positioned(
       left: left,
       top: top,
       width: width,
       height: height,
-      child: src.isEmpty
-          ? Container(color: const Color(0xFFF0F0F0))
-          : _CroppedImageFile(
-              path: src,
-              frameWidth: width,
-              frameHeight: height,
-              sourceAspectRatio:
-                  (element.data['originalAspectRatio'] as num?)?.toDouble() ??
-                  (element.data['aspectRatio'] as num?)?.toDouble() ??
-                  (width / height),
-              cropOffsetX: _cropOffsetXFromData(element.data),
-              cropOffsetY: _cropOffsetYFromData(element.data),
-              cropScale: _cropScaleFromData(element.data),
-              cacheWidth: 180,
-            ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(borderRadiusValue),
+        child: src.isEmpty
+            ? Container(color: const Color(0xFFF0F0F0))
+            : _CroppedImageFile(
+                path: src,
+                frameWidth: width,
+                frameHeight: height,
+                sourceAspectRatio:
+                    (element.data['originalAspectRatio'] as num?)?.toDouble() ??
+                    (element.data['aspectRatio'] as num?)?.toDouble() ??
+                    (width / height),
+                cropOffsetX: _cropOffsetXFromData(element.data),
+                cropOffsetY: _cropOffsetYFromData(element.data),
+                cropScale: _cropScaleFromData(element.data),
+                cacheWidth: 180,
+              ),
+      ),
     );
   }
 }
@@ -9745,6 +10016,8 @@ class _ImageSettingsTabPage extends StatelessWidget {
     required this.onAspectSelected,
     required this.onSizeChanged,
     required this.onSizeChangeEnd,
+    required this.onBorderRadiusChanged,
+    required this.onBorderRadiusChangeEnd,
   });
 
   final CanvasElement selectedElement;
@@ -9755,12 +10028,16 @@ class _ImageSettingsTabPage extends StatelessWidget {
   final ValueChanged<_ImageAspectOption> onAspectSelected;
   final ValueChanged<double> onSizeChanged;
   final ValueChanged<double> onSizeChangeEnd;
+  final ValueChanged<double> onBorderRadiusChanged;
+  final ValueChanged<double> onBorderRadiusChangeEnd;
 
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
     final selectedKey =
         selectedElement.data['aspectPreset'] as String? ?? 'original';
+    final borderRadiusRatio = (selectedElement.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -9815,6 +10092,35 @@ class _ImageSettingsTabPage extends StatelessWidget {
                     max: sizeRange.max,
                     onChanged: onSizeChanged,
                     onChangeEnd: onSizeChangeEnd,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Text(
+                strings.t('imageCornerRadius'),
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF6A6A6A),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: SliderTheme(
+                  data: _lightControlSliderTheme(context),
+                  child: Slider(
+                    value: borderRadiusRatio,
+                    min: 0.0,
+                    max: 0.5,
+                    onChanged: onBorderRadiusChanged,
+                    onChangeEnd: onBorderRadiusChangeEnd,
                   ),
                 ),
               ),
@@ -10563,5 +10869,312 @@ class HdrImageView extends StatelessWidget {
       );
     }
     return Image.file(File(path), fit: fit, gaplessPlayback: true);
+  }
+}
+
+class _LayersTabPage extends StatelessWidget {
+  const _LayersTabPage({
+    required this.page,
+    required this.selectedElementId,
+    required this.onSelectElement,
+    required this.onReorderElement,
+  });
+
+  final ProjectPage page;
+  final String? selectedElementId;
+  final ValueChanged<String> onSelectElement;
+  final void Function(int oldIndex, int newIndex) onReorderElement;
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
+    final elements = page.elements;
+
+    if (elements.isEmpty) {
+      return Container(
+        height: 75,
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.layers_clear_outlined,
+              size: 24,
+              color: Color(0xFF8A8A8A),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              strings.t('noLayers'),
+              style: const TextStyle(
+                fontSize: 13,
+                color: Color(0xFF8A8A8A),
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          for (var index = elements.length - 1; index >= 0; index--) ...[
+            _LayerDropTarget(
+              key: ValueKey('layer_drop_${elements[index].id}'),
+              index: index + 1,
+              onDrop: onReorderElement,
+              child: _LayerCard(
+                key: ValueKey('layer_card_${elements[index].id}'),
+                element: elements[index],
+                index: index,
+                layerNumber: elements.length - index,
+                selected: elements[index].id == selectedElementId,
+                onTap: () => onSelectElement(elements[index].id),
+              ),
+            ),
+            if (index != 0)
+              const SizedBox(width: 12),
+          ],
+          _LayerDropTarget(
+            key: const ValueKey('layer_drop_end'),
+            index: 0,
+            onDrop: onReorderElement,
+            child: const SizedBox(width: 12, height: 75),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LayerDropTarget extends StatelessWidget {
+  const _LayerDropTarget({
+    super.key,
+    required this.index,
+    required this.onDrop,
+    required this.child,
+  });
+
+  final int index;
+  final void Function(int oldIndex, int newIndex) onDrop;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return DragTarget<int>(
+      hitTestBehavior: HitTestBehavior.translucent,
+      onWillAcceptWithDetails: (details) => details.data != index,
+      onAcceptWithDetails: (details) => onDrop(details.data, index),
+      builder: (context, candidateData, rejectedData) {
+        final isTarget = candidateData.isNotEmpty;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeInOut,
+          padding: EdgeInsets.symmetric(horizontal: isTarget ? 3 : 0),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 120),
+                width: isTarget ? 3 : 0,
+                height: 75,
+                decoration: BoxDecoration(
+                  color: kPrimaryAccentColor,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+              if (isTarget) const SizedBox(width: 8),
+              child,
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _LayerCard extends StatelessWidget {
+  const _LayerCard({
+    super.key,
+    required this.element,
+    required this.index,
+    required this.layerNumber,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final CanvasElement element;
+  final int index;
+  final int layerNumber;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final card = _LayerCardContent(
+      element: element,
+      layerNumber: layerNumber,
+      selected: selected,
+    );
+
+    return LongPressDraggable<int>(
+      data: index,
+      feedback: Material(
+        color: Colors.transparent,
+        child: Transform.scale(
+          scale: 1.05,
+          child: card,
+        ),
+      ),
+      childWhenDragging: Opacity(
+        opacity: 0.35,
+        child: card,
+      ),
+      child: _PressableScale(
+        onTap: onTap,
+        pressedScale: 0.96,
+        child: card,
+      ),
+    );
+  }
+}
+
+class _LayerCardContent extends StatelessWidget {
+  const _LayerCardContent({
+    required this.element,
+    required this.layerNumber,
+    required this.selected,
+  });
+
+  final CanvasElement element;
+  final int layerNumber;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    const cardWidth = 68.0;
+    const cardHeight = 75.0;
+    const contentSize = 56.0;
+
+    Widget thumbnail;
+    if (element.type == 'image') {
+      final src = element.data['src'] as String? ?? '';
+      if (src.isEmpty) {
+        thumbnail = Container(
+          color: const Color(0xFFF2F2F2),
+          child: const Center(
+            child: Icon(
+              Icons.image_outlined,
+              size: 20,
+              color: Color(0xFF8A8A8A),
+            ),
+          ),
+        );
+      } else {
+        thumbnail = _CroppedImageFile(
+          path: src,
+          frameWidth: contentSize,
+          frameHeight: contentSize,
+          sourceAspectRatio:
+              (element.data['originalAspectRatio'] as num?)?.toDouble() ??
+              (element.data['aspectRatio'] as num?)?.toDouble() ??
+              1.0,
+          cropOffsetX: _cropOffsetXFromData(element.data),
+          cropOffsetY: _cropOffsetYFromData(element.data),
+          cropScale: _cropScaleFromData(element.data),
+          cacheWidth: 120,
+        );
+      }
+    } else {
+      final text = element.data['text'] as String? ?? '';
+      thumbnail = Container(
+        color: const Color(0xFFF6F6F6),
+        padding: const EdgeInsets.all(4),
+        child: Stack(
+          children: [
+            const Positioned(
+              top: 0,
+              left: 0,
+              child: Icon(
+                Icons.title_rounded,
+                size: 10,
+                color: Color(0xFF8A8A8A),
+              ),
+            ),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  text,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 8.5,
+                    color: Color(0xFF1F1F1F),
+                    fontWeight: FontWeight.w600,
+                    height: 1.2,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      width: cardWidth,
+      height: cardHeight,
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: selected
+            ? Border.all(color: kPrimaryAccentColor, width: 2)
+            : Border.all(color: const Color(0xFFE2E2E2), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: thumbnail,
+            ),
+          ),
+          Positioned(
+            bottom: 2,
+            right: 2,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.65),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                '$layerNumber',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 8.5,
+                  fontWeight: FontWeight.bold,
+                  height: 1.0,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

@@ -33,6 +33,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _apiKeyController;
   bool _isCheckingApi = false;
   bool _isCheckingUpdate = false;
+  final bool _showExtensions = false;
 
   @override
   void initState() {
@@ -200,7 +201,7 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(22, 12, 22, 28),
+          padding: const EdgeInsets.fromLTRB(22, 22, 22, 28),
           children: [
             _SettingsSectionTitle(title: strings.t('themeColor')),
             const SizedBox(height: 10),
@@ -217,48 +218,62 @@ class _SettingsPageState extends State<SettingsPage> {
               strings: strings,
             ),
             const SizedBox(height: 22),
-            _SettingsSectionTitle(title: strings.t('extensions')),
-            const SizedBox(height: 10),
-            _SettingsCard(
-              primary: primary,
-              icon: Icons.auto_awesome_rounded,
-              title: strings.t('aiCollaboration'),
-              subtitle: _settings.aiSortEnabled
-                  ? strings.t('aiCollaborationSubtitleActive')
-                  : strings.t('aiCollaborationSubtitleInactive'),
-              trailing: _isCheckingApi
-                  ? const SizedBox(
-                      width: 26,
-                      height: 26,
-                      child: CircularProgressIndicator(strokeWidth: 2.4),
-                    )
-                  : Switch(
-                      value: _settings.aiSortEnabled,
-                      activeThumbColor: primary,
-                      onChanged: _toggleAiSort,
-                    ),
-            ),
-            const SizedBox(height: 4),
-            _SettingsInputCard(
-              primary: primary,
-              controller: _apiKeyController,
-              onSave: _saveApiKey,
-            ),
-            const Divider(
-              height: 1,
-              thickness: 1,
-              color: Color(0xFFF1F2F4),
-              indent: 18,
-              endIndent: 18,
-            ),
-            _SettingsCostCard(
-              primary: primary,
-              aiSortCount: _settings.aiSortCount,
-              onReset: () async {
-                await _settings.resetAiSortCount();
-              },
-            ),
-            const SizedBox(height: 22),
+            // Keep the code preserved but hidden for later development
+            if (_showExtensions) ...[
+              _SettingsSectionTitle(title: strings.t('extensions')),
+              const SizedBox(height: 10),
+              _SettingsCard(
+                primary: primary,
+                icon: Icons.auto_awesome_rounded,
+                title: strings.t('aiCollaboration'),
+                subtitle: _settings.aiSortEnabled
+                    ? strings.t('aiCollaborationSubtitleActive')
+                    : strings.t('aiCollaborationSubtitleInactive'),
+                trailing: _isCheckingApi
+                    ? const SizedBox(
+                        width: 26,
+                        height: 26,
+                        child: CircularProgressIndicator(strokeWidth: 2.4),
+                      )
+                    : Switch(
+                        value: _settings.aiSortEnabled,
+                        activeThumbColor: primary,
+                        onChanged: _toggleAiSort,
+                      ),
+              ),
+              const SizedBox(height: 12),
+              AnimatedOpacity(
+                opacity: _settings.aiSortEnabled ? 1.0 : 0.5,
+                duration: const Duration(milliseconds: 250),
+                child: IgnorePointer(
+                  ignoring: !_settings.aiSortEnabled,
+                  child: Column(
+                    children: [
+                      _SettingsInputCard(
+                        primary: primary,
+                        controller: _apiKeyController,
+                        onSave: _saveApiKey,
+                      ),
+                      const Divider(
+                        height: 1,
+                        thickness: 1,
+                        color: Color(0xFFF1F2F4),
+                        indent: 18,
+                        endIndent: 18,
+                      ),
+                      _SettingsCostCard(
+                        primary: primary,
+                        aiSortCount: _settings.aiSortCount,
+                        onReset: () async {
+                          await _settings.resetAiSortCount();
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 22),
+            ],
             _SettingsSectionTitle(title: strings.t('versionUpdate')),
             const SizedBox(height: 10),
             _SettingsCard(
@@ -339,8 +354,7 @@ class _SettingsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.fromLTRB(18, 16, 14, 16),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(24),
@@ -404,7 +418,7 @@ class _SettingsInputCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
     return Container(
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+      padding: const EdgeInsets.all(16),
       decoration: const BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.only(
@@ -471,7 +485,7 @@ class _ThemeColorGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(24),
@@ -526,7 +540,7 @@ class _SettingsCostCard extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(18, 16, 14, 16),
+      padding: const EdgeInsets.all(16),
       decoration: const BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.only(
@@ -621,7 +635,7 @@ class _LanguageSelectionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(24),

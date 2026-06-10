@@ -508,11 +508,45 @@ class MainActivity : FlutterActivity() {
                     cropScale
                 )
 
-                val srcRect = Rect(cropRect.x, cropRect.y, cropRect.x + cropRect.width, cropRect.y + cropRect.height)
-                val dstRect = Rect(targetX, targetY, targetX + targetWidth, targetY + targetHeight)
+                val srcRect = Rect(
+                    cropRect.x,
+                    cropRect.y,
+                    cropRect.x + cropRect.width,
+                    cropRect.y + cropRect.height
+                )
+
+                val dstRect = Rect(
+                    targetX,
+                    targetY,
+                    targetX + targetWidth,
+                    targetY + targetHeight
+                )
+
+                val borderRadiusRatio = (element["borderRadiusRatio"] as? Number)?.toDouble() ?: 0.0
 
                 // Draw to base canvas
+                if (borderRadiusRatio > 0.0) {
+                    baseCanvas.save()
+                    val radius = (borderRadiusRatio * minOf(targetWidth, targetHeight)).toFloat()
+                    val path = android.graphics.Path().apply {
+                        addRoundRect(
+                            targetX.toFloat(),
+                            targetY.toFloat(),
+                            (targetX + targetWidth).toFloat(),
+                            (targetY + targetHeight).toFloat(),
+                            radius,
+                            radius,
+                            android.graphics.Path.Direction.CW
+                        )
+                    }
+                    baseCanvas.clipPath(path)
+                }
+
                 baseCanvas.drawBitmap(sourceBitmap, srcRect, dstRect, paint)
+
+                if (borderRadiusRatio > 0.0) {
+                    baseCanvas.restore()
+                }
 
                 // Check gainmap
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -539,7 +573,28 @@ class MainActivity : FlutterActivity() {
                             )
 
                             // Draw gainmap to final gainmap canvas
+                            if (borderRadiusRatio > 0.0) {
+                                finalGainmapCanvas!!.save()
+                                val radius = (borderRadiusRatio * minOf(targetWidth, targetHeight)).toFloat()
+                                val path = android.graphics.Path().apply {
+                                    addRoundRect(
+                                        targetX.toFloat(),
+                                        targetY.toFloat(),
+                                        (targetX + targetWidth).toFloat(),
+                                        (targetY + targetHeight).toFloat(),
+                                        radius,
+                                        radius,
+                                        android.graphics.Path.Direction.CW
+                                    )
+                                }
+                                finalGainmapCanvas!!.clipPath(path)
+                            }
+
                             finalGainmapCanvas!!.drawBitmap(gainmapContents, gSrcRect, dstRect, paint)
+
+                            if (borderRadiusRatio > 0.0) {
+                                finalGainmapCanvas!!.restore()
+                            }
                         }
                     }
                 }
