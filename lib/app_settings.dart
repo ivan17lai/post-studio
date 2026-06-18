@@ -3,7 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'hdr/ultra_hdr.dart';
 
-const String kAppDisplayVersion = '1.7.0';
+const String kAppDisplayVersion = '1.7.1';
 const String kGeminiSortModel = 'gemini-3.5-flash';
 const Color kDefaultPrimaryAccentColor = Color(0xFFC3AEFF);
 

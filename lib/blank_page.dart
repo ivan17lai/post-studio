@@ -7763,25 +7763,50 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                         size: 24,
                       ),
                     )
-                  : _CroppedImageFile(
-                      path: src,
-                      frameWidth: width,
-                      frameHeight: height,
-                      sourceAspectRatio:
-                          (widget.element.data['originalAspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (widget.element.data['aspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (width / height),
-                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                      cropScale: _cropScaleFromData(widget.element.data),
-                      cacheWidth: _previewImageCacheExtent(
-                        context,
-                        width,
-                        height,
-                      ),
-                    ),
+                  : (widget.element.data['isUltraHdr'] == true &&
+                          !widget.isCropMode &&
+                          !kIsWeb &&
+                          defaultTargetPlatform == TargetPlatform.android &&
+                          AppSettingsController.instance.hdrEnabled)
+                      ? HdrImageView(
+                          key: ValueKey(
+                            'hdr_${src}_'
+                            '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
+                          ),
+                          path: src,
+                          sourceAspectRatio:
+                              (widget.element.data['originalAspectRatio']
+                                      as num?)
+                                  ?.toDouble() ??
+                              (widget.element.data['aspectRatio'] as num?)
+                                  ?.toDouble() ??
+                              0.0,
+                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                          cropScale: _cropScaleFromData(widget.element.data),
+                        )
+                      : _CroppedImageFile(
+                          path: src,
+                          frameWidth: width,
+                          frameHeight: height,
+                          sourceAspectRatio:
+                              (widget.element.data['originalAspectRatio']
+                                      as num?)
+                                  ?.toDouble() ??
+                              (widget.element.data['aspectRatio'] as num?)
+                                  ?.toDouble() ??
+                              (width / height),
+                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                          cropScale: _cropScaleFromData(widget.element.data),
+                          cacheWidth: _previewImageCacheExtent(
+                            context,
+                            width,
+                            height,
+                          ),
+                        ),
             ),
             if (widget.element.data['isUltraHdr'] == true)
               const Positioned(left: 6, top: 6, child: _HdrBadge()),
@@ -8103,25 +8128,50 @@ class _PreviewImageElementWidgetState
                         size: 24,
                       ),
                     )
-                  : _CroppedImageFile(
-                      path: src,
-                      frameWidth: width,
-                      frameHeight: height,
-                      sourceAspectRatio:
-                          (widget.element.data['originalAspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (widget.element.data['aspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (width / height),
-                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                      cropScale: _cropScaleFromData(widget.element.data),
-                      cacheWidth: _previewImageCacheExtent(
-                        context,
-                        width,
-                        height,
-                      ),
-                    ),
+                  : (widget.element.data['isUltraHdr'] == true &&
+                          !widget.isCropMode &&
+                          !kIsWeb &&
+                          defaultTargetPlatform == TargetPlatform.android &&
+                          AppSettingsController.instance.hdrEnabled)
+                      ? HdrImageView(
+                          key: ValueKey(
+                            'hdr_${src}_'
+                            '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
+                          ),
+                          path: src,
+                          sourceAspectRatio:
+                              (widget.element.data['originalAspectRatio']
+                                      as num?)
+                                  ?.toDouble() ??
+                              (widget.element.data['aspectRatio'] as num?)
+                                  ?.toDouble() ??
+                              0.0,
+                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                          cropScale: _cropScaleFromData(widget.element.data),
+                        )
+                      : _CroppedImageFile(
+                          path: src,
+                          frameWidth: width,
+                          frameHeight: height,
+                          sourceAspectRatio:
+                              (widget.element.data['originalAspectRatio']
+                                      as num?)
+                                  ?.toDouble() ??
+                              (widget.element.data['aspectRatio'] as num?)
+                                  ?.toDouble() ??
+                              (width / height),
+                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                          cropScale: _cropScaleFromData(widget.element.data),
+                          cacheWidth: _previewImageCacheExtent(
+                            context,
+                            width,
+                            height,
+                          ),
+                        ),
             ),
             if (widget.element.data['isUltraHdr'] == true)
               const Positioned(left: 6, top: 6, child: _HdrBadge()),
