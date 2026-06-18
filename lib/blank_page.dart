@@ -38,8 +38,25 @@ const String _pageBackgroundColorPresetKey = 'backgroundColorPreset';
 const String _pageBackgroundColorPresetWhite = 'white';
 const String _pageBackgroundColorPresetBlack = 'black';
 const String _pageBackgroundColorPresetIgBlack = 'ig_black';
+const String _pageBackgroundColorPresetHdrWhite = 'hdr_white';
 const String _pageBackgroundColorPresetCustom = 'custom';
 const double _cropScaleSliderMax = 14.0;
+
+/// Per-image HDR brightness bounds. HDR sources scale their existing gain
+/// (0–200%, 1 = original); SDR sources set a synthesized HDR peak (1–4x).
+const double _hdrBrightnessHdrMin = 0.0;
+const double _hdrBrightnessHdrMax = 2.0;
+const double _hdrBrightnessSdrMin = 1.0;
+const double _hdrBrightnessSdrMax = 4.0;
+const double _hdrBrightnessDefault = 1.0;
+
+double _hdrBrightnessFromData(Map<String, dynamic> data) {
+  final value = (data['hdrBrightness'] as num?)?.toDouble() ?? _hdrBrightnessDefault;
+  if (value.isNaN || value < 0) {
+    return _hdrBrightnessDefault;
+  }
+  return value;
+}
 
 Color _pageBackgroundColorFromExtras(Map<String, dynamic> extras) {
   final colorValue =
@@ -3726,6 +3743,35 @@ class _BlankPageState extends State<BlankPage> {
     );
   }
 
+  void _updateSelectedImageHdrBrightness(
+    double value, {
+    required bool persist,
+  }) {
+    final selectedImage = _selectedImageElement;
+    if (selectedImage == null) {
+      return;
+    }
+    if (!persist && !_hasPendingElementUndoSnapshot) {
+      _storeUndoSnapshot();
+      _hasPendingElementUndoSnapshot = true;
+    }
+
+    final isUltraHdr = selectedImage.data['isUltraHdr'] == true;
+    final min = isUltraHdr ? _hdrBrightnessHdrMin : _hdrBrightnessSdrMin;
+    final max = isUltraHdr ? _hdrBrightnessHdrMax : _hdrBrightnessSdrMax;
+    final updatedData = <String, dynamic>{
+      ...selectedImage.data,
+      'hdrBrightness': value.clamp(min, max).toDouble(),
+    };
+    final updatedElement = selectedImage.copyWith(data: updatedData);
+    unawaited(
+      _replaceElement(
+        updatedElement,
+        persist: persist,
+      ),
+    );
+  }
+
   void _startCroppingSelectedImage() {
     final selectedImage = _selectedImageElement;
     if (selectedImage == null) {
@@ -4967,6 +5013,9 @@ class _BlankPageState extends State<BlankPage> {
                         as num?)
                     ?.toInt() ??
                 Colors.white.value,
+            'backgroundHdr':
+                _project.pages[pageIndex].extras[_pageBackgroundColorPresetKey] ==
+                _pageBackgroundColorPresetHdrWhite,
             'originalIndex': pageIndex,
             'elements': _project.pages[pageIndex].elements
                 .map(
@@ -4987,6 +5036,7 @@ class _BlankPageState extends State<BlankPage> {
                     'cropOffsetY': _cropOffsetYFromData(element.data),
                     'cropScale': _cropScaleFromData(element.data),
                     'borderRadiusRatio': (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0,
+                    'hdrBrightness': _hdrBrightnessFromData(element.data),
                     if (element.type == 'text') ...<String, dynamic>{
                       'text': _textContentFromData(element.data),
                       'colorValue': _textColorFromData(
@@ -6327,6 +6377,9 @@ class _BlankPageState extends State<BlankPage> {
                                         isCropping:
                                             _croppingElementId ==
                                             _selectedImageElement!.id,
+                                        hdrEnabled: AppSettingsController
+                                            .instance
+                                            .hdrEnabled,
                                         onStartCrop:
                                             _startCroppingSelectedImage,
                                         onFinishCrop:
@@ -6377,6 +6430,18 @@ class _BlankPageState extends State<BlankPage> {
                                         },
                                         onBorderRadiusChangeEnd: (value) {
                                           _updateSelectedImageBorderRadius(
+                                            value,
+                                            persist: true,
+                                          );
+                                        },
+                                        onHdrBrightnessChanged: (value) {
+                                          _updateSelectedImageHdrBrightness(
+                                            value,
+                                            persist: false,
+                                          );
+                                        },
+                                        onHdrBrightnessChangeEnd: (value) {
+                                          _updateSelectedImageHdrBrightness(
                                             value,
                                             persist: true,
                                           );
@@ -7763,7 +7828,9 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                         size: 24,
                       ),
                     )
-                  : (widget.element.data['isUltraHdr'] == true &&
+                  : ((widget.element.data['isUltraHdr'] == true ||
+                              _hdrBrightnessFromData(widget.element.data) >
+                                  1.0) &&
                           !widget.isCropMode &&
                           !kIsWeb &&
                           defaultTargetPlatform == TargetPlatform.android &&
@@ -7773,7 +7840,8 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                             'hdr_${src}_'
                             '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
                             '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
+                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_hdrBrightnessFromData(widget.element.data).toStringAsFixed(3)}',
                           ),
                           path: src,
                           sourceAspectRatio:
@@ -7786,6 +7854,9 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                           cropOffsetX: _cropOffsetXFromData(widget.element.data),
                           cropOffsetY: _cropOffsetYFromData(widget.element.data),
                           cropScale: _cropScaleFromData(widget.element.data),
+                          hdrBrightness: _hdrBrightnessFromData(
+                            widget.element.data,
+                          ),
                         )
                       : _CroppedImageFile(
                           path: src,
@@ -8128,7 +8199,9 @@ class _PreviewImageElementWidgetState
                         size: 24,
                       ),
                     )
-                  : (widget.element.data['isUltraHdr'] == true &&
+                  : ((widget.element.data['isUltraHdr'] == true ||
+                              _hdrBrightnessFromData(widget.element.data) >
+                                  1.0) &&
                           !widget.isCropMode &&
                           !kIsWeb &&
                           defaultTargetPlatform == TargetPlatform.android &&
@@ -8138,7 +8211,8 @@ class _PreviewImageElementWidgetState
                             'hdr_${src}_'
                             '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
                             '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
+                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_hdrBrightnessFromData(widget.element.data).toStringAsFixed(3)}',
                           ),
                           path: src,
                           sourceAspectRatio:
@@ -8151,6 +8225,9 @@ class _PreviewImageElementWidgetState
                           cropOffsetX: _cropOffsetXFromData(widget.element.data),
                           cropOffsetY: _cropOffsetYFromData(widget.element.data),
                           cropScale: _cropScaleFromData(widget.element.data),
+                          hdrBrightness: _hdrBrightnessFromData(
+                            widget.element.data,
+                          ),
                         )
                       : _CroppedImageFile(
                           path: src,
@@ -9909,7 +9986,10 @@ class _PageTabPage extends StatelessWidget {
         selectedPreset == _pageBackgroundColorPresetWhite ||
         selectedPreset == _pageBackgroundColorPresetBlack ||
         selectedPreset == _pageBackgroundColorPresetIgBlack ||
+        selectedPreset == _pageBackgroundColorPresetHdrWhite ||
         selectedPreset == _pageBackgroundColorPresetCustom;
+    final isHdrWhiteSelected =
+        selectedPreset == _pageBackgroundColorPresetHdrWhite;
     final isWhiteSelected =
         selectedPreset == _pageBackgroundColorPresetWhite ||
         (!isKnownPreset &&
@@ -9993,6 +10073,16 @@ class _PageTabPage extends StatelessWidget {
                   onTap: () => onColorSelected(
                     Colors.white,
                     _pageBackgroundColorPresetWhite,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                _PageColorCard(
+                  label: 'HDR白',
+                  color: Colors.white,
+                  selected: isHdrWhiteSelected,
+                  onTap: () => onColorSelected(
+                    Colors.white,
+                    _pageBackgroundColorPresetHdrWhite,
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -10371,6 +10461,7 @@ class _ImageSettingsTabPage extends StatelessWidget {
     required this.selectedElement,
     required this.sizeRange,
     required this.isCropping,
+    required this.hdrEnabled,
     required this.onStartCrop,
     required this.onFinishCrop,
     required this.onAspectSelected,
@@ -10378,11 +10469,14 @@ class _ImageSettingsTabPage extends StatelessWidget {
     required this.onSizeChangeEnd,
     required this.onBorderRadiusChanged,
     required this.onBorderRadiusChangeEnd,
+    required this.onHdrBrightnessChanged,
+    required this.onHdrBrightnessChangeEnd,
   });
 
   final CanvasElement selectedElement;
   final ({double value, double min, double max}) sizeRange;
   final bool isCropping;
+  final bool hdrEnabled;
   final VoidCallback onStartCrop;
   final VoidCallback onFinishCrop;
   final ValueChanged<_ImageAspectOption> onAspectSelected;
@@ -10390,6 +10484,8 @@ class _ImageSettingsTabPage extends StatelessWidget {
   final ValueChanged<double> onSizeChangeEnd;
   final ValueChanged<double> onBorderRadiusChanged;
   final ValueChanged<double> onBorderRadiusChangeEnd;
+  final ValueChanged<double> onHdrBrightnessChanged;
+  final ValueChanged<double> onHdrBrightnessChangeEnd;
 
   @override
   Widget build(BuildContext context) {
@@ -10397,6 +10493,18 @@ class _ImageSettingsTabPage extends StatelessWidget {
     final selectedKey =
         selectedElement.data['aspectPreset'] as String? ?? 'original';
     final borderRadiusRatio = (selectedElement.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
+    final isUltraHdr = selectedElement.data['isUltraHdr'] == true;
+    final brightness = _hdrBrightnessFromData(selectedElement.data);
+    final brightnessMin =
+        isUltraHdr ? _hdrBrightnessHdrMin : _hdrBrightnessSdrMin;
+    final brightnessMax =
+        isUltraHdr ? _hdrBrightnessHdrMax : _hdrBrightnessSdrMax;
+    final brightnessLabel = isUltraHdr
+        ? strings.t('hdrBrightness')
+        : strings.t('sdrToHdrBrightness');
+    final brightnessValueText = isUltraHdr
+        ? '${(brightness * 100).round()}%'
+        : '${brightness.toStringAsFixed(1)}x';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -10487,6 +10595,52 @@ class _ImageSettingsTabPage extends StatelessWidget {
             ],
           ),
         ),
+        if (hdrEnabled) ...[
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Text(
+                  brightnessLabel,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF6A6A6A),
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: SliderTheme(
+                    data: _lightControlSliderTheme(context),
+                    child: Slider(
+                      value: brightness
+                          .clamp(brightnessMin, brightnessMax)
+                          .toDouble(),
+                      min: brightnessMin,
+                      max: brightnessMax,
+                      onChanged: onHdrBrightnessChanged,
+                      onChangeEnd: onHdrBrightnessChangeEnd,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 46,
+                  child: Text(
+                    brightnessValueText,
+                    textAlign: TextAlign.end,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF6A6A6A),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ],
     );
   }

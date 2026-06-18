@@ -47,34 +47,41 @@ class CanonicalGainmapSpace private constructor(
         return (t * 255f).roundToInt().coerceIn(0, 255)
     }
 
-    /** 256-entry LUT translating one source channel's stored values into this space. */
-    fun lutFor(srcMin: Float, srcMax: Float, srcGamma: Float): IntArray {
+    /**
+     * 256-entry LUT translating one source channel's stored values into this
+     * space. [brightness] scales the gain in log space (1 = unchanged, 2 =
+     * double the stops, 0 = flattened to SDR), implementing the per-image HDR
+     * brightness control.
+     */
+    fun lutFor(srcMin: Float, srcMax: Float, srcGamma: Float, brightness: Float = 1f): IntArray {
         val srcLogMin = log2(max(srcMin, MIN_RATIO))
         val srcLogMax = log2(max(srcMax, MIN_RATIO))
         val gamma = if (srcGamma > 0f) srcGamma else 1f
         return IntArray(256) { p ->
             val t = (p / 255f).pow(gamma)
-            encodeLog2(srcLogMin + t * (srcLogMax - srcLogMin))
+            encodeLog2(brightness * (srcLogMin + t * (srcLogMax - srcLogMin)))
         }
     }
 
     /**
      * Re-encodes a source gain map bitmap into this canonical space.
      * Handles single-channel (ALPHA_8) and RGB gain maps, including sources
-     * whose channels carry different parameters.
+     * whose channels carry different parameters. [brightness] scales the gain
+     * (see [lutFor]).
      */
     fun remapContents(
         contents: Bitmap,
         ratioMin: FloatArray,
         ratioMax: FloatArray,
         gamma: FloatArray,
+        brightness: Float = 1f,
     ): Bitmap {
         val argb = ensureArgb(contents)
         val width = argb.width
         val height = argb.height
-        val lutR = lutFor(ratioMin[0], ratioMax[0], gamma[0])
-        val lutG = lutFor(ratioMin[1], ratioMax[1], gamma[1])
-        val lutB = lutFor(ratioMin[2], ratioMax[2], gamma[2])
+        val lutR = lutFor(ratioMin[0], ratioMax[0], gamma[0], brightness)
+        val lutG = lutFor(ratioMin[1], ratioMax[1], gamma[1], brightness)
+        val lutB = lutFor(ratioMin[2], ratioMax[2], gamma[2], brightness)
         val pixels = IntArray(width * height)
         argb.getPixels(pixels, 0, width, 0, 0, width, height)
         for (i in pixels.indices) {
@@ -96,9 +103,14 @@ class CanonicalGainmapSpace private constructor(
     /**
      * Synthesizes a canonical-space gain map for an SDR source via a simple
      * inverse tone mapping curve: highlights above [SYNTHESIS_LUMA_START]
-     * luminance ramp smoothly up to [SYNTHESIS_MAX_GAIN] at pure white.
+     * luminance ramp smoothly up to [maxGain] at pure white. [maxGain] is the
+     * per-image SDR→HDR brightness (defaults to [SYNTHESIS_MAX_GAIN]).
      */
-    fun synthesizeFromSdr(base: Bitmap, downscale: Int = SYNTHESIS_DOWNSCALE): Bitmap {
+    fun synthesizeFromSdr(
+        base: Bitmap,
+        downscale: Int = SYNTHESIS_DOWNSCALE,
+        maxGain: Float = SYNTHESIS_MAX_GAIN,
+    ): Bitmap {
         val width = max(1, base.width / downscale)
         val height = max(1, base.height / downscale)
         val small = Bitmap.createScaledBitmap(base, width, height, true)
@@ -107,7 +119,7 @@ class CanonicalGainmapSpace private constructor(
         if (small !== base) {
             small.recycle()
         }
-        val maxLog = log2(SYNTHESIS_MAX_GAIN)
+        val maxLog = log2(max(maxGain, 1f))
         val lumaLut = IntArray(256)
         for (v in 0..255) {
             lumaLut[v] = encodeLog2(maxLog * smoothstep(SYNTHESIS_LUMA_START, 1f, v / 255f))
@@ -186,15 +198,17 @@ class CanonicalGainmapSpace private constructor(
 
         /**
          * Derives the canonical space covering every participating source.
-         * [sourceRanges] holds (effectiveMinGain, effectiveMaxGain) per HDR source;
-         * [includeSynthesis] reserves headroom for synthesized SDR boosts.
+         * [sourceRanges] holds (effectiveMinGain, effectiveMaxGain) per HDR
+         * source (already scaled by each source's brightness); [extraMaxGain]
+         * reserves headroom for synthesized SDR boosts and HDR-white backgrounds
+         * (pass 1 when none).
          */
         fun forSources(
             sourceRanges: List<Pair<Float, Float>>,
-            includeSynthesis: Boolean,
+            extraMaxGain: Float,
         ): CanonicalGainmapSpace {
             var minGain = 1f
-            var maxGain = if (includeSynthesis) SYNTHESIS_MAX_GAIN else 1f
+            var maxGain = max(1f, extraMaxGain)
             for ((srcMin, srcMax) in sourceRanges) {
                 minGain = min(minGain, srcMin)
                 maxGain = max(maxGain, srcMax)
@@ -202,6 +216,37 @@ class CanonicalGainmapSpace private constructor(
             minGain = minGain.coerceIn(MIN_RATIO, 1f)
             maxGain = max(maxGain, 1.0001f)
             return CanonicalGainmapSpace(minGain, maxGain)
+        }
+
+        /**
+         * Returns a copy of [source] with every gain scaled by [brightness] in
+         * log space (raising ratioMin/Max to the power [brightness]), leaving the
+         * contents bitmap, gamma, epsilon and display-headroom metadata intact.
+         * Used by the live preview to apply a per-image HDR brightness without
+         * re-encoding the gain map. [brightness] 1 = unchanged, 0 = flat SDR.
+         */
+        @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+        fun scaledGainmap(source: Gainmap, brightness: Float): Gainmap {
+            val b = brightness.coerceAtLeast(0f)
+            val rMin = source.ratioMin
+            val rMax = source.ratioMax
+            val gamma = source.gamma
+            val epsSdr = source.epsilonSdr
+            val epsHdr = source.epsilonHdr
+            return Gainmap(source.gainmapContents).apply {
+                setRatioMin(rMin[0].pow(b), rMin[1].pow(b), rMin[2].pow(b))
+                setRatioMax(
+                    rMax[0].pow(b).coerceAtLeast(1.0001f),
+                    rMax[1].pow(b).coerceAtLeast(1.0001f),
+                    rMax[2].pow(b).coerceAtLeast(1.0001f),
+                )
+                setGamma(gamma[0], gamma[1], gamma[2])
+                setEpsilonSdr(epsSdr[0], epsSdr[1], epsSdr[2])
+                setEpsilonHdr(epsHdr[0], epsHdr[1], epsHdr[2])
+                displayRatioForFullHdr = source.displayRatioForFullHdr.coerceAtLeast(1f)
+                minDisplayRatioForHdrTransition =
+                    source.minDisplayRatioForHdrTransition.coerceAtLeast(1f)
+            }
         }
 
         /**

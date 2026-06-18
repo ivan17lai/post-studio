@@ -137,6 +137,47 @@ object UltraHdrSupport {
         return BitmapFactory.decodeFile(path, options)
     }
 
+    /**
+     * Applies a per-image HDR brightness to an already-decoded bitmap for the
+     * live preview, mirroring what the export renderer bakes into the output
+     * gain map:
+     *  - HDR source: scales its existing gain map ([CanonicalGainmapSpace.scaledGainmap]).
+     *  - SDR source with brightness > 1: synthesizes a gain map at that peak.
+     *  - brightness == 1 (or SDR ≤ 1): returns the bitmap untouched.
+     *
+     * Mutates and returns [bitmap]. No-op below API 34.
+     */
+    fun applyPreviewBrightness(bitmap: Bitmap, brightness: Float): Bitmap {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            return bitmap
+        }
+        val safe = brightness.coerceIn(0f, 8f)
+        if (bitmap.hasGainmap()) {
+            if (safe == 1f) {
+                return bitmap
+            }
+            val gainmap = bitmap.gainmap ?: return bitmap
+            bitmap.gainmap = CanonicalGainmapSpace.scaledGainmap(gainmap, safe)
+        } else if (safe > 1f) {
+            val space = CanonicalGainmapSpace.forSources(emptyList(), safe)
+            val contents =
+                space.synthesizeFromSdr(
+                    bitmap,
+                    downscale = CanonicalGainmapSpace.SYNTHESIS_DOWNSCALE,
+                    maxGain = safe,
+                )
+            bitmap.gainmap =
+                space.toGainmap(
+                    contents,
+                    safe,
+                    1f,
+                    CanonicalGainmapSpace.defaultEpsilon(),
+                    CanonicalGainmapSpace.defaultEpsilon(),
+                )
+        }
+        return bitmap
+    }
+
     private fun indexOfStartOfScan(buffer: ByteArray, length: Int): Int {
         var i = 2
         while (i + 3 < length) {

@@ -111,6 +111,8 @@ class AppStrings {
     'size': '大小',
     'textColor': '文字顏色',
     'imageCornerRadius': '圖片圓角',
+    'hdrBrightness': 'HDR 亮度',
+    'sdrToHdrBrightness': 'SDR→HDR',
     'edit': '編輯',
     'aiSortFailed': 'AI 排序失敗，請確認 API Key 或稍後再試',
     'aiSortSuggestion': 'AI 建議排序',
@@ -256,6 +258,8 @@ class AppStrings {
     'size': 'Size',
     'textColor': 'Text Color',
     'imageCornerRadius': 'Corner Radius',
+    'hdrBrightness': 'HDR Brightness',
+    'sdrToHdrBrightness': 'SDR→HDR',
     'edit': 'Edit',
     'aiSortFailed':
         'AI sorting failed, please check API Key or try again later',

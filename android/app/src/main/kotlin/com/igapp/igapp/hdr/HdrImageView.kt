@@ -35,6 +35,9 @@ class HdrImageView(context: Context, creationParams: Map<String, Any?>?) : Platf
         val cropScale: Float,
     )
 
+    private val hdrBrightness: Float =
+        (creationParams?.get("hdrBrightness") as? Number)?.toFloat() ?: 1f
+
     private val cropParams: CropParams? = creationParams?.let { params ->
         val srcAR = (params["sourceAspectRatio"] as? Number)?.toFloat()
         if (srcAR != null && srcAR > 0f) {
@@ -61,6 +64,7 @@ class HdrImageView(context: Context, creationParams: Map<String, Any?>?) : Platf
                 val decoded =
                     try {
                         UltraHdrSupport.decodeWithGainmap(path, maxSide = MAX_DECODE_SIDE)
+                            ?.let { UltraHdrSupport.applyPreviewBrightness(it, hdrBrightness) }
                     } catch (_: Exception) {
                         null
                     }

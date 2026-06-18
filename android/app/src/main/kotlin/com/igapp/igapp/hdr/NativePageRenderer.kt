@@ -15,6 +15,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
@@ -39,6 +40,9 @@ object NativePageRenderer {
 
     /** Line height multiplier used by the Flutter text renderer (height: 1.12). */
     private const val TEXT_LINE_HEIGHT = 1.12f
+
+    /** Fixed gain applied to an "HDR white" page background (+1 stop). */
+    private const val HDR_WHITE_BACKGROUND_GAIN = 2f
 
     fun render(payload: Map<String, Any>): ByteArray? {
         val exportWidth = (payload["exportWidth"] as? Number)?.toInt() ?: 2400
@@ -66,6 +70,10 @@ object NativePageRenderer {
             hdrMode != HDR_MODE_OFF &&
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
         val synthesizeSdr = collectHdr && hdrMode == HDR_MODE_ENHANCED
+        // Only the target page's background fills the visible frame, so its
+        // HDR-white flag is what drives the background gain fill.
+        val backgroundHdr =
+            collectHdr && (pagePayload["backgroundHdr"] as? Boolean ?: false)
         val gainmapOps = mutableListOf<GainmapOp>()
         var outputGainmapContents: Bitmap? = null
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -111,7 +119,7 @@ object NativePageRenderer {
 
             if (collectHdr) {
                 outputGainmapContents =
-                    attachGainmapIfNeeded(baseBitmap, gainmapOps, synthesizeSdr)
+                    attachGainmapIfNeeded(baseBitmap, gainmapOps, backgroundHdr)
             }
 
             val outputStream = ByteArrayOutputStream()
@@ -185,12 +193,17 @@ object NativePageRenderer {
             }
 
             if (collectHdr) {
+                // hdrBrightness: 1 = unchanged. For HDR sources it scales the
+                // existing gain; for SDR sources >1 it sets the synthesized peak.
+                val brightness =
+                    (element["hdrBrightness"] as? Number)?.toFloat()?.coerceIn(0f, 8f) ?: 1f
                 gainmapOps += createImageGainmapOp(
                     sourceBitmap = sourceBitmap,
                     srcRect = srcRect,
                     dstRect = dstRect,
                     radius = radius,
                     synthesizeSdr = synthesizeSdr,
+                    brightness = brightness,
                 )
             }
         } finally {
@@ -204,6 +217,7 @@ object NativePageRenderer {
         dstRect: Rect,
         radius: Float,
         synthesizeSdr: Boolean,
+        brightness: Float,
     ): GainmapOp {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
             sourceBitmap.hasGainmap()
@@ -236,6 +250,7 @@ object NativePageRenderer {
                     epsilonHdr = gainmap.epsilonHdr.copyOf(),
                     displayRatioForFullHdr = gainmap.displayRatioForFullHdr,
                     minDisplayRatioForHdrTransition = gainmap.minDisplayRatioForHdrTransition,
+                    brightness = brightness,
                     srcRect = gainmapSrcRect,
                     dstRect = dstRect,
                     radius = radius,
@@ -243,7 +258,11 @@ object NativePageRenderer {
             }
         }
 
-        if (synthesizeSdr) {
+        // SDR source: synthesize when the user raised this image's brightness
+        // above 1, or when the global "enhanced" mode is on. The synthesis peak
+        // is the per-image brightness, falling back to the global default.
+        val synthGain = max(brightness, if (synthesizeSdr) CanonicalGainmapSpace.SYNTHESIS_MAX_GAIN else 1f)
+        if (synthGain > 1f) {
             val downscale = CanonicalGainmapSpace.SYNTHESIS_DOWNSCALE
             val smallWidth = (sourceBitmap.width / downscale).coerceAtLeast(1)
             val smallHeight = (sourceBitmap.height / downscale).coerceAtLeast(1)
@@ -264,6 +283,7 @@ object NativePageRenderer {
                 srcRect = smallSrcRect,
                 dstRect = dstRect,
                 radius = radius,
+                maxGain = synthGain,
             )
         }
 
@@ -378,6 +398,7 @@ object NativePageRenderer {
             val epsilonHdr: FloatArray,
             val displayRatioForFullHdr: Float,
             val minDisplayRatioForHdrTransition: Float,
+            val brightness: Float,
             val srcRect: Rect,
             val dstRect: Rect,
             val radius: Float,
@@ -390,6 +411,7 @@ object NativePageRenderer {
             val srcRect: Rect,
             val dstRect: Rect,
             val radius: Float,
+            val maxGain: Float,
         ) : GainmapOp {
             override fun recycle() = smallBase.recycle()
         }
@@ -411,30 +433,56 @@ object NativePageRenderer {
     private fun attachGainmapIfNeeded(
         baseBitmap: Bitmap,
         gainmapOps: List<GainmapOp>,
-        synthesizeSdr: Boolean,
+        backgroundHdr: Boolean,
     ): Bitmap? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             return null
         }
         val hdrSources = gainmapOps.filterIsInstance<GainmapOp.DrawSource>()
-        val hasSynthesis = synthesizeSdr && gainmapOps.any { it is GainmapOp.Synthesize }
-        if (hdrSources.isEmpty() && !hasSynthesis) {
+        val synthOps = gainmapOps.filterIsInstance<GainmapOp.Synthesize>()
+        val hasSynthesis = synthOps.isNotEmpty()
+        // Nothing carries an HDR signal — keep the page a plain SDR JPEG.
+        if (hdrSources.isEmpty() && !hasSynthesis && !backgroundHdr) {
             return null
+        }
+
+        // Headroom reserved on top of the HDR sources: synthesized SDR peaks and
+        // the HDR-white background both push the canonical max up.
+        var extraMaxGain = 1f
+        for (op in synthOps) {
+            extraMaxGain = max(extraMaxGain, op.maxGain)
+        }
+        if (backgroundHdr) {
+            extraMaxGain = max(extraMaxGain, HDR_WHITE_BACKGROUND_GAIN)
         }
 
         val space = CanonicalGainmapSpace.forSources(
             sourceRanges = hdrSources.map { op ->
-                val effectiveMin = minOf(op.ratioMin[0], op.ratioMin[1], op.ratioMin[2])
-                val effectiveMax = maxOf(op.ratioMax[0], op.ratioMax[1], op.ratioMax[2])
+                // Per-image brightness scales the gain in log space, so the
+                // source's effective ratios are raised to the brightness power.
+                val effectiveMin =
+                    minOf(op.ratioMin[0], op.ratioMin[1], op.ratioMin[2]).pow(op.brightness)
+                val effectiveMax =
+                    maxOf(op.ratioMax[0], op.ratioMax[1], op.ratioMax[2]).pow(op.brightness)
                 effectiveMin to effectiveMax
             },
-            includeSynthesis = hasSynthesis,
+            extraMaxGain = extraMaxGain,
         )
 
         val gainmapBitmap =
             Bitmap.createBitmap(baseBitmap.width, baseBitmap.height, Bitmap.Config.ARGB_8888)
         val gainmapCanvas = Canvas(gainmapBitmap)
-        gainmapCanvas.drawColor(space.neutralColor)
+        // The background fill is the gain every uncovered pixel reads: HDR-white
+        // boosts it, otherwise it stays neutral (SDR) so plain backgrounds and
+        // SDR images keep their exact look.
+        val backgroundFillColor =
+            if (backgroundHdr) {
+                val v = space.encodeLog2(CanonicalGainmapSpace.log2(HDR_WHITE_BACKGROUND_GAIN))
+                Color.rgb(v, v, v)
+            } else {
+                space.neutralColor
+            }
+        gainmapCanvas.drawColor(backgroundFillColor)
         val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = space.neutralColor }
 
@@ -442,14 +490,21 @@ object NativePageRenderer {
             when (op) {
                 is GainmapOp.DrawSource -> {
                     val remapped =
-                        space.remapContents(op.contents, op.ratioMin, op.ratioMax, op.gamma)
+                        space.remapContents(
+                            op.contents,
+                            op.ratioMin,
+                            op.ratioMax,
+                            op.gamma,
+                            op.brightness,
+                        )
                     withRoundedClip(gainmapCanvas, op.dstRect, op.radius) {
                         gainmapCanvas.drawBitmap(remapped, op.srcRect, op.dstRect, bitmapPaint)
                     }
                     remapped.recycle()
                 }
                 is GainmapOp.Synthesize -> {
-                    val synthesized = space.synthesizeFromSdr(op.smallBase, downscale = 1)
+                    val synthesized =
+                        space.synthesizeFromSdr(op.smallBase, downscale = 1, maxGain = op.maxGain)
                     withRoundedClip(gainmapCanvas, op.dstRect, op.radius) {
                         gainmapCanvas.drawBitmap(synthesized, op.srcRect, op.dstRect, bitmapPaint)
                     }
@@ -491,7 +546,9 @@ object NativePageRenderer {
                     eH[c] = max(eH[c], op.epsilonHdr[c])
                 }
             }
-            capMax = cMax
+            // Keep the transition within the (possibly brightness-widened)
+            // canonical range so displayRatioForFullHdr never exceeds ratioMax.
+            capMax = cMax.coerceAtMost(space.canonMax)
             capMin = if (cMin == Float.MAX_VALUE) 1f else cMin
             epsilonSdr = eS
             epsilonHdr = eH
