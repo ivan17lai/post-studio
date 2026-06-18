@@ -14,6 +14,8 @@ CanvasElement _fullBleedImage({
   double cropOffsetY = 0,
   double borderRadiusRatio = 0,
   bool allowCrossPage = true,
+  double hdrBrightness = 1.0,
+  Map<String, dynamic>? adjustments,
 }) {
   return CanvasElement(
     id: 'e1',
@@ -33,6 +35,8 @@ CanvasElement _fullBleedImage({
       'cropOffsetX': cropOffsetX,
       'cropOffsetY': cropOffsetY,
       'borderRadiusRatio': borderRadiusRatio,
+      'hdrBrightness': hdrBrightness,
+      'adjustments': ?adjustments,
     },
   );
 }
@@ -204,6 +208,46 @@ void main() {
     ]);
     expect(
       evaluateLosslessExport(project: project, pageIndex: 1).eligible,
+      isTrue,
+    );
+  });
+
+  test('adjusted HDR brightness disqualifies', () {
+    final project = _project([
+      _page('p1', [_fullBleedImage(hdrBrightness: 1.5)]),
+    ]);
+    expect(
+      evaluateLosslessExport(project: project, pageIndex: 0).eligible,
+      isFalse,
+    );
+  });
+
+  test('non-neutral colour adjustments disqualify', () {
+    final project = _project([
+      _page('p1', [
+        _fullBleedImage(adjustments: <String, dynamic>{'saturation': 0.4}),
+      ]),
+    ]);
+    expect(
+      evaluateLosslessExport(project: project, pageIndex: 0).eligible,
+      isFalse,
+    );
+  });
+
+  test('neutral adjustments and default brightness still qualify', () {
+    final project = _project([
+      _page('p1', [
+        _fullBleedImage(
+          hdrBrightness: 1.0,
+          adjustments: <String, dynamic>{
+            'brightness': 0.0,
+            'saturation': 0.0,
+          },
+        ),
+      ]),
+    ]);
+    expect(
+      evaluateLosslessExport(project: project, pageIndex: 0).eligible,
       isTrue,
     );
   });

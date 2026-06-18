@@ -2,6 +2,8 @@ package com.igapp.igapp.hdr
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.os.Handler
 import android.os.Looper
@@ -38,6 +40,13 @@ class HdrImageView(context: Context, creationParams: Map<String, Any?>?) : Platf
     private val hdrBrightness: Float =
         (creationParams?.get("hdrBrightness") as? Number)?.toFloat() ?: 1f
 
+    private val adjustmentFilter: ColorMatrixColorFilter? = run {
+        val raw = creationParams?.get("colorMatrix") as? List<*> ?: return@run null
+        if (raw.size != 20) return@run null
+        val values = FloatArray(20) { i -> (raw[i] as? Number)?.toFloat() ?: 0f }
+        ColorMatrixColorFilter(ColorMatrix(values))
+    }
+
     private val cropParams: CropParams? = creationParams?.let { params ->
         val srcAR = (params["sourceAspectRatio"] as? Number)?.toFloat()
         if (srcAR != null && srcAR > 0f) {
@@ -57,6 +66,9 @@ class HdrImageView(context: Context, creationParams: Map<String, Any?>?) : Platf
             creationParams?.get("fit") == "contain" -> ImageView.ScaleType.FIT_CENTER
             else -> ImageView.ScaleType.FIT_XY
         }
+        // Photo "deep adjust" colour matrix (brightness/contrast/saturation/
+        // white balance). Null leaves the image untouched.
+        imageView.colorFilter = adjustmentFilter
 
         val path = creationParams?.get("path") as? String
         if (path != null) {

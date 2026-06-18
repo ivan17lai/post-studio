@@ -18,6 +18,8 @@ import 'app_strings.dart';
 import 'hdr/hdr_image_view.dart';
 import 'hdr/lossless_passthrough.dart';
 import 'hdr/ultra_hdr.dart';
+import 'photo_adjust_page.dart';
+import 'photo_adjustments.dart';
 import 'project_record.dart';
 import 'theme_constants.dart';
 
@@ -56,6 +58,24 @@ double _hdrBrightnessFromData(Map<String, dynamic> data) {
     return _hdrBrightnessDefault;
   }
   return value;
+}
+
+PhotoAdjustments _photoAdjustmentsFromData(Map<String, dynamic> data) {
+  return PhotoAdjustments.fromData(data['adjustments']);
+}
+
+/// Wraps an SDR (Flutter) image child in the element's colour adjustments.
+/// HDR elements instead pass the matrix to the native [HdrImageView], because
+/// a Flutter [ColorFiltered] does not reach platform-view pixels.
+Widget _maybeColorFiltered(Map<String, dynamic> data, Widget child) {
+  final adjustments = _photoAdjustmentsFromData(data);
+  if (adjustments.isNeutral) {
+    return child;
+  }
+  return ColorFiltered(
+    colorFilter: ColorFilter.matrix(adjustments.toColorMatrix()),
+    child: child,
+  );
 }
 
 Color _pageBackgroundColorFromExtras(Map<String, dynamic> extras) {
@@ -3772,6 +3792,47 @@ class _BlankPageState extends State<BlankPage> {
     );
   }
 
+  Future<void> _openSelectedImageAdjustments() async {
+    final selectedImage = _selectedImageElement;
+    if (selectedImage == null) {
+      return;
+    }
+    final path =
+        (selectedImage.data['originalSrc'] as String?) ??
+        (selectedImage.data['src'] as String?) ??
+        '';
+    if (path.isEmpty) {
+      return;
+    }
+    final elementId = selectedImage.id;
+    final result = await Navigator.of(context).push<PhotoAdjustments>(
+      MaterialPageRoute<PhotoAdjustments>(
+        fullscreenDialog: true,
+        builder: (_) => PhotoAdjustPage(
+          imagePath: path,
+          initial: _photoAdjustmentsFromData(selectedImage.data),
+        ),
+      ),
+    );
+    if (result == null || !mounted) {
+      return;
+    }
+    // Selection can only change behind the full-screen page in edge cases;
+    // re-resolve by id so we never write onto the wrong element.
+    final target = _selectedImageElement?.id == elementId
+        ? _selectedImageElement
+        : null;
+    if (target == null) {
+      return;
+    }
+    _storeUndoSnapshot();
+    final updatedData = <String, dynamic>{
+      ...target.data,
+      'adjustments': result.toJson(),
+    };
+    await _replaceElement(target.copyWith(data: updatedData), persist: true);
+  }
+
   void _startCroppingSelectedImage() {
     final selectedImage = _selectedImageElement;
     if (selectedImage == null) {
@@ -5037,6 +5098,10 @@ class _BlankPageState extends State<BlankPage> {
                     'cropScale': _cropScaleFromData(element.data),
                     'borderRadiusRatio': (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0,
                     'hdrBrightness': _hdrBrightnessFromData(element.data),
+                    if (!_photoAdjustmentsFromData(element.data).isNeutral)
+                      'colorMatrix': PhotoAdjustments.roundMatrix(
+                        _photoAdjustmentsFromData(element.data).toColorMatrix(),
+                      ),
                     if (element.type == 'text') ...<String, dynamic>{
                       'text': _textContentFromData(element.data),
                       'colorValue': _textColorFromData(
@@ -6446,6 +6511,8 @@ class _BlankPageState extends State<BlankPage> {
                                             persist: true,
                                           );
                                         },
+                                        onOpenAdjust:
+                                            _openSelectedImageAdjustments,
                                       ),
                                       _LayersTabPage(
                                         page: currentPage,
@@ -7841,7 +7908,8 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                             '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
                             '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
                             '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_hdrBrightnessFromData(widget.element.data).toStringAsFixed(3)}',
+                            '${_hdrBrightnessFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_photoAdjustmentsFromData(widget.element.data).toJson()}',
                           ),
                           path: src,
                           sourceAspectRatio:
@@ -7857,25 +7925,39 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                           hdrBrightness: _hdrBrightnessFromData(
                             widget.element.data,
                           ),
+                          colorMatrix: _photoAdjustmentsFromData(
+                            widget.element.data,
+                          ).isNeutral
+                              ? null
+                              : _photoAdjustmentsFromData(
+                                  widget.element.data,
+                                ).toColorMatrix(),
                         )
-                      : _CroppedImageFile(
-                          path: src,
-                          frameWidth: width,
-                          frameHeight: height,
-                          sourceAspectRatio:
-                              (widget.element.data['originalAspectRatio']
-                                      as num?)
-                                  ?.toDouble() ??
-                              (widget.element.data['aspectRatio'] as num?)
-                                  ?.toDouble() ??
-                              (width / height),
-                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                          cropScale: _cropScaleFromData(widget.element.data),
-                          cacheWidth: _previewImageCacheExtent(
-                            context,
-                            width,
-                            height,
+                      : _maybeColorFiltered(
+                          widget.element.data,
+                          _CroppedImageFile(
+                            path: src,
+                            frameWidth: width,
+                            frameHeight: height,
+                            sourceAspectRatio:
+                                (widget.element.data['originalAspectRatio']
+                                        as num?)
+                                    ?.toDouble() ??
+                                (widget.element.data['aspectRatio'] as num?)
+                                    ?.toDouble() ??
+                                (width / height),
+                            cropOffsetX: _cropOffsetXFromData(
+                              widget.element.data,
+                            ),
+                            cropOffsetY: _cropOffsetYFromData(
+                              widget.element.data,
+                            ),
+                            cropScale: _cropScaleFromData(widget.element.data),
+                            cacheWidth: _previewImageCacheExtent(
+                              context,
+                              width,
+                              height,
+                            ),
                           ),
                         ),
             ),
@@ -8212,7 +8294,8 @@ class _PreviewImageElementWidgetState
                             '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
                             '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
                             '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_hdrBrightnessFromData(widget.element.data).toStringAsFixed(3)}',
+                            '${_hdrBrightnessFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_photoAdjustmentsFromData(widget.element.data).toJson()}',
                           ),
                           path: src,
                           sourceAspectRatio:
@@ -8228,25 +8311,39 @@ class _PreviewImageElementWidgetState
                           hdrBrightness: _hdrBrightnessFromData(
                             widget.element.data,
                           ),
+                          colorMatrix: _photoAdjustmentsFromData(
+                            widget.element.data,
+                          ).isNeutral
+                              ? null
+                              : _photoAdjustmentsFromData(
+                                  widget.element.data,
+                                ).toColorMatrix(),
                         )
-                      : _CroppedImageFile(
-                          path: src,
-                          frameWidth: width,
-                          frameHeight: height,
-                          sourceAspectRatio:
-                              (widget.element.data['originalAspectRatio']
-                                      as num?)
-                                  ?.toDouble() ??
-                              (widget.element.data['aspectRatio'] as num?)
-                                  ?.toDouble() ??
-                              (width / height),
-                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                          cropScale: _cropScaleFromData(widget.element.data),
-                          cacheWidth: _previewImageCacheExtent(
-                            context,
-                            width,
-                            height,
+                      : _maybeColorFiltered(
+                          widget.element.data,
+                          _CroppedImageFile(
+                            path: src,
+                            frameWidth: width,
+                            frameHeight: height,
+                            sourceAspectRatio:
+                                (widget.element.data['originalAspectRatio']
+                                        as num?)
+                                    ?.toDouble() ??
+                                (widget.element.data['aspectRatio'] as num?)
+                                    ?.toDouble() ??
+                                (width / height),
+                            cropOffsetX: _cropOffsetXFromData(
+                              widget.element.data,
+                            ),
+                            cropOffsetY: _cropOffsetYFromData(
+                              widget.element.data,
+                            ),
+                            cropScale: _cropScaleFromData(widget.element.data),
+                            cacheWidth: _previewImageCacheExtent(
+                              context,
+                              width,
+                              height,
+                            ),
                           ),
                         ),
             ),
@@ -10471,6 +10568,7 @@ class _ImageSettingsTabPage extends StatelessWidget {
     required this.onBorderRadiusChangeEnd,
     required this.onHdrBrightnessChanged,
     required this.onHdrBrightnessChangeEnd,
+    required this.onOpenAdjust,
   });
 
   final CanvasElement selectedElement;
@@ -10486,6 +10584,7 @@ class _ImageSettingsTabPage extends StatelessWidget {
   final ValueChanged<double> onBorderRadiusChangeEnd;
   final ValueChanged<double> onHdrBrightnessChanged;
   final ValueChanged<double> onHdrBrightnessChangeEnd;
+  final VoidCallback onOpenAdjust;
 
   @override
   Widget build(BuildContext context) {
@@ -10520,6 +10619,16 @@ class _ImageSettingsTabPage extends StatelessWidget {
                 icon: isCropping ? Icons.check_rounded : Icons.crop_rounded,
                 selected: isCropping,
                 onTap: isCropping ? onFinishCrop : onStartCrop,
+              ),
+              const SizedBox(width: 12),
+              _CropActionCard(
+                label: strings.t('deepAdjust'),
+                icon: Icons.tune_rounded,
+                selected:
+                    !PhotoAdjustments.fromData(
+                      selectedElement.data['adjustments'],
+                    ).isNeutral,
+                onTap: onOpenAdjust,
               ),
               const SizedBox(width: 12),
               Container(width: 1, height: 75, color: const Color(0xFFD6D6D6)),

@@ -3,6 +3,8 @@ package com.igapp.igapp.hdr
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
@@ -188,9 +190,13 @@ object NativePageRenderer {
                     0f
                 }
 
+            // Photo "deep adjust" colour matrix applies to the SDR base only; the
+            // gain map is rebuilt separately so HDR headroom is unaffected.
+            paint.colorFilter = colorMatrixFilter(element["colorMatrix"])
             withRoundedClip(baseCanvas, dstRect, radius) {
                 baseCanvas.drawBitmap(sourceBitmap, srcRect, dstRect, paint)
             }
+            paint.colorFilter = null
 
             if (collectHdr) {
                 // hdrBrightness: 1 = unchanged. For HDR sources it scales the
@@ -650,6 +656,16 @@ object NativePageRenderer {
             return 0.0
         }
         return value.coerceIn(min, max)
+    }
+
+    /** Builds a [ColorMatrixColorFilter] from a 20-float payload, or null. */
+    private fun colorMatrixFilter(raw: Any?): ColorMatrixColorFilter? {
+        val list = raw as? List<*> ?: return null
+        if (list.size != 20) {
+            return null
+        }
+        val values = FloatArray(20) { i -> (list[i] as? Number)?.toFloat() ?: 0f }
+        return ColorMatrixColorFilter(ColorMatrix(values))
     }
 
     // endregion

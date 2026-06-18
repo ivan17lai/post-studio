@@ -35,6 +35,7 @@ class HdrImageView extends StatelessWidget {
     this.cropOffsetY = 0.0,
     this.cropScale = 1.0,
     this.hdrBrightness = 1.0,
+    this.colorMatrix,
     super.key,
   });
 
@@ -51,6 +52,10 @@ class HdrImageView extends StatelessWidget {
   /// Per-image HDR brightness. For HDR sources it scales the existing gain
   /// (1 = original, 0 = flat SDR); for SDR sources > 1 synthesizes HDR.
   final double hdrBrightness;
+
+  /// Optional 4x5 colour matrix (length 20) from the photo adjustments, applied
+  /// natively via a ColorMatrixColorFilter. Null when adjustments are neutral.
+  final List<double>? colorMatrix;
 
   static const String _viewType = 'igapp/hdr_image_view';
 
@@ -69,6 +74,8 @@ class HdrImageView extends StatelessWidget {
       'path': path,
       'fit': fit == BoxFit.contain ? 'contain' : 'fill',
       'hdrBrightness': hdrBrightness,
+      if (colorMatrix != null && colorMatrix!.length == 20)
+        'colorMatrix': colorMatrix,
       if (hasCrop) 'sourceAspectRatio': sourceAspectRatio,
       if (hasCrop) 'cropOffsetX': cropOffsetX,
       if (hasCrop) 'cropOffsetY': cropOffsetY,
