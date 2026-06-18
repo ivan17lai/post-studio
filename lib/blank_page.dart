@@ -52,7 +52,8 @@ const double _hdrBrightnessSdrMax = 4.0;
 const double _hdrBrightnessDefault = 1.0;
 
 double _hdrBrightnessFromData(Map<String, dynamic> data) {
-  final value = (data['hdrBrightness'] as num?)?.toDouble() ?? _hdrBrightnessDefault;
+  final value =
+      (data['hdrBrightness'] as num?)?.toDouble() ?? _hdrBrightnessDefault;
   if (value.isNaN || value < 0) {
     return _hdrBrightnessDefault;
   }
@@ -281,7 +282,8 @@ Uint8List _renderPageJpgBytes(Map<String, dynamic> payload) {
       cropOffsetX: (element['cropOffsetX'] as num?)?.toDouble() ?? 0,
       cropOffsetY: (element['cropOffsetY'] as num?)?.toDouble() ?? 0,
       cropScale: (element['cropScale'] as num?)?.toDouble() ?? 1,
-      borderRadiusRatio: (element['borderRadiusRatio'] as num?)?.toDouble() ?? 0,
+      borderRadiusRatio:
+          (element['borderRadiusRatio'] as num?)?.toDouble() ?? 0,
     );
   }
 
@@ -450,7 +452,9 @@ void _compositeClippedImage({
   );
 
   if (borderRadiusRatio > 0) {
-    final radius = borderRadiusRatio * (targetWidth < targetHeight ? targetWidth : targetHeight);
+    final radius =
+        borderRadiusRatio *
+        (targetWidth < targetHeight ? targetWidth : targetHeight);
     _applyRoundCorners(resizedImage, radius);
   }
 
@@ -570,7 +574,8 @@ Uint8List _renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
         cropOffsetX: (element['cropOffsetX'] as num?)?.toDouble() ?? 0,
         cropOffsetY: (element['cropOffsetY'] as num?)?.toDouble() ?? 0,
         cropScale: (element['cropScale'] as num?)?.toDouble() ?? 1,
-        borderRadiusRatio: (element['borderRadiusRatio'] as num?)?.toDouble() ?? 0,
+        borderRadiusRatio:
+            (element['borderRadiusRatio'] as num?)?.toDouble() ?? 0,
       );
     }
   }
@@ -722,6 +727,8 @@ class _BlankPageState extends State<BlankPage> {
   static const String _tabTemplate = 'template';
   static const String _tabElements = 'elements';
   static const String _tabImageSource = 'image_source';
+  static const String _tabImage = 'image';
+  // Sub-tab ids inside the consolidated 圖片 tab (second row).
   static const String _tabImagePosition = 'image_position';
   static const String _tabImageSettings = 'image_settings';
   static const String _tabImageAdjust = 'image_adjust';
@@ -734,14 +741,17 @@ class _BlankPageState extends State<BlankPage> {
   late ProjectRecord _project;
   bool _showPageBorder = false;
   bool _showPageSorter = false;
-  // Live "HDR/SDR view" preview toggle (req: top-left canvas icon). View-only;
-  // does not change the saved photo or the export.
-  bool _hdrViewEnabled = true;
+  // HDR/SDR preview switch. The on-canvas toggle UI was removed but the data
+  // path (passed to HdrImageView.hdrView and the native channel) is kept as an
+  // interface; flip to a mutable field + control to re-enable the switch.
+  final bool _hdrViewEnabled = true;
   bool _isExporting = false;
   bool _isPreparingImage = false;
   int _savingRequestCount = 0;
   PageDisplayMode _displayMode = PageDisplayMode.single;
   String _selectedBottomTab = _tabTemplate;
+  // Active sub-tab within the 圖片 tab (位置 / 設定 / 色彩).
+  String _imageSubTab = _tabImageSettings;
   String? _selectedElementId;
   String? _croppingElementId;
   String? _deleteArmedElementId;
@@ -826,8 +836,7 @@ class _BlankPageState extends State<BlankPage> {
     final updatedPages = _project.pages.map((page) {
       var pageChanged = false;
       final updatedElements = page.elements.map((element) {
-        if (element.type != 'image' ||
-            element.data.containsKey('isUltraHdr')) {
+        if (element.type != 'image' || element.data.containsKey('isUltraHdr')) {
           return element;
         }
         final verdict = verdicts[elementSource(element)];
@@ -862,10 +871,7 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   bool _hasTwoOptionRows(String tab) =>
-      tab == _tabPage ||
-      tab == _tabImagePosition ||
-      tab == _tabImageSettings ||
-      tab == _tabTextSettings;
+      tab == _tabPage || tab == _tabImage || tab == _tabTextSettings;
 
   double _bottomPanelHeightForTab(String tab) {
     if (tab == _tabPage) {
@@ -887,10 +893,7 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   bool _isImageTab(String tab) =>
-      tab == _tabElements ||
-      tab == _tabLayers ||
-      tab == _tabImagePosition ||
-      tab == _tabImageSettings;
+      tab == _tabElements || tab == _tabLayers || tab == _tabImage;
 
   bool _isTextTab(String tab) =>
       tab == _tabElements ||
@@ -980,7 +983,8 @@ class _BlankPageState extends State<BlankPage> {
       _tabImageSource => strings.t('imageSource'),
       _tabImagePosition => strings.t('imagePosition'),
       _tabImageSettings => strings.t('imageSettings'),
-      _tabImageAdjust => strings.t('deepAdjust'),
+      _tabImageAdjust => strings.t('color'),
+      _tabImage => strings.t('image'),
       _tabTextPosition => strings.t('textPosition'),
       _tabTextSettings => strings.t('text'),
       _tabLayers => strings.t('layers'),
@@ -1302,9 +1306,7 @@ class _BlankPageState extends State<BlankPage> {
         _tabPage,
         _tabTemplate,
         _tabElements,
-        _tabImagePosition,
-        _tabImageSettings,
-        _tabImageAdjust,
+        _tabImage,
         _tabLayers,
       ];
     }
@@ -1345,20 +1347,6 @@ class _BlankPageState extends State<BlankPage> {
   CanvasElement? get _selectedTextElement {
     final element = _selectedElement;
     return element?.type == 'text' ? element : null;
-  }
-
-  /// Whether a page carries HDR-renderable content, gating the HDR view toggle.
-  bool _pageHasHdrContent(ProjectPage page) {
-    for (final element in page.elements) {
-      if (element.type != 'image') {
-        continue;
-      }
-      if (element.data['isUltraHdr'] == true ||
-          _hdrBrightnessFromData(element.data) > 1.0) {
-        return true;
-      }
-    }
-    return false;
   }
 
   void _syncBottomTab() {
@@ -1436,8 +1424,7 @@ class _BlankPageState extends State<BlankPage> {
 
   void _clearSelectedElement() {
     final shouldFallbackToElements =
-        _selectedBottomTab == _tabImagePosition ||
-        _selectedBottomTab == _tabImageSettings ||
+        _selectedBottomTab == _tabImage ||
         _selectedBottomTab == _tabTextPosition ||
         _selectedBottomTab == _tabTextSettings;
     setState(() {
@@ -1750,7 +1737,7 @@ class _BlankPageState extends State<BlankPage> {
 
     final updatedElements = List<CanvasElement>.from(currentPage.elements);
     final movedElement = updatedElements.removeAt(oldIndex);
-    
+
     // Adjust target index after removal (since list visual order is reversed and newIndex represents the slot)
     final targetIndex = oldIndex < newIndex ? newIndex - 1 : newIndex;
     updatedElements.insert(targetIndex, movedElement);
@@ -3227,12 +3214,14 @@ class _BlankPageState extends State<BlankPage> {
           snappedX = x + (target.value - candidate);
           xGuides
             ..clear()
-            ..add(_SnapGuide(
-              axis: target.axis,
-              value: target.guideValue,
-              start: target.guideStart,
-              end: target.guideEnd,
-            ));
+            ..add(
+              _SnapGuide(
+                axis: target.axis,
+                value: target.guideValue,
+                start: target.guideStart,
+                end: target.guideEnd,
+              ),
+            );
         }
       }
     }
@@ -3243,16 +3232,16 @@ class _BlankPageState extends State<BlankPage> {
         snappedX = target.value;
         xGuides
           ..clear()
-          ..add(_SnapGuide(
-            axis: target.axis,
-            value: target.guideValue,
-            start: target.guideStart,
-            end: target.guideEnd,
-          ));
+          ..add(
+            _SnapGuide(
+              axis: target.axis,
+              value: target.guideValue,
+              start: target.guideStart,
+              end: target.guideEnd,
+            ),
+          );
       }
     }
-
-
 
     final yGuides = <_SnapGuide>[];
     var snappedY = y;
@@ -3266,12 +3255,14 @@ class _BlankPageState extends State<BlankPage> {
           snappedY = y + (target.value - candidate);
           yGuides
             ..clear()
-            ..add(_SnapGuide(
-              axis: target.axis,
-              value: target.guideValue,
-              start: target.guideStart,
-              end: target.guideEnd,
-            ));
+            ..add(
+              _SnapGuide(
+                axis: target.axis,
+                value: target.guideValue,
+                start: target.guideStart,
+                end: target.guideEnd,
+              ),
+            );
         }
       }
     }
@@ -3282,26 +3273,23 @@ class _BlankPageState extends State<BlankPage> {
         snappedY = target.value;
         yGuides
           ..clear()
-          ..add(_SnapGuide(
-            axis: target.axis,
-            value: target.guideValue,
-            start: target.guideStart,
-            end: target.guideEnd,
-          ));
+          ..add(
+            _SnapGuide(
+              axis: target.axis,
+              value: target.guideValue,
+              start: target.guideStart,
+              end: target.guideEnd,
+            ),
+          );
       }
     }
-
-
 
     return _SnapResult(
       x: _displayMode == PageDisplayMode.single
           ? snappedX.clamp(0.0, maxX)
           : snappedX.clamp(-0.95, 1.95),
       y: snappedY.clamp(0.0, maxY),
-      guides: <_SnapGuide>[
-        ...xGuides,
-        ...yGuides,
-      ],
+      guides: <_SnapGuide>[...xGuides, ...yGuides],
     );
   }
 
@@ -3774,12 +3762,7 @@ class _BlankPageState extends State<BlankPage> {
       'borderRadiusRatio': ratio.clamp(0.0, 0.5).toDouble(),
     };
     final updatedElement = selectedImage.copyWith(data: updatedData);
-    unawaited(
-      _replaceElement(
-        updatedElement,
-        persist: persist,
-      ),
-    );
+    unawaited(_replaceElement(updatedElement, persist: persist));
   }
 
   void _updateSelectedImageHdrBrightness(
@@ -3803,12 +3786,7 @@ class _BlankPageState extends State<BlankPage> {
       'hdrBrightness': value.clamp(min, max).toDouble(),
     };
     final updatedElement = selectedImage.copyWith(data: updatedData);
-    unawaited(
-      _replaceElement(
-        updatedElement,
-        persist: persist,
-      ),
-    );
+    unawaited(_replaceElement(updatedElement, persist: persist));
   }
 
   void _updateSelectedImageAdjustment(
@@ -3842,7 +3820,10 @@ class _BlankPageState extends State<BlankPage> {
       'adjustments': updated.toJson(),
     };
     unawaited(
-      _replaceElement(selectedImage.copyWith(data: updatedData), persist: persist),
+      _replaceElement(
+        selectedImage.copyWith(data: updatedData),
+        persist: persist,
+      ),
     );
   }
 
@@ -3855,12 +3836,11 @@ class _BlankPageState extends State<BlankPage> {
     setState(() {
       _croppingElementId = selectedImage.id;
       _deleteArmedElementId = null;
-      _selectedBottomTab = _tabImageSettings;
+      _selectedBottomTab = _tabImage;
+      _imageSubTab = _tabImageSettings;
     });
     if (_bottomTabPageController.hasClients) {
-      _bottomTabPageController.jumpToPage(
-        _bottomTabs.indexOf(_tabImageSettings),
-      );
+      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabImage));
     }
   }
 
@@ -4815,7 +4795,9 @@ class _BlankPageState extends State<BlankPage> {
               'cropOffsetX': _cropOffsetXFromData(element.data),
               'cropOffsetY': _cropOffsetYFromData(element.data),
               'cropScale': _cropScaleFromData(element.data),
-              'borderRadiusRatio': (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0,
+              'borderRadiusRatio':
+                  (element.data['borderRadiusRatio'] as num?)?.toDouble() ??
+                  0.0,
             },
           )
           .toList(),
@@ -4934,7 +4916,8 @@ class _BlankPageState extends State<BlankPage> {
             );
             final borderRadiusRatio =
                 (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
-            final double radius = borderRadiusRatio *
+            final double radius =
+                borderRadiusRatio *
                 (targetWidth < targetHeight ? targetWidth : targetHeight);
             if (radius > 0) {
               canvas.save();
@@ -5088,7 +5071,9 @@ class _BlankPageState extends State<BlankPage> {
                     ?.toInt() ??
                 Colors.white.value,
             'backgroundHdr':
-                _project.pages[pageIndex].extras[_pageBackgroundColorPresetKey] ==
+                _project
+                    .pages[pageIndex]
+                    .extras[_pageBackgroundColorPresetKey] ==
                 _pageBackgroundColorPresetHdrWhite,
             'originalIndex': pageIndex,
             'elements': _project.pages[pageIndex].elements
@@ -5109,23 +5094,28 @@ class _BlankPageState extends State<BlankPage> {
                     'cropOffsetX': _cropOffsetXFromData(element.data),
                     'cropOffsetY': _cropOffsetYFromData(element.data),
                     'cropScale': _cropScaleFromData(element.data),
-                    'borderRadiusRatio': (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0,
+                    'borderRadiusRatio':
+                        (element.data['borderRadiusRatio'] as num?)
+                            ?.toDouble() ??
+                        0.0,
                     'hdrBrightness': _hdrBrightnessFromData(element.data),
                     if (_photoAdjustmentsFromData(element.data).hasMatrix)
                       'colorMatrix': PhotoAdjustments.roundMatrix(
                         _photoAdjustmentsFromData(element.data).toColorMatrix(),
                       ),
-                    if (_photoAdjustmentsFromData(element.data).hasToneCurve) ...<String, dynamic>{
-                      'highlights':
-                          _photoAdjustmentsFromData(element.data).highlights,
-                      'shadows':
-                          _photoAdjustmentsFromData(element.data).shadows,
+                    if (_photoAdjustmentsFromData(
+                      element.data,
+                    ).hasToneCurve) ...<String, dynamic>{
+                      'highlights': _photoAdjustmentsFromData(
+                        element.data,
+                      ).highlights,
+                      'shadows': _photoAdjustmentsFromData(
+                        element.data,
+                      ).shadows,
                     },
                     if (element.type == 'text') ...<String, dynamic>{
                       'text': _textContentFromData(element.data),
-                      'colorValue': _textColorFromData(
-                        element.data,
-                      ).toARGB32(),
+                      'colorValue': _textColorFromData(element.data).toARGB32(),
                       'fontSizeRatio': _textFontSizeRatioFromData(element.data),
                       'maxLines': _textLineCount(
                         _textContentFromData(element.data),
@@ -5208,7 +5198,8 @@ class _BlankPageState extends State<BlankPage> {
         ExportQualityMode.igStandard1080 => 1080,
         // Pages that miss the passthrough conditions fall back to the highest
         // re-render quality.
-        ExportQualityMode.high2400 || ExportQualityMode.originalLossless => 2400,
+        ExportQualityMode.high2400 ||
+        ExportQualityMode.originalLossless => 2400,
       };
       final pageIndexes = reverseOrder
           ? selectedIndexes.reversed.toList()
@@ -5930,7 +5921,9 @@ class _BlankPageState extends State<BlankPage> {
                           _ToolbarIconButton(
                             icon: Icons.add,
                             onPressed: _addPage,
-                            backgroundColor: _showPageSorter ? null : kPrimaryAccentColor,
+                            backgroundColor: _showPageSorter
+                                ? null
+                                : kPrimaryAccentColor,
                             iconColor: _showPageSorter ? null : Colors.white,
                           ),
                         ],
@@ -6081,23 +6074,6 @@ class _BlankPageState extends State<BlankPage> {
                                                       _showSinglePageDivider,
                                                   hdrViewEnabled:
                                                       _hdrViewEnabled,
-                                                  showHdrViewToggle:
-                                                      index ==
-                                                          _currentPageIndex &&
-                                                      !kIsWeb &&
-                                                      defaultTargetPlatform ==
-                                                          TargetPlatform
-                                                              .android &&
-                                                      AppSettingsController
-                                                          .instance
-                                                          .hdrEnabled &&
-                                                      _pageHasHdrContent(page),
-                                                  onToggleHdrView: () {
-                                                    setState(() {
-                                                      _hdrViewEnabled =
-                                                          !_hdrViewEnabled;
-                                                    });
-                                                  },
                                                   selectedElementId:
                                                       _selectedElementId,
                                                   croppingElementId:
@@ -6433,140 +6409,208 @@ class _BlankPageState extends State<BlankPage> {
                                         onLongPressImportedImage:
                                             _showImportedImagePreview,
                                       ),
-                                      _ElementPositionTabPage(
-                                        range: _elementPositionSliderRange(
-                                          _selectedImageElement!,
-                                          pagePixelSize:
-                                              _elementPositionPagePixelSize(
-                                                _selectedImageElement!,
-                                                singleCanvasWidth:
-                                                    singleCanvasWidth,
-                                                previewCanvasWidth:
-                                                    previewCanvasWidth,
-                                              ),
-                                        ),
-                                        onNudge: _nudgeSelectedImage,
-                                        onPositionChanged: (x, y) {
-                                          _updateSelectedImagePositionFromSlider(
-                                            x: x,
-                                            y: y,
-                                            persist: false,
-                                          );
-                                        },
-                                        onPositionChangeEnd: (x, y) {
-                                          _updateSelectedImagePositionFromSlider(
-                                            x: x,
-                                            y: y,
-                                            persist: true,
-                                          );
-                                        },
-                                      ),
-                                      _ImageSettingsTabPage(
-                                        selectedElement: _selectedImageElement!,
-                                        sizeRange:
-                                            _croppingElementId ==
-                                                _selectedImageElement!.id
-                                            ? (
-                                                value: _cropScaleToSliderValue(
-                                                  _cropScaleFromData(
-                                                    _selectedImageElement!.data,
-                                                  ),
+                                      Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 16,
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                _BottomTab(
+                                                  label: AppStrings.of(
+                                                    context,
+                                                  ).t('tabPosition'),
+                                                  selected:
+                                                      _imageSubTab ==
+                                                      _tabImagePosition,
+                                                  onTap: () => setState(() {
+                                                    _imageSubTab =
+                                                        _tabImagePosition;
+                                                  }),
                                                 ),
-                                                min: 0.0,
-                                                max: 1.0,
-                                              )
-                                            : _imageSizeSliderRange(
-                                                _selectedImageElement!,
+                                                const SizedBox(width: 18),
+                                                _BottomTab(
+                                                  label: AppStrings.of(
+                                                    context,
+                                                  ).t('tabSettings'),
+                                                  selected:
+                                                      _imageSubTab ==
+                                                      _tabImageSettings,
+                                                  onTap: () => setState(() {
+                                                    _imageSubTab =
+                                                        _tabImageSettings;
+                                                  }),
+                                                ),
+                                                const SizedBox(width: 18),
+                                                _BottomTab(
+                                                  label: AppStrings.of(
+                                                    context,
+                                                  ).t('tabColor'),
+                                                  selected:
+                                                      _imageSubTab ==
+                                                      _tabImageAdjust,
+                                                  onTap: () => setState(() {
+                                                    _imageSubTab =
+                                                        _tabImageAdjust;
+                                                  }),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          const SizedBox(
+                                            height: bottomTabPanelGap,
+                                          ),
+                                          switch (_imageSubTab) {
+                                            _tabImagePosition =>
+                                              _ElementPositionTabPage(
+                                                range: _elementPositionSliderRange(
+                                                  _selectedImageElement!,
+                                                  pagePixelSize:
+                                                      _elementPositionPagePixelSize(
+                                                        _selectedImageElement!,
+                                                        singleCanvasWidth:
+                                                            singleCanvasWidth,
+                                                        previewCanvasWidth:
+                                                            previewCanvasWidth,
+                                                      ),
+                                                ),
+                                                onNudge: _nudgeSelectedImage,
+                                                onPositionChanged: (x, y) {
+                                                  _updateSelectedImagePositionFromSlider(
+                                                    x: x,
+                                                    y: y,
+                                                    persist: false,
+                                                  );
+                                                },
+                                                onPositionChangeEnd: (x, y) {
+                                                  _updateSelectedImagePositionFromSlider(
+                                                    x: x,
+                                                    y: y,
+                                                    persist: true,
+                                                  );
+                                                },
                                               ),
-                                        isCropping:
-                                            _croppingElementId ==
-                                            _selectedImageElement!.id,
-                                        onStartCrop:
-                                            _startCroppingSelectedImage,
-                                        onFinishCrop:
-                                            _finishCroppingSelectedImage,
-                                        onAspectSelected:
-                                            _updateSelectedImageAspect,
-                                        onSizeChanged: (value) {
-                                          if (_croppingElementId ==
-                                              _selectedImageElement!.id) {
-                                            _updateImageCropScale(
-                                              elementId:
+                                            _tabImageSettings => _ImageSettingsTabPage(
+                                              selectedElement:
+                                                  _selectedImageElement!,
+                                              sizeRange:
+                                                  _croppingElementId ==
+                                                      _selectedImageElement!.id
+                                                  ? (
+                                                      value: _cropScaleToSliderValue(
+                                                        _cropScaleFromData(
+                                                          _selectedImageElement!
+                                                              .data,
+                                                        ),
+                                                      ),
+                                                      min: 0.0,
+                                                      max: 1.0,
+                                                    )
+                                                  : _imageSizeSliderRange(
+                                                      _selectedImageElement!,
+                                                    ),
+                                              isCropping:
+                                                  _croppingElementId ==
                                                   _selectedImageElement!.id,
-                                              scale: _cropScaleFromSliderValue(
-                                                value,
-                                              ),
-                                              persist: false,
-                                            );
-                                          } else {
-                                            _updateSelectedImageSizeFromSlider(
-                                              value,
-                                              persist: false,
-                                            );
-                                          }
-                                        },
-                                        onSizeChangeEnd: (value) {
-                                          if (_croppingElementId ==
-                                              _selectedImageElement!.id) {
-                                            _updateImageCropScale(
-                                              elementId:
-                                                  _selectedImageElement!.id,
-                                              scale: _cropScaleFromSliderValue(
-                                                value,
-                                              ),
-                                              persist: true,
-                                            );
-                                          } else {
-                                            _updateSelectedImageSizeFromSlider(
-                                              value,
-                                              persist: true,
-                                            );
-                                          }
-                                        },
-                                        onBorderRadiusChanged: (value) {
-                                          _updateSelectedImageBorderRadius(
-                                            value,
-                                            persist: false,
-                                          );
-                                        },
-                                        onBorderRadiusChangeEnd: (value) {
-                                          _updateSelectedImageBorderRadius(
-                                            value,
-                                            persist: true,
-                                          );
-                                        },
-                                      ),
-                                      _AdjustTabPage(
-                                        selectedElement: _selectedImageElement!,
-                                        hdrEnabled: AppSettingsController
-                                            .instance
-                                            .hdrEnabled,
-                                        onHdrBrightnessChanged: (value) {
-                                          _updateSelectedImageHdrBrightness(
-                                            value,
-                                            persist: false,
-                                          );
-                                        },
-                                        onHdrBrightnessChangeEnd: (value) {
-                                          _updateSelectedImageHdrBrightness(
-                                            value,
-                                            persist: true,
-                                          );
-                                        },
-                                        onAdjustmentChanged: (field, value) {
-                                          _updateSelectedImageAdjustment(
-                                            field,
-                                            value,
-                                            persist: false,
-                                          );
-                                        },
-                                        onAdjustmentChangeEnd: (field, value) {
-                                          _updateSelectedImageAdjustment(
-                                            field,
-                                            value,
-                                            persist: true,
-                                          );
-                                        },
+                                              onStartCrop:
+                                                  _startCroppingSelectedImage,
+                                              onFinishCrop:
+                                                  _finishCroppingSelectedImage,
+                                              onAspectSelected:
+                                                  _updateSelectedImageAspect,
+                                              onSizeChanged: (value) {
+                                                if (_croppingElementId ==
+                                                    _selectedImageElement!.id) {
+                                                  _updateImageCropScale(
+                                                    elementId:
+                                                        _selectedImageElement!
+                                                            .id,
+                                                    scale:
+                                                        _cropScaleFromSliderValue(
+                                                          value,
+                                                        ),
+                                                    persist: false,
+                                                  );
+                                                } else {
+                                                  _updateSelectedImageSizeFromSlider(
+                                                    value,
+                                                    persist: false,
+                                                  );
+                                                }
+                                              },
+                                              onSizeChangeEnd: (value) {
+                                                if (_croppingElementId ==
+                                                    _selectedImageElement!.id) {
+                                                  _updateImageCropScale(
+                                                    elementId:
+                                                        _selectedImageElement!
+                                                            .id,
+                                                    scale:
+                                                        _cropScaleFromSliderValue(
+                                                          value,
+                                                        ),
+                                                    persist: true,
+                                                  );
+                                                } else {
+                                                  _updateSelectedImageSizeFromSlider(
+                                                    value,
+                                                    persist: true,
+                                                  );
+                                                }
+                                              },
+                                              onBorderRadiusChanged: (value) {
+                                                _updateSelectedImageBorderRadius(
+                                                  value,
+                                                  persist: false,
+                                                );
+                                              },
+                                              onBorderRadiusChangeEnd: (value) {
+                                                _updateSelectedImageBorderRadius(
+                                                  value,
+                                                  persist: true,
+                                                );
+                                              },
+                                            ),
+                                            _tabImageAdjust => _AdjustTabPage(
+                                              selectedElement:
+                                                  _selectedImageElement!,
+                                              hdrEnabled: AppSettingsController
+                                                  .instance
+                                                  .hdrEnabled,
+                                              onHdrBrightnessChanged: (value) {
+                                                _updateSelectedImageHdrBrightness(
+                                                  value,
+                                                  persist: false,
+                                                );
+                                              },
+                                              onHdrBrightnessChangeEnd: (value) {
+                                                _updateSelectedImageHdrBrightness(
+                                                  value,
+                                                  persist: true,
+                                                );
+                                              },
+                                              onAdjustmentChanged: (field, value) {
+                                                _updateSelectedImageAdjustment(
+                                                  field,
+                                                  value,
+                                                  persist: false,
+                                                );
+                                              },
+                                              onAdjustmentChangeEnd:
+                                                  (field, value) {
+                                                    _updateSelectedImageAdjustment(
+                                                      field,
+                                                      value,
+                                                      persist: true,
+                                                    );
+                                                  },
+                                            ),
+                                            _ => const SizedBox.shrink(),
+                                          },
+                                        ],
                                       ),
                                       _LayersTabPage(
                                         page: currentPage,
@@ -6797,8 +6841,6 @@ class _CanvasViewport extends StatelessWidget {
     required this.showBorder,
     required this.showPageDivider,
     required this.hdrViewEnabled,
-    required this.showHdrViewToggle,
-    required this.onToggleHdrView,
     required this.selectedElementId,
     required this.croppingElementId,
     required this.deleteArmedElementId,
@@ -6824,9 +6866,9 @@ class _CanvasViewport extends StatelessWidget {
   final GlobalKey? repaintKey;
   final bool showBorder;
   final bool showPageDivider;
+  // Kept as an interface for re-enabling the HDR/SDR preview switch later; the
+  // on-canvas toggle UI was removed but the data path stays wired.
   final bool hdrViewEnabled;
-  final bool showHdrViewToggle;
-  final VoidCallback onToggleHdrView;
   final String? selectedElementId;
   final String? croppingElementId;
   final String? deleteArmedElementId;
@@ -7024,15 +7066,6 @@ class _CanvasViewport extends StatelessWidget {
                 ),
               ),
             ),
-            if (showHdrViewToggle)
-              Positioned(
-                left: (viewportWidth - pageWidth) / 2 + 8,
-                top: canvasTop + 8,
-                child: _HdrViewToggleButton(
-                  enabled: hdrViewEnabled,
-                  onTap: onToggleHdrView,
-                ),
-              ),
             if (page.extras['aiCaption'] != null &&
                 (page.extras['aiCaption'] as String).isNotEmpty)
               Positioned(
@@ -7959,8 +7992,10 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                     ? const Color(0xFFF6F6F6)
                     : Colors.transparent,
                 borderRadius: BorderRadius.circular(
-                  ((widget.element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0) *
-                  (width < height ? width : height)
+                  ((widget.element.data['borderRadiusRatio'] as num?)
+                              ?.toDouble() ??
+                          0.0) *
+                      (width < height ? width : height),
                 ),
               ),
               clipBehavior: Clip.antiAlias,
@@ -7973,78 +8008,73 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                       ),
                     )
                   : ((widget.element.data['isUltraHdr'] == true ||
-                              _hdrBrightnessFromData(widget.element.data) >
-                                  1.0) &&
-                          !widget.isCropMode &&
-                          !kIsWeb &&
-                          defaultTargetPlatform == TargetPlatform.android &&
-                          AppSettingsController.instance.hdrEnabled)
-                      ? HdrImageView(
-                          // Key by path + crop only: adjust/brightness/view
-                          // changes flow over the live channel, so the platform
-                          // view is not recreated (which used to flicker).
-                          key: ValueKey(
-                            'hdr_${src}_'
-                            '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
-                          ),
-                          path: src,
-                          sourceAspectRatio:
-                              (widget.element.data['originalAspectRatio']
-                                      as num?)
-                                  ?.toDouble() ??
-                              (widget.element.data['aspectRatio'] as num?)
-                                  ?.toDouble() ??
-                              0.0,
-                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                          cropScale: _cropScaleFromData(widget.element.data),
-                          hdrBrightness: _hdrBrightnessFromData(
-                            widget.element.data,
-                          ),
-                          colorMatrix: _photoAdjustmentsFromData(
+                            _hdrBrightnessFromData(widget.element.data) >
+                                1.0) &&
+                        !widget.isCropMode &&
+                        !kIsWeb &&
+                        defaultTargetPlatform == TargetPlatform.android &&
+                        AppSettingsController.instance.hdrEnabled)
+                  ? HdrImageView(
+                      // Key by path + crop only: adjust/brightness/view
+                      // changes flow over the live channel, so the platform
+                      // view is not recreated (which used to flicker).
+                      key: ValueKey(
+                        'hdr_${src}_'
+                        '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
+                        '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
+                        '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
+                      ),
+                      path: src,
+                      sourceAspectRatio:
+                          (widget.element.data['originalAspectRatio'] as num?)
+                              ?.toDouble() ??
+                          (widget.element.data['aspectRatio'] as num?)
+                              ?.toDouble() ??
+                          0.0,
+                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                      cropScale: _cropScaleFromData(widget.element.data),
+                      hdrBrightness: _hdrBrightnessFromData(
+                        widget.element.data,
+                      ),
+                      colorMatrix:
+                          _photoAdjustmentsFromData(
                             widget.element.data,
                           ).hasMatrix
-                              ? _photoAdjustmentsFromData(
-                                  widget.element.data,
-                                ).toColorMatrix()
-                              : null,
-                          highlights: _photoAdjustmentsFromData(
-                            widget.element.data,
-                          ).highlights,
-                          shadows: _photoAdjustmentsFromData(
-                            widget.element.data,
-                          ).shadows,
-                          hdrView: widget.hdrViewEnabled,
-                        )
-                      : _maybeColorFiltered(
-                          widget.element.data,
-                          _CroppedImageFile(
-                            path: src,
-                            frameWidth: width,
-                            frameHeight: height,
-                            sourceAspectRatio:
-                                (widget.element.data['originalAspectRatio']
-                                        as num?)
-                                    ?.toDouble() ??
-                                (widget.element.data['aspectRatio'] as num?)
-                                    ?.toDouble() ??
-                                (width / height),
-                            cropOffsetX: _cropOffsetXFromData(
+                          ? _photoAdjustmentsFromData(
                               widget.element.data,
-                            ),
-                            cropOffsetY: _cropOffsetYFromData(
-                              widget.element.data,
-                            ),
-                            cropScale: _cropScaleFromData(widget.element.data),
-                            cacheWidth: _previewImageCacheExtent(
-                              context,
-                              width,
-                              height,
-                            ),
-                          ),
+                            ).toColorMatrix()
+                          : null,
+                      highlights: _photoAdjustmentsFromData(
+                        widget.element.data,
+                      ).highlights,
+                      shadows: _photoAdjustmentsFromData(
+                        widget.element.data,
+                      ).shadows,
+                      hdrView: widget.hdrViewEnabled,
+                    )
+                  : _maybeColorFiltered(
+                      widget.element.data,
+                      _CroppedImageFile(
+                        path: src,
+                        frameWidth: width,
+                        frameHeight: height,
+                        sourceAspectRatio:
+                            (widget.element.data['originalAspectRatio'] as num?)
+                                ?.toDouble() ??
+                            (widget.element.data['aspectRatio'] as num?)
+                                ?.toDouble() ??
+                            (width / height),
+                        cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                        cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                        cropScale: _cropScaleFromData(widget.element.data),
+                        cacheWidth: _previewImageCacheExtent(
+                          context,
+                          width,
+                          height,
                         ),
+                      ),
+                    ),
             ),
             if (widget.element.data['isUltraHdr'] == true)
               const Positioned(left: 6, top: 6, child: _HdrBadge()),
@@ -8067,10 +8097,14 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                       border: Border.all(color: selectionColor, width: 4),
                       borderRadius: BorderRadius.circular(
                         (() {
-                          final rRatio = (widget.element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
-                          final rVal = rRatio * (width < height ? width : height);
+                          final rRatio =
+                              (widget.element.data['borderRadiusRatio'] as num?)
+                                  ?.toDouble() ??
+                              0.0;
+                          final rVal =
+                              rRatio * (width < height ? width : height);
                           return rVal > 0 ? rVal + 2 : 0.0;
-                        })()
+                        })(),
                       ),
                     ),
                   ),
@@ -8355,8 +8389,10 @@ class _PreviewImageElementWidgetState
                     ? const Color(0xFFF6F6F6)
                     : Colors.transparent,
                 borderRadius: BorderRadius.circular(
-                  ((widget.element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0) *
-                  (width < height ? width : height)
+                  ((widget.element.data['borderRadiusRatio'] as num?)
+                              ?.toDouble() ??
+                          0.0) *
+                      (width < height ? width : height),
                 ),
               ),
               clipBehavior: Clip.antiAlias,
@@ -8369,78 +8405,73 @@ class _PreviewImageElementWidgetState
                       ),
                     )
                   : ((widget.element.data['isUltraHdr'] == true ||
-                              _hdrBrightnessFromData(widget.element.data) >
-                                  1.0) &&
-                          !widget.isCropMode &&
-                          !kIsWeb &&
-                          defaultTargetPlatform == TargetPlatform.android &&
-                          AppSettingsController.instance.hdrEnabled)
-                      ? HdrImageView(
-                          // Key by path + crop only: adjust/brightness/view
-                          // changes flow over the live channel, so the platform
-                          // view is not recreated (which used to flicker).
-                          key: ValueKey(
-                            'hdr_${src}_'
-                            '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
-                          ),
-                          path: src,
-                          sourceAspectRatio:
-                              (widget.element.data['originalAspectRatio']
-                                      as num?)
-                                  ?.toDouble() ??
-                              (widget.element.data['aspectRatio'] as num?)
-                                  ?.toDouble() ??
-                              0.0,
-                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                          cropScale: _cropScaleFromData(widget.element.data),
-                          hdrBrightness: _hdrBrightnessFromData(
-                            widget.element.data,
-                          ),
-                          colorMatrix: _photoAdjustmentsFromData(
+                            _hdrBrightnessFromData(widget.element.data) >
+                                1.0) &&
+                        !widget.isCropMode &&
+                        !kIsWeb &&
+                        defaultTargetPlatform == TargetPlatform.android &&
+                        AppSettingsController.instance.hdrEnabled)
+                  ? HdrImageView(
+                      // Key by path + crop only: adjust/brightness/view
+                      // changes flow over the live channel, so the platform
+                      // view is not recreated (which used to flicker).
+                      key: ValueKey(
+                        'hdr_${src}_'
+                        '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
+                        '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
+                        '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
+                      ),
+                      path: src,
+                      sourceAspectRatio:
+                          (widget.element.data['originalAspectRatio'] as num?)
+                              ?.toDouble() ??
+                          (widget.element.data['aspectRatio'] as num?)
+                              ?.toDouble() ??
+                          0.0,
+                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                      cropScale: _cropScaleFromData(widget.element.data),
+                      hdrBrightness: _hdrBrightnessFromData(
+                        widget.element.data,
+                      ),
+                      colorMatrix:
+                          _photoAdjustmentsFromData(
                             widget.element.data,
                           ).hasMatrix
-                              ? _photoAdjustmentsFromData(
-                                  widget.element.data,
-                                ).toColorMatrix()
-                              : null,
-                          highlights: _photoAdjustmentsFromData(
-                            widget.element.data,
-                          ).highlights,
-                          shadows: _photoAdjustmentsFromData(
-                            widget.element.data,
-                          ).shadows,
-                          hdrView: widget.hdrViewEnabled,
-                        )
-                      : _maybeColorFiltered(
-                          widget.element.data,
-                          _CroppedImageFile(
-                            path: src,
-                            frameWidth: width,
-                            frameHeight: height,
-                            sourceAspectRatio:
-                                (widget.element.data['originalAspectRatio']
-                                        as num?)
-                                    ?.toDouble() ??
-                                (widget.element.data['aspectRatio'] as num?)
-                                    ?.toDouble() ??
-                                (width / height),
-                            cropOffsetX: _cropOffsetXFromData(
+                          ? _photoAdjustmentsFromData(
                               widget.element.data,
-                            ),
-                            cropOffsetY: _cropOffsetYFromData(
-                              widget.element.data,
-                            ),
-                            cropScale: _cropScaleFromData(widget.element.data),
-                            cacheWidth: _previewImageCacheExtent(
-                              context,
-                              width,
-                              height,
-                            ),
-                          ),
+                            ).toColorMatrix()
+                          : null,
+                      highlights: _photoAdjustmentsFromData(
+                        widget.element.data,
+                      ).highlights,
+                      shadows: _photoAdjustmentsFromData(
+                        widget.element.data,
+                      ).shadows,
+                      hdrView: widget.hdrViewEnabled,
+                    )
+                  : _maybeColorFiltered(
+                      widget.element.data,
+                      _CroppedImageFile(
+                        path: src,
+                        frameWidth: width,
+                        frameHeight: height,
+                        sourceAspectRatio:
+                            (widget.element.data['originalAspectRatio'] as num?)
+                                ?.toDouble() ??
+                            (widget.element.data['aspectRatio'] as num?)
+                                ?.toDouble() ??
+                            (width / height),
+                        cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                        cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                        cropScale: _cropScaleFromData(widget.element.data),
+                        cacheWidth: _previewImageCacheExtent(
+                          context,
+                          width,
+                          height,
                         ),
+                      ),
+                    ),
             ),
             if (widget.element.data['isUltraHdr'] == true)
               const Positioned(left: 6, top: 6, child: _HdrBadge()),
@@ -8463,10 +8494,14 @@ class _PreviewImageElementWidgetState
                       border: Border.all(color: selectionColor, width: 4),
                       borderRadius: BorderRadius.circular(
                         (() {
-                          final rRatio = (widget.element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
-                          final rVal = rRatio * (width < height ? width : height);
+                          final rRatio =
+                              (widget.element.data['borderRadiusRatio'] as num?)
+                                  ?.toDouble() ??
+                              0.0;
+                          final rVal =
+                              rRatio * (width < height ? width : height);
                           return rVal > 0 ? rVal + 2 : 0.0;
-                        })()
+                        })(),
                       ),
                     ),
                   ),
@@ -9434,7 +9469,8 @@ class _PageIndicatorButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final primary = kPrimaryAccentColor;
-    final isDefaultPurple = primary.toARGB32() == const Color(0xFFC3AEFF).toARGB32();
+    final isDefaultPurple =
+        primary.toARGB32() == const Color(0xFFC3AEFF).toARGB32();
     final darkAccent = isDefaultPurple ? const Color(0xFF6B4EE6) : primary;
 
     final bgColor = selected
@@ -9472,11 +9508,7 @@ class _PageIndicatorButton extends StatelessWidget {
                       ),
                     ),
                   ),
-                  Icon(
-                    Icons.arrow_back_rounded,
-                    size: 17,
-                    color: contentColor,
-                  ),
+                  Icon(Icons.arrow_back_rounded, size: 17, color: contentColor),
                 ],
               )
             : Text(
@@ -9841,8 +9873,10 @@ class _MiniImageElement extends StatelessWidget {
         ? width / aspectRatio
         : element.height * pageHeight;
 
-    final borderRadiusRatio = (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
-    final borderRadiusValue = borderRadiusRatio * (width < height ? width : height);
+    final borderRadiusRatio =
+        (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
+    final borderRadiusValue =
+        borderRadiusRatio * (width < height ? width : height);
 
     return Positioned(
       left: left,
@@ -10678,7 +10712,8 @@ class _ImageSettingsTabPage extends StatelessWidget {
     final strings = AppStrings.of(context);
     final selectedKey =
         selectedElement.data['aspectPreset'] as String? ?? 'original';
-    final borderRadiusRatio = (selectedElement.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
+    final borderRadiusRatio =
+        (selectedElement.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -10927,7 +10962,9 @@ class _SnapAdjustSlider extends StatelessWidget {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
-                color: atNeutral ? const Color(0xFFB4B4B4) : const Color(0xFF6A6A6A),
+                color: atNeutral
+                    ? const Color(0xFFB4B4B4)
+                    : const Color(0xFF6A6A6A),
               ),
             ),
           ),
@@ -11683,44 +11720,6 @@ class _HdrBadge extends StatelessWidget {
   }
 }
 
-/// One-icon HDR/SDR preview toggle pinned to the top-left of the photo preview
-/// area. View-only — it does not change the saved photo or the export.
-class _HdrViewToggleButton extends StatelessWidget {
-  const _HdrViewToggleButton({required this.enabled, required this.onTap});
-
-  final bool enabled;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final strings = AppStrings.of(context);
-    return Tooltip(
-      message: enabled ? strings.t('hdrViewOn') : strings.t('hdrViewOff'),
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            color: enabled
-                ? const Color(0xCC1F6FEB)
-                : Colors.black.withValues(alpha: 0.5),
-            shape: BoxShape.circle,
-            boxShadow: const [
-              BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 1)),
-            ],
-          ),
-          child: Icon(
-            enabled ? Icons.hdr_on_rounded : Icons.hdr_off_rounded,
-            size: 19,
-            color: Colors.white,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _LayersTabPage extends StatelessWidget {
   const _LayersTabPage({
     required this.page,
@@ -11785,8 +11784,7 @@ class _LayersTabPage extends StatelessWidget {
                 onTap: () => onSelectElement(elements[index].id),
               ),
             ),
-            if (index != 0)
-              const SizedBox(width: 12),
+            if (index != 0) const SizedBox(width: 12),
           ],
           _LayerDropTarget(
             key: const ValueKey('layer_drop_end'),
@@ -11874,20 +11872,10 @@ class _LayerCard extends StatelessWidget {
       data: index,
       feedback: Material(
         color: Colors.transparent,
-        child: Transform.scale(
-          scale: 1.05,
-          child: card,
-        ),
+        child: Transform.scale(scale: 1.05, child: card),
       ),
-      childWhenDragging: Opacity(
-        opacity: 0.35,
-        child: card,
-      ),
-      child: _PressableScale(
-        onTap: onTap,
-        pressedScale: 0.96,
-        child: card,
-      ),
+      childWhenDragging: Opacity(opacity: 0.35, child: card),
+      child: _PressableScale(onTap: onTap, pressedScale: 0.96, child: card),
     );
   }
 }
