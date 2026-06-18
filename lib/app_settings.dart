@@ -3,7 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'hdr/ultra_hdr.dart';
 
-const String kAppDisplayVersion = '1.7.8';
+const String kAppDisplayVersion = '1.7.9';
 const String kGeminiSortModel = 'gemini-3.5-flash';
 const Color kDefaultPrimaryAccentColor = Color(0xFFC3AEFF);
 
@@ -32,6 +32,9 @@ class AppSettingsController extends ChangeNotifier {
   /// first frame — keep the key in sync with the Kotlin side.
   static const String _hdrEnabledKey = 'settings_hdr_enabled';
 
+  /// Global palette of user-saved page colours, shared across all projects.
+  static const String _savedColorsKey = 'settings_saved_colors';
+
   bool _loaded = false;
   String _geminiApiKey = '';
   bool _aiSortEnabled = false;
@@ -39,6 +42,7 @@ class AppSettingsController extends ChangeNotifier {
   int _aiSortCount = 0;
   String _language = 'system';
   bool _hdrEnabled = true;
+  List<int> _savedColors = <int>[];
 
   bool get loaded => _loaded;
   String get geminiApiKey => _geminiApiKey;
@@ -48,6 +52,10 @@ class AppSettingsController extends ChangeNotifier {
   int get aiSortCount => _aiSortCount;
   String get language => _language;
   bool get hdrEnabled => _hdrEnabled;
+
+  /// User-saved page colours, in insertion order.
+  List<Color> get savedColors =>
+      _savedColors.map((value) => Color(value)).toList(growable: false);
 
   Future<void> load() async {
     if (_loaded) {
@@ -61,7 +69,39 @@ class AppSettingsController extends ChangeNotifier {
     _aiSortCount = prefs.getInt(_aiSortCountKey) ?? 0;
     _language = prefs.getString(_languageKey) ?? 'system';
     _hdrEnabled = prefs.getBool(_hdrEnabledKey) ?? true;
+    _savedColors = (prefs.getStringList(_savedColorsKey) ?? const <String>[])
+        .map(int.tryParse)
+        .whereType<int>()
+        .toList();
     _loaded = true;
+    notifyListeners();
+  }
+
+  Future<void> _persistSavedColors() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _savedColorsKey,
+      _savedColors.map((value) => value.toString()).toList(),
+    );
+  }
+
+  Future<void> addSavedColor(Color color) async {
+    final value = color.toARGB32();
+    if (_savedColors.contains(value)) {
+      return;
+    }
+    _savedColors = <int>[..._savedColors, value];
+    await _persistSavedColors();
+    notifyListeners();
+  }
+
+  Future<void> removeSavedColor(Color color) async {
+    final value = color.toARGB32();
+    if (!_savedColors.contains(value)) {
+      return;
+    }
+    _savedColors = _savedColors.where((v) => v != value).toList();
+    await _persistSavedColors();
     notifyListeners();
   }
 

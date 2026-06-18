@@ -2191,6 +2191,7 @@ class _BlankPageState extends State<BlankPage> {
     var green = initialColor.g.toDouble();
     var blue = initialColor.b.toDouble();
     Color latestDraftColor = initialColor;
+    var colorSaved = false;
 
     final pickedColor = await showDialog<Color>(
       context: context,
@@ -2258,6 +2259,7 @@ class _BlankPageState extends State<BlankPage> {
                           blue.round(),
                           1,
                         );
+                        colorSaved = false;
                       },
                     ),
                   ),
@@ -2312,6 +2314,23 @@ class _BlankPageState extends State<BlankPage> {
                         blue = value;
                       });
                     }),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: _DialogActionButton(
+                        label: colorSaved ? '已儲存' : '儲存色彩',
+                        onTap: colorSaved
+                            ? () {}
+                            : () {
+                                unawaited(
+                                  AppSettingsController.instance.addSavedColor(
+                                    previewColor,
+                                  ),
+                                );
+                                setDialogState(() => colorSaved = true);
+                              },
+                      ),
+                    ),
                     const SizedBox(height: 10),
                     Row(
                       children: [
@@ -2344,11 +2363,86 @@ class _BlankPageState extends State<BlankPage> {
 
     await _storeCurrentPageCustomColorDraft(latestDraftColor);
 
+    // Refresh so any colours saved inside the dialog show in the picker.
+    if (mounted) {
+      setState(() {});
+    }
+
     if (pickedColor == null) {
       return;
     }
 
     await _updateCurrentPageCustomColor(pickedColor);
+  }
+
+  Future<void> _deleteSavedColor(Color color) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F4F4),
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '刪除已存色彩?',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1F1F1F),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Container(
+                  width: double.infinity,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: const Color(0xFFD8D8D8)),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: '取消',
+                        onTap: () => Navigator.of(context).pop(false),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _DialogActionButton(
+                        label: '刪除',
+                        isPrimary: true,
+                        onTap: () => Navigator.of(context).pop(true),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+    await AppSettingsController.instance.removeSavedColor(color);
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   void _changeDisplayMode(PageDisplayMode mode) {
@@ -6394,6 +6488,10 @@ class _BlankPageState extends State<BlankPage> {
                                         },
                                         onCustomColorTap:
                                             _showCustomPageColorDialog,
+                                        savedColors: AppSettingsController
+                                            .instance
+                                            .savedColors,
+                                        onSavedColorDelete: _deleteSavedColor,
                                       ),
                                       _TemplateTabPage(
                                         page: currentPage,
@@ -6645,6 +6743,10 @@ class _BlankPageState extends State<BlankPage> {
                                         },
                                         onCustomColorTap:
                                             _showCustomPageColorDialog,
+                                        savedColors: AppSettingsController
+                                            .instance
+                                            .savedColors,
+                                        onSavedColorDelete: _deleteSavedColor,
                                       ),
                                       _TemplateTabPage(
                                         page: currentPage,
@@ -6742,6 +6844,10 @@ class _BlankPageState extends State<BlankPage> {
                                         },
                                         onCustomColorTap:
                                             _showCustomPageColorDialog,
+                                        savedColors: AppSettingsController
+                                            .instance
+                                            .savedColors,
+                                        onSavedColorDelete: _deleteSavedColor,
                                       ),
                                       _TemplateTabPage(
                                         page: currentPage,
@@ -10199,12 +10305,16 @@ class _PageTabPage extends StatelessWidget {
     required this.onAspectSelected,
     required this.onColorSelected,
     required this.onCustomColorTap,
+    required this.savedColors,
+    required this.onSavedColorDelete,
   });
 
   final ProjectPage page;
   final void Function(double aspectWidth, double aspectHeight) onAspectSelected;
   final void Function(Color color, String preset) onColorSelected;
   final Future<void> Function() onCustomColorTap;
+  final List<Color> savedColors;
+  final void Function(Color color) onSavedColorDelete;
 
   static const List<_PageAspectOption> _options = <_PageAspectOption>[
     _PageAspectOption(label: '4:5', width: 4, height: 5),
@@ -10350,9 +10460,28 @@ class _PageTabPage extends StatelessWidget {
                 _PageColorCard(
                   label: '自訂',
                   color: Color(selectedColorValue),
-                  selected: isCustomSelected,
+                  selected:
+                      isCustomSelected &&
+                      !savedColors.any(
+                        (c) => c.toARGB32() == selectedColorValue,
+                      ),
                   onTap: onCustomColorTap,
                 ),
+                for (final saved in savedColors) ...[
+                  const SizedBox(width: 12),
+                  _PageColorCard(
+                    label: '已存',
+                    color: saved,
+                    selected:
+                        isCustomSelected &&
+                        selectedColorValue == saved.toARGB32(),
+                    onTap: () => onColorSelected(
+                      saved,
+                      _pageBackgroundColorPresetCustom,
+                    ),
+                    onLongPress: () => onSavedColorDelete(saved),
+                  ),
+                ],
                 if (showHdrWhite) ...[
                   const SizedBox(width: 12),
                   _PageColorCard(
@@ -11425,18 +11554,22 @@ class _PageColorCard extends StatelessWidget {
     required this.color,
     required this.selected,
     required this.onTap,
+    this.onLongPress,
   });
 
   final String label;
   final Color color;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
-    return _PressableScale(
-      onTap: onTap,
-      child: AnimatedContainer(
+    return GestureDetector(
+      onLongPress: onLongPress,
+      child: _PressableScale(
+        onTap: onTap,
+        child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeInOut,
         width: 75,
@@ -11478,6 +11611,7 @@ class _PageColorCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
       ),
     );
   }
