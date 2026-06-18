@@ -1,3 +1,4 @@
+import '../photo_adjustments.dart';
 import '../project_record.dart';
 
 /// Outcome of checking whether a page can be exported as a byte-for-byte copy
@@ -100,6 +101,16 @@ LosslessExportDecision evaluateLosslessExport({
   final borderRadiusRatio = (data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
   if (borderRadiusRatio > positionTolerance) {
     return const LosslessExportDecision.ineligible('rounded');
+  }
+
+  // Per-image HDR brightness or colour adjustments change the pixels/gain map,
+  // so a verbatim copy would not match the rendered result.
+  final hdrBrightness = (data['hdrBrightness'] as num?)?.toDouble() ?? 1.0;
+  if ((hdrBrightness - 1.0).abs() > positionTolerance) {
+    return const LosslessExportDecision.ineligible('hdrBrightnessAdjusted');
+  }
+  if (!PhotoAdjustments.fromData(data['adjustments']).isNeutral) {
+    return const LosslessExportDecision.ineligible('colorAdjusted');
   }
 
   // The frame may not crop the source either: source aspect must match the

@@ -38,7 +38,7 @@ class MainActivity : FlutterActivity() {
 
         flutterEngine.platformViewsController.registry.registerViewFactory(
             "igapp/hdr_image_view",
-            HdrImageViewFactory(),
+            HdrImageViewFactory(flutterEngine.dartExecutor.binaryMessenger),
         )
 
         MethodChannel(

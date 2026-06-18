@@ -8,25 +8,18 @@ import 'package:flutter/services.dart';
 
 import '../app_settings.dart';
 
-/// Displays an image preserving its Ultra HDR gain map.
+/// Displays an image preserving its Ultra HDR gain map, with live per-image
+/// "deep adjust" parameters.
 ///
-/// On Android (with the global HDR setting enabled) this embeds a native
-/// `ImageView` whose bitmap keeps the gain map, so HDR photos render with real
-/// highlight headroom. Everywhere else — or when the user disabled HDR — it
-/// falls back to a regular Flutter [Image] showing the SDR base rendition.
+/// On Android (HDR enabled) this embeds a native `ImageView` via **hybrid
+/// composition** so the gain map's HDR headroom reaches the screen. Adjustment
+/// parameters (HDR brightness, colour matrix, highlights/shadows, HDR/SDR view)
+/// are pushed over a per-view [MethodChannel] after creation, so changing a
+/// slider updates the existing view in place — no platform-view recreation, no
+/// flicker. The platform view is only rebuilt when the path or crop changes.
 ///
-/// The native view is added via **hybrid composition**
-/// ([PlatformViewsService.initExpensiveAndroidView]) rather than the default
-/// texture-layer path. The texture-layer path copies the platform view into a
-/// Flutter GL texture that is only 8-bit SDR, which tonemaps/clips the HDR
-/// highlights away. Hybrid composition keeps the `ImageView` as a real Android
-/// view in the hierarchy, so — with the window in HDR color mode — its gain-map
-/// output reaches the screen with true HDR headroom.
-///
-/// When [sourceAspectRatio] > 0, the native view applies the same crop geometry
-/// as Flutter's `_CroppedImageFile` using an image matrix, so the visible
-/// region matches what the user set while still preserving HDR.
-class HdrImageView extends StatelessWidget {
+/// Everywhere else (or HDR disabled) it falls back to a Flutter [Image].
+class HdrImageView extends StatefulWidget {
   const HdrImageView({
     required this.path,
     this.fit = BoxFit.fill,
@@ -35,44 +28,80 @@ class HdrImageView extends StatelessWidget {
     this.cropOffsetY = 0.0,
     this.cropScale = 1.0,
     this.hdrBrightness = 1.0,
+    this.colorMatrix,
+    this.highlights = 0.0,
+    this.shadows = 0.0,
+    this.hdrView = true,
     super.key,
   });
 
   final String path;
   final BoxFit fit;
-
-  /// The natural aspect ratio of the source image (width / height).
-  /// Pass a positive value to enable crop-aware matrix positioning.
   final double sourceAspectRatio;
   final double cropOffsetX;
   final double cropOffsetY;
   final double cropScale;
-
-  /// Per-image HDR brightness. For HDR sources it scales the existing gain
-  /// (1 = original, 0 = flat SDR); for SDR sources > 1 synthesizes HDR.
   final double hdrBrightness;
+  final List<double>? colorMatrix;
+  final double highlights;
+  final double shadows;
 
+  /// When false, the native view drops the gain map and shows the SDR base —
+  /// the live "HDR/SDR view" toggle.
+  final bool hdrView;
+
+  @override
+  State<HdrImageView> createState() => _HdrImageViewState();
+}
+
+class _HdrImageViewState extends State<HdrImageView> {
   static const String _viewType = 'igapp/hdr_image_view';
+  MethodChannel? _channel;
+
+  bool get _useNativeHdr =>
+      !kIsWeb &&
+      defaultTargetPlatform == TargetPlatform.android &&
+      AppSettingsController.instance.hdrEnabled;
+
+  Map<String, dynamic> _adjustParams() => <String, dynamic>{
+    'hdrBrightness': widget.hdrBrightness,
+    'colorMatrix': (widget.colorMatrix != null && widget.colorMatrix!.length == 20)
+        ? widget.colorMatrix
+        : null,
+    'highlights': widget.highlights,
+    'shadows': widget.shadows,
+    'hdrView': widget.hdrView,
+  };
+
+  @override
+  void didUpdateWidget(HdrImageView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final changed =
+        oldWidget.hdrBrightness != widget.hdrBrightness ||
+        oldWidget.highlights != widget.highlights ||
+        oldWidget.shadows != widget.shadows ||
+        oldWidget.hdrView != widget.hdrView ||
+        !listEquals(oldWidget.colorMatrix, widget.colorMatrix);
+    if (changed) {
+      _channel?.invokeMethod<void>('setParams', _adjustParams());
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final useNativeHdr =
-        !kIsWeb &&
-        defaultTargetPlatform == TargetPlatform.android &&
-        AppSettingsController.instance.hdrEnabled;
-    if (!useNativeHdr) {
-      return Image.file(File(path), fit: fit, gaplessPlayback: true);
+    if (!_useNativeHdr) {
+      return Image.file(File(widget.path), fit: widget.fit, gaplessPlayback: true);
     }
 
-    final hasCrop = sourceAspectRatio > 0;
+    final hasCrop = widget.sourceAspectRatio > 0;
     final creationParams = <String, dynamic>{
-      'path': path,
-      'fit': fit == BoxFit.contain ? 'contain' : 'fill',
-      'hdrBrightness': hdrBrightness,
-      if (hasCrop) 'sourceAspectRatio': sourceAspectRatio,
-      if (hasCrop) 'cropOffsetX': cropOffsetX,
-      if (hasCrop) 'cropOffsetY': cropOffsetY,
-      if (hasCrop) 'cropScale': cropScale,
+      'path': widget.path,
+      'fit': widget.fit == BoxFit.contain ? 'contain' : 'fill',
+      ..._adjustParams(),
+      if (hasCrop) 'sourceAspectRatio': widget.sourceAspectRatio,
+      if (hasCrop) 'cropOffsetX': widget.cropOffsetX,
+      if (hasCrop) 'cropOffsetY': widget.cropOffsetY,
+      if (hasCrop) 'cropScale': widget.cropScale,
     };
 
     return PlatformViewLink(
@@ -85,6 +114,7 @@ class HdrImageView extends StatelessWidget {
         );
       },
       onCreatePlatformView: (params) {
+        _channel = MethodChannel('igapp/hdr_image_view/${params.id}');
         final controller = PlatformViewsService.initExpensiveAndroidView(
           id: params.id,
           viewType: _viewType,

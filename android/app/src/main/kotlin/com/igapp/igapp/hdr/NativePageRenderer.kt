@@ -188,8 +188,20 @@ object NativePageRenderer {
                     0f
                 }
 
+            // Photo "deep adjust": the highlights/shadows tone curve runs on the
+            // SDR base pixels (a copy, so the gain map op still reads the
+            // original), and the linear matrix rides the draw Paint. Both touch
+            // the base only, so HDR gain map headroom is unaffected.
+            val highlights = (element["highlights"] as? Number)?.toFloat() ?: 0f
+            val shadows = (element["shadows"] as? Number)?.toFloat() ?: 0f
+            val baseToDraw = PhotoAdjust.applyToneCurve(sourceBitmap, highlights, shadows)
+            paint.colorFilter = PhotoAdjust.colorMatrixFilter(element["colorMatrix"])
             withRoundedClip(baseCanvas, dstRect, radius) {
-                baseCanvas.drawBitmap(sourceBitmap, srcRect, dstRect, paint)
+                baseCanvas.drawBitmap(baseToDraw, srcRect, dstRect, paint)
+            }
+            paint.colorFilter = null
+            if (baseToDraw !== sourceBitmap) {
+                baseToDraw.recycle()
             }
 
             if (collectHdr) {
