@@ -10231,6 +10231,16 @@ class _PageTabPage extends StatelessWidget {
         selectedPreset == _pageBackgroundColorPresetCustom;
     final isHdrWhiteSelected =
         selectedPreset == _pageBackgroundColorPresetHdrWhite;
+    // Only offer "HDR白" when the page actually has an HDR element (or it is
+    // already selected, so the user can still change away from it).
+    final showHdrWhite =
+        isHdrWhiteSelected ||
+        page.elements.any(
+          (element) =>
+              element.type == 'image' &&
+              (element.data['isUltraHdr'] == true ||
+                  _hdrBrightnessFromData(element.data) > 1.0),
+        );
     final isWhiteSelected =
         selectedPreset == _pageBackgroundColorPresetWhite ||
         (!isKnownPreset &&
@@ -10318,16 +10328,6 @@ class _PageTabPage extends StatelessWidget {
                 ),
                 const SizedBox(width: 12),
                 _PageColorCard(
-                  label: 'HDR白',
-                  color: Colors.white,
-                  selected: isHdrWhiteSelected,
-                  onTap: () => onColorSelected(
-                    Colors.white,
-                    _pageBackgroundColorPresetHdrWhite,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                _PageColorCard(
                   label: '黑',
                   color: Colors.black,
                   selected: isBlackSelected,
@@ -10353,6 +10353,18 @@ class _PageTabPage extends StatelessWidget {
                   selected: isCustomSelected,
                   onTap: onCustomColorTap,
                 ),
+                if (showHdrWhite) ...[
+                  const SizedBox(width: 12),
+                  _PageColorCard(
+                    label: 'HDR白',
+                    color: Colors.white,
+                    selected: isHdrWhiteSelected,
+                    onTap: () => onColorSelected(
+                      Colors.white,
+                      _pageBackgroundColorPresetHdrWhite,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
