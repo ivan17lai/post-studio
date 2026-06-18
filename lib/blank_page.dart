@@ -18,7 +18,6 @@ import 'app_strings.dart';
 import 'hdr/hdr_image_view.dart';
 import 'hdr/lossless_passthrough.dart';
 import 'hdr/ultra_hdr.dart';
-import 'photo_adjust_page.dart';
 import 'photo_adjustments.dart';
 import 'project_record.dart';
 import 'theme_constants.dart';
@@ -725,6 +724,7 @@ class _BlankPageState extends State<BlankPage> {
   static const String _tabImageSource = 'image_source';
   static const String _tabImagePosition = 'image_position';
   static const String _tabImageSettings = 'image_settings';
+  static const String _tabImageAdjust = 'image_adjust';
   static const String _tabTextPosition = 'text_position';
   static const String _tabTextSettings = 'text_settings';
   static const String _tabLayers = 'layers';
@@ -734,6 +734,9 @@ class _BlankPageState extends State<BlankPage> {
   late ProjectRecord _project;
   bool _showPageBorder = false;
   bool _showPageSorter = false;
+  // Live "HDR/SDR view" preview toggle (req: top-left canvas icon). View-only;
+  // does not change the saved photo or the export.
+  bool _hdrViewEnabled = true;
   bool _isExporting = false;
   bool _isPreparingImage = false;
   int _savingRequestCount = 0;
@@ -977,6 +980,7 @@ class _BlankPageState extends State<BlankPage> {
       _tabImageSource => strings.t('imageSource'),
       _tabImagePosition => strings.t('imagePosition'),
       _tabImageSettings => strings.t('imageSettings'),
+      _tabImageAdjust => strings.t('deepAdjust'),
       _tabTextPosition => strings.t('textPosition'),
       _tabTextSettings => strings.t('text'),
       _tabLayers => strings.t('layers'),
@@ -1300,6 +1304,7 @@ class _BlankPageState extends State<BlankPage> {
         _tabElements,
         _tabImagePosition,
         _tabImageSettings,
+        _tabImageAdjust,
         _tabLayers,
       ];
     }
@@ -1340,6 +1345,20 @@ class _BlankPageState extends State<BlankPage> {
   CanvasElement? get _selectedTextElement {
     final element = _selectedElement;
     return element?.type == 'text' ? element : null;
+  }
+
+  /// Whether a page carries HDR-renderable content, gating the HDR view toggle.
+  bool _pageHasHdrContent(ProjectPage page) {
+    for (final element in page.elements) {
+      if (element.type != 'image') {
+        continue;
+      }
+      if (element.data['isUltraHdr'] == true ||
+          _hdrBrightnessFromData(element.data) > 1.0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   void _syncBottomTab() {
@@ -3792,45 +3811,39 @@ class _BlankPageState extends State<BlankPage> {
     );
   }
 
-  Future<void> _openSelectedImageAdjustments() async {
+  void _updateSelectedImageAdjustment(
+    String field,
+    double value, {
+    required bool persist,
+  }) {
     final selectedImage = _selectedImageElement;
     if (selectedImage == null) {
       return;
     }
-    final path =
-        (selectedImage.data['originalSrc'] as String?) ??
-        (selectedImage.data['src'] as String?) ??
-        '';
-    if (path.isEmpty) {
-      return;
+    if (!persist && !_hasPendingElementUndoSnapshot) {
+      _storeUndoSnapshot();
+      _hasPendingElementUndoSnapshot = true;
     }
-    final elementId = selectedImage.id;
-    final result = await Navigator.of(context).push<PhotoAdjustments>(
-      MaterialPageRoute<PhotoAdjustments>(
-        fullscreenDialog: true,
-        builder: (_) => PhotoAdjustPage(
-          imagePath: path,
-          initial: _photoAdjustmentsFromData(selectedImage.data),
-        ),
-      ),
-    );
-    if (result == null || !mounted) {
-      return;
-    }
-    // Selection can only change behind the full-screen page in edge cases;
-    // re-resolve by id so we never write onto the wrong element.
-    final target = _selectedImageElement?.id == elementId
-        ? _selectedImageElement
-        : null;
-    if (target == null) {
-      return;
-    }
-    _storeUndoSnapshot();
-    final updatedData = <String, dynamic>{
-      ...target.data,
-      'adjustments': result.toJson(),
+
+    final current = _photoAdjustmentsFromData(selectedImage.data);
+    final v = value.clamp(-1.0, 1.0).toDouble();
+    final updated = switch (field) {
+      'brightness' => current.copyWith(brightness: v),
+      'contrast' => current.copyWith(contrast: v),
+      'saturation' => current.copyWith(saturation: v),
+      'highlights' => current.copyWith(highlights: v),
+      'shadows' => current.copyWith(shadows: v),
+      'temperature' => current.copyWith(temperature: v),
+      'tint' => current.copyWith(tint: v),
+      _ => current,
     };
-    await _replaceElement(target.copyWith(data: updatedData), persist: true);
+    final updatedData = <String, dynamic>{
+      ...selectedImage.data,
+      'adjustments': updated.toJson(),
+    };
+    unawaited(
+      _replaceElement(selectedImage.copyWith(data: updatedData), persist: persist),
+    );
   }
 
   void _startCroppingSelectedImage() {
@@ -5098,10 +5111,16 @@ class _BlankPageState extends State<BlankPage> {
                     'cropScale': _cropScaleFromData(element.data),
                     'borderRadiusRatio': (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0,
                     'hdrBrightness': _hdrBrightnessFromData(element.data),
-                    if (!_photoAdjustmentsFromData(element.data).isNeutral)
+                    if (_photoAdjustmentsFromData(element.data).hasMatrix)
                       'colorMatrix': PhotoAdjustments.roundMatrix(
                         _photoAdjustmentsFromData(element.data).toColorMatrix(),
                       ),
+                    if (_photoAdjustmentsFromData(element.data).hasToneCurve) ...<String, dynamic>{
+                      'highlights':
+                          _photoAdjustmentsFromData(element.data).highlights,
+                      'shadows':
+                          _photoAdjustmentsFromData(element.data).shadows,
+                    },
                     if (element.type == 'text') ...<String, dynamic>{
                       'text': _textContentFromData(element.data),
                       'colorValue': _textColorFromData(
@@ -6060,6 +6079,25 @@ class _BlankPageState extends State<BlankPage> {
                                                   showBorder: _showPageBorder,
                                                   showPageDivider:
                                                       _showSinglePageDivider,
+                                                  hdrViewEnabled:
+                                                      _hdrViewEnabled,
+                                                  showHdrViewToggle:
+                                                      index ==
+                                                          _currentPageIndex &&
+                                                      !kIsWeb &&
+                                                      defaultTargetPlatform ==
+                                                          TargetPlatform
+                                                              .android &&
+                                                      AppSettingsController
+                                                          .instance
+                                                          .hdrEnabled &&
+                                                      _pageHasHdrContent(page),
+                                                  onToggleHdrView: () {
+                                                    setState(() {
+                                                      _hdrViewEnabled =
+                                                          !_hdrViewEnabled;
+                                                    });
+                                                  },
                                                   selectedElementId:
                                                       _selectedElementId,
                                                   croppingElementId:
@@ -6202,6 +6240,7 @@ class _BlankPageState extends State<BlankPage> {
                                               exportRepaintKey:
                                                   _exportRepaintKey,
                                               showBorder: _showPageBorder,
+                                              hdrViewEnabled: _hdrViewEnabled,
                                               selectedElementId:
                                                   _selectedElementId,
                                               croppingElementId:
@@ -6442,9 +6481,6 @@ class _BlankPageState extends State<BlankPage> {
                                         isCropping:
                                             _croppingElementId ==
                                             _selectedImageElement!.id,
-                                        hdrEnabled: AppSettingsController
-                                            .instance
-                                            .hdrEnabled,
                                         onStartCrop:
                                             _startCroppingSelectedImage,
                                         onFinishCrop:
@@ -6499,6 +6535,12 @@ class _BlankPageState extends State<BlankPage> {
                                             persist: true,
                                           );
                                         },
+                                      ),
+                                      _AdjustTabPage(
+                                        selectedElement: _selectedImageElement!,
+                                        hdrEnabled: AppSettingsController
+                                            .instance
+                                            .hdrEnabled,
                                         onHdrBrightnessChanged: (value) {
                                           _updateSelectedImageHdrBrightness(
                                             value,
@@ -6511,8 +6553,20 @@ class _BlankPageState extends State<BlankPage> {
                                             persist: true,
                                           );
                                         },
-                                        onOpenAdjust:
-                                            _openSelectedImageAdjustments,
+                                        onAdjustmentChanged: (field, value) {
+                                          _updateSelectedImageAdjustment(
+                                            field,
+                                            value,
+                                            persist: false,
+                                          );
+                                        },
+                                        onAdjustmentChangeEnd: (field, value) {
+                                          _updateSelectedImageAdjustment(
+                                            field,
+                                            value,
+                                            persist: true,
+                                          );
+                                        },
                                       ),
                                       _LayersTabPage(
                                         page: currentPage,
@@ -6742,6 +6796,9 @@ class _CanvasViewport extends StatelessWidget {
     required this.repaintKey,
     required this.showBorder,
     required this.showPageDivider,
+    required this.hdrViewEnabled,
+    required this.showHdrViewToggle,
+    required this.onToggleHdrView,
     required this.selectedElementId,
     required this.croppingElementId,
     required this.deleteArmedElementId,
@@ -6767,6 +6824,9 @@ class _CanvasViewport extends StatelessWidget {
   final GlobalKey? repaintKey;
   final bool showBorder;
   final bool showPageDivider;
+  final bool hdrViewEnabled;
+  final bool showHdrViewToggle;
+  final VoidCallback onToggleHdrView;
   final String? selectedElementId;
   final String? croppingElementId;
   final String? deleteArmedElementId;
@@ -6862,6 +6922,7 @@ class _CanvasViewport extends StatelessWidget {
                                                 (sourceIndex - pageIndex) *
                                                 constraints.maxWidth,
                                             pageOffsetY: 0,
+                                            hdrViewEnabled: hdrViewEnabled,
                                             onTap: () {},
                                             onDoubleTap: () {},
                                             onMove: (_, _, _) {},
@@ -6887,6 +6948,7 @@ class _CanvasViewport extends StatelessWidget {
                                   isCropMode: croppingElementId == element.id,
                                   canvasWidth: constraints.maxWidth,
                                   canvasHeight: constraints.maxHeight,
+                                  hdrViewEnabled: hdrViewEnabled,
                                   onTap: () => onTapElement(element.id),
                                   onDoubleTap: () =>
                                       onDoubleTapElement(element.id),
@@ -6962,6 +7024,15 @@ class _CanvasViewport extends StatelessWidget {
                 ),
               ),
             ),
+            if (showHdrViewToggle)
+              Positioned(
+                left: (viewportWidth - pageWidth) / 2 + 8,
+                top: canvasTop + 8,
+                child: _HdrViewToggleButton(
+                  enabled: hdrViewEnabled,
+                  onTap: onToggleHdrView,
+                ),
+              ),
             if (page.extras['aiCaption'] != null &&
                 (page.extras['aiCaption'] as String).isNotEmpty)
               Positioned(
@@ -7007,6 +7078,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
     required this.exportPageId,
     required this.exportRepaintKey,
     required this.showBorder,
+    required this.hdrViewEnabled,
     required this.selectedElementId,
     required this.croppingElementId,
     required this.deleteArmedElementId,
@@ -7030,6 +7102,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
   final String exportPageId;
   final GlobalKey exportRepaintKey;
   final bool showBorder;
+  final bool hdrViewEnabled;
   final String? selectedElementId;
   final String? croppingElementId;
   final String? deleteArmedElementId;
@@ -7129,6 +7202,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
                                               (sourceIndex - i) *
                                               constraints.maxWidth,
                                           pageOffsetY: 0,
+                                          hdrViewEnabled: hdrViewEnabled,
                                           onTap: () {},
                                           onDoubleTap: () {},
                                           onMove: (_, _, _) {},
@@ -7174,6 +7248,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
                                 (pages[i].aspectHeight /
                                     pages[i].aspectWidth))) /
                         2),
+                    hdrViewEnabled: hdrViewEnabled,
                     onTap: () => onTapElement(element.id),
                     onDoubleTap: () => onDoubleTapElement(element.id),
                     onMove: (x, y, persist) {
@@ -7560,6 +7635,7 @@ class _ImageElementWidget extends StatefulWidget {
     required this.isCropMode,
     required this.canvasWidth,
     required this.canvasHeight,
+    required this.hdrViewEnabled,
     required this.onTap,
     required this.onDoubleTap,
     required this.onMove,
@@ -7578,6 +7654,7 @@ class _ImageElementWidget extends StatefulWidget {
   final bool isCropMode;
   final double canvasWidth;
   final double canvasHeight;
+  final bool hdrViewEnabled;
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
   final void Function(double x, double y, bool persist) onMove;
@@ -7903,13 +7980,14 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                           defaultTargetPlatform == TargetPlatform.android &&
                           AppSettingsController.instance.hdrEnabled)
                       ? HdrImageView(
+                          // Key by path + crop only: adjust/brightness/view
+                          // changes flow over the live channel, so the platform
+                          // view is not recreated (which used to flicker).
                           key: ValueKey(
                             'hdr_${src}_'
                             '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
                             '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_hdrBrightnessFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_photoAdjustmentsFromData(widget.element.data).toJson()}',
+                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
                           ),
                           path: src,
                           sourceAspectRatio:
@@ -7927,11 +8005,18 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                           ),
                           colorMatrix: _photoAdjustmentsFromData(
                             widget.element.data,
-                          ).isNeutral
-                              ? null
-                              : _photoAdjustmentsFromData(
+                          ).hasMatrix
+                              ? _photoAdjustmentsFromData(
                                   widget.element.data,
-                                ).toColorMatrix(),
+                                ).toColorMatrix()
+                              : null,
+                          highlights: _photoAdjustmentsFromData(
+                            widget.element.data,
+                          ).highlights,
+                          shadows: _photoAdjustmentsFromData(
+                            widget.element.data,
+                          ).shadows,
+                          hdrView: widget.hdrViewEnabled,
                         )
                       : _maybeColorFiltered(
                           widget.element.data,
@@ -8131,6 +8216,7 @@ class _PreviewImageElementWidget extends StatefulWidget {
     required this.pageHeight,
     required this.pageOffsetX,
     required this.pageOffsetY,
+    required this.hdrViewEnabled,
     required this.onTap,
     required this.onDoubleTap,
     required this.onMove,
@@ -8150,6 +8236,7 @@ class _PreviewImageElementWidget extends StatefulWidget {
   final double pageHeight;
   final double pageOffsetX;
   final double pageOffsetY;
+  final bool hdrViewEnabled;
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
   final void Function(double x, double y, bool persist) onMove;
@@ -8289,13 +8376,14 @@ class _PreviewImageElementWidgetState
                           defaultTargetPlatform == TargetPlatform.android &&
                           AppSettingsController.instance.hdrEnabled)
                       ? HdrImageView(
+                          // Key by path + crop only: adjust/brightness/view
+                          // changes flow over the live channel, so the platform
+                          // view is not recreated (which used to flicker).
                           key: ValueKey(
                             'hdr_${src}_'
                             '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
                             '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_hdrBrightnessFromData(widget.element.data).toStringAsFixed(3)}_'
-                            '${_photoAdjustmentsFromData(widget.element.data).toJson()}',
+                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
                           ),
                           path: src,
                           sourceAspectRatio:
@@ -8313,11 +8401,18 @@ class _PreviewImageElementWidgetState
                           ),
                           colorMatrix: _photoAdjustmentsFromData(
                             widget.element.data,
-                          ).isNeutral
-                              ? null
-                              : _photoAdjustmentsFromData(
+                          ).hasMatrix
+                              ? _photoAdjustmentsFromData(
                                   widget.element.data,
-                                ).toColorMatrix(),
+                                ).toColorMatrix()
+                              : null,
+                          highlights: _photoAdjustmentsFromData(
+                            widget.element.data,
+                          ).highlights,
+                          shadows: _photoAdjustmentsFromData(
+                            widget.element.data,
+                          ).shadows,
+                          hdrView: widget.hdrViewEnabled,
                         )
                       : _maybeColorFiltered(
                           widget.element.data,
@@ -10558,7 +10653,6 @@ class _ImageSettingsTabPage extends StatelessWidget {
     required this.selectedElement,
     required this.sizeRange,
     required this.isCropping,
-    required this.hdrEnabled,
     required this.onStartCrop,
     required this.onFinishCrop,
     required this.onAspectSelected,
@@ -10566,15 +10660,11 @@ class _ImageSettingsTabPage extends StatelessWidget {
     required this.onSizeChangeEnd,
     required this.onBorderRadiusChanged,
     required this.onBorderRadiusChangeEnd,
-    required this.onHdrBrightnessChanged,
-    required this.onHdrBrightnessChangeEnd,
-    required this.onOpenAdjust,
   });
 
   final CanvasElement selectedElement;
   final ({double value, double min, double max}) sizeRange;
   final bool isCropping;
-  final bool hdrEnabled;
   final VoidCallback onStartCrop;
   final VoidCallback onFinishCrop;
   final ValueChanged<_ImageAspectOption> onAspectSelected;
@@ -10582,9 +10672,6 @@ class _ImageSettingsTabPage extends StatelessWidget {
   final ValueChanged<double> onSizeChangeEnd;
   final ValueChanged<double> onBorderRadiusChanged;
   final ValueChanged<double> onBorderRadiusChangeEnd;
-  final ValueChanged<double> onHdrBrightnessChanged;
-  final ValueChanged<double> onHdrBrightnessChangeEnd;
-  final VoidCallback onOpenAdjust;
 
   @override
   Widget build(BuildContext context) {
@@ -10592,18 +10679,6 @@ class _ImageSettingsTabPage extends StatelessWidget {
     final selectedKey =
         selectedElement.data['aspectPreset'] as String? ?? 'original';
     final borderRadiusRatio = (selectedElement.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
-    final isUltraHdr = selectedElement.data['isUltraHdr'] == true;
-    final brightness = _hdrBrightnessFromData(selectedElement.data);
-    final brightnessMin =
-        isUltraHdr ? _hdrBrightnessHdrMin : _hdrBrightnessSdrMin;
-    final brightnessMax =
-        isUltraHdr ? _hdrBrightnessHdrMax : _hdrBrightnessSdrMax;
-    final brightnessLabel = isUltraHdr
-        ? strings.t('hdrBrightness')
-        : strings.t('sdrToHdrBrightness');
-    final brightnessValueText = isUltraHdr
-        ? '${(brightness * 100).round()}%'
-        : '${brightness.toStringAsFixed(1)}x';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -10619,16 +10694,6 @@ class _ImageSettingsTabPage extends StatelessWidget {
                 icon: isCropping ? Icons.check_rounded : Icons.crop_rounded,
                 selected: isCropping,
                 onTap: isCropping ? onFinishCrop : onStartCrop,
-              ),
-              const SizedBox(width: 12),
-              _CropActionCard(
-                label: strings.t('deepAdjust'),
-                icon: Icons.tune_rounded,
-                selected:
-                    !PhotoAdjustments.fromData(
-                      selectedElement.data['adjustments'],
-                    ).isNeutral,
-                onTap: onOpenAdjust,
               ),
               const SizedBox(width: 12),
               Container(width: 1, height: 75, color: const Color(0xFFD6D6D6)),
@@ -10704,53 +10769,170 @@ class _ImageSettingsTabPage extends StatelessWidget {
             ],
           ),
         ),
-        if (hdrEnabled) ...[
-          const SizedBox(height: 12),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                Text(
-                  brightnessLabel,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF6A6A6A),
-                  ),
+      ],
+    );
+  }
+}
+
+/// The "調整" tab: HDR brightness plus the deep-adjust controls (brightness,
+/// contrast, saturation, highlights, shadows, temperature, tint). Every slider
+/// snaps to its neutral point and double-tap resets it.
+class _AdjustTabPage extends StatelessWidget {
+  const _AdjustTabPage({
+    required this.selectedElement,
+    required this.hdrEnabled,
+    required this.onHdrBrightnessChanged,
+    required this.onHdrBrightnessChangeEnd,
+    required this.onAdjustmentChanged,
+    required this.onAdjustmentChangeEnd,
+  });
+
+  final CanvasElement selectedElement;
+  final bool hdrEnabled;
+  final ValueChanged<double> onHdrBrightnessChanged;
+  final ValueChanged<double> onHdrBrightnessChangeEnd;
+  final void Function(String field, double value) onAdjustmentChanged;
+  final void Function(String field, double value) onAdjustmentChangeEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
+    final isUltraHdr = selectedElement.data['isUltraHdr'] == true;
+    final adj = _photoAdjustmentsFromData(selectedElement.data);
+    final brightness = _hdrBrightnessFromData(selectedElement.data);
+    final bMin = isUltraHdr ? _hdrBrightnessHdrMin : _hdrBrightnessSdrMin;
+    final bMax = isUltraHdr ? _hdrBrightnessHdrMax : _hdrBrightnessSdrMax;
+
+    _SnapAdjustSlider colorRow(String label, String field, double value) {
+      return _SnapAdjustSlider(
+        label: label,
+        value: value,
+        min: -1.0,
+        max: 1.0,
+        neutral: 0.0,
+        valueLabel: '${(value * 100).round()}',
+        onChanged: (v) => onAdjustmentChanged(field, v),
+        onChangeEnd: (v) => onAdjustmentChangeEnd(field, v),
+      );
+    }
+
+    return SizedBox(
+      height: 248,
+      child: SingleChildScrollView(
+        child: Column(
+          children: [
+            const SizedBox(height: 6),
+            if (hdrEnabled)
+              _SnapAdjustSlider(
+                label: isUltraHdr
+                    ? strings.t('hdrBrightness')
+                    : strings.t('sdrToHdrBrightness'),
+                value: brightness,
+                min: bMin,
+                max: bMax,
+                neutral: 1.0,
+                valueLabel: isUltraHdr
+                    ? '${(brightness * 100).round()}%'
+                    : '${brightness.toStringAsFixed(1)}x',
+                onChanged: onHdrBrightnessChanged,
+                onChangeEnd: onHdrBrightnessChangeEnd,
+              ),
+            colorRow(strings.t('adjBrightness'), 'brightness', adj.brightness),
+            colorRow(strings.t('adjContrast'), 'contrast', adj.contrast),
+            colorRow(strings.t('adjSaturation'), 'saturation', adj.saturation),
+            colorRow(strings.t('adjHighlights'), 'highlights', adj.highlights),
+            colorRow(strings.t('adjShadows'), 'shadows', adj.shadows),
+            colorRow(
+              strings.t('adjTemperature'),
+              'temperature',
+              adj.temperature,
+            ),
+            colorRow(strings.t('adjTint'), 'tint', adj.tint),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A labelled slider that snaps to [neutral] near the centre and resets to it
+/// on double-tap.
+class _SnapAdjustSlider extends StatelessWidget {
+  const _SnapAdjustSlider({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.neutral,
+    required this.valueLabel,
+    required this.onChanged,
+    required this.onChangeEnd,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final double neutral;
+  final String valueLabel;
+  final ValueChanged<double> onChanged;
+  final ValueChanged<double> onChangeEnd;
+
+  double _snap(double v) {
+    final threshold = (max - min).abs() * 0.04;
+    return (v - neutral).abs() <= threshold ? neutral : v;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final atNeutral = (value - neutral).abs() < 1e-6;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 1),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 58,
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF6A6A6A),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: GestureDetector(
+              onDoubleTap: () => onChangeEnd(neutral),
+              child: SliderTheme(
+                data: _lightControlSliderTheme(context),
+                child: Slider(
+                  value: value.clamp(min, max).toDouble(),
+                  min: min,
+                  max: max,
+                  onChanged: (v) => onChanged(_snap(v)),
+                  onChangeEnd: (v) => onChangeEnd(_snap(v)),
                 ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: SliderTheme(
-                    data: _lightControlSliderTheme(context),
-                    child: Slider(
-                      value: brightness
-                          .clamp(brightnessMin, brightnessMax)
-                          .toDouble(),
-                      min: brightnessMin,
-                      max: brightnessMax,
-                      onChanged: onHdrBrightnessChanged,
-                      onChangeEnd: onHdrBrightnessChangeEnd,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                SizedBox(
-                  width: 46,
-                  child: Text(
-                    brightnessValueText,
-                    textAlign: TextAlign.end,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF6A6A6A),
-                    ),
-                  ),
-                ),
-              ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          SizedBox(
+            width: 44,
+            child: Text(
+              valueLabel,
+              textAlign: TextAlign.end,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: atNeutral ? const Color(0xFFB4B4B4) : const Color(0xFF6A6A6A),
+              ),
             ),
           ),
         ],
-      ],
+      ),
     );
   }
 }
@@ -11494,6 +11676,44 @@ class _HdrBadge extends StatelessWidget {
             fontWeight: FontWeight.w800,
             color: Colors.white,
             letterSpacing: 0.4,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One-icon HDR/SDR preview toggle pinned to the top-left of the photo preview
+/// area. View-only — it does not change the saved photo or the export.
+class _HdrViewToggleButton extends StatelessWidget {
+  const _HdrViewToggleButton({required this.enabled, required this.onTap});
+
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
+    return Tooltip(
+      message: enabled ? strings.t('hdrViewOn') : strings.t('hdrViewOff'),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: enabled
+                ? const Color(0xCC1F6FEB)
+                : Colors.black.withValues(alpha: 0.5),
+            shape: BoxShape.circle,
+            boxShadow: const [
+              BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 1)),
+            ],
+          ),
+          child: Icon(
+            enabled ? Icons.hdr_on_rounded : Icons.hdr_off_rounded,
+            size: 19,
+            color: Colors.white,
           ),
         ),
       ),

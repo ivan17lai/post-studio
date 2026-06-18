@@ -16,6 +16,8 @@ class PhotoAdjustments {
     this.brightness = 0.0,
     this.contrast = 0.0,
     this.saturation = 0.0,
+    this.highlights = 0.0,
+    this.shadows = 0.0,
     this.temperature = 0.0,
     this.tint = 0.0,
   });
@@ -29,6 +31,15 @@ class PhotoAdjustments {
   /// Saturation. -1..1 (factor 0..2; -1 = greyscale).
   final double saturation;
 
+  /// Highlights: brightens/darkens bright tones. -1..1. Non-linear (a
+  /// luminance-weighted tone curve), so it is applied as a per-pixel pass on
+  /// the native side rather than via [toColorMatrix].
+  final double highlights;
+
+  /// Shadows: lifts/deepens dark tones. -1..1. Same tone-curve treatment as
+  /// [highlights].
+  final double shadows;
+
   /// White balance warm/cool. -1 cool (more blue) .. 1 warm (more red).
   final double temperature;
 
@@ -37,17 +48,25 @@ class PhotoAdjustments {
 
   static const PhotoAdjustments neutral = PhotoAdjustments();
 
-  bool get isNeutral =>
-      brightness == 0.0 &&
-      contrast == 0.0 &&
-      saturation == 0.0 &&
-      temperature == 0.0 &&
-      tint == 0.0;
+  /// The linear (colour-matrix) part — everything except the tone curve.
+  bool get hasMatrix =>
+      brightness != 0.0 ||
+      contrast != 0.0 ||
+      saturation != 0.0 ||
+      temperature != 0.0 ||
+      tint != 0.0;
+
+  /// The non-linear tone-curve part (highlights/shadows).
+  bool get hasToneCurve => highlights != 0.0 || shadows != 0.0;
+
+  bool get isNeutral => !hasMatrix && !hasToneCurve;
 
   PhotoAdjustments copyWith({
     double? brightness,
     double? contrast,
     double? saturation,
+    double? highlights,
+    double? shadows,
     double? temperature,
     double? tint,
   }) {
@@ -55,6 +74,8 @@ class PhotoAdjustments {
       brightness: brightness ?? this.brightness,
       contrast: contrast ?? this.contrast,
       saturation: saturation ?? this.saturation,
+      highlights: highlights ?? this.highlights,
+      shadows: shadows ?? this.shadows,
       temperature: temperature ?? this.temperature,
       tint: tint ?? this.tint,
     );
@@ -74,6 +95,8 @@ class PhotoAdjustments {
       brightness: read('brightness'),
       contrast: read('contrast'),
       saturation: read('saturation'),
+      highlights: read('highlights'),
+      shadows: read('shadows'),
       temperature: read('temperature'),
       tint: read('tint'),
     );
@@ -83,6 +106,8 @@ class PhotoAdjustments {
     'brightness': brightness,
     'contrast': contrast,
     'saturation': saturation,
+    'highlights': highlights,
+    'shadows': shadows,
     'temperature': temperature,
     'tint': tint,
   };
@@ -199,6 +224,8 @@ double maxAdjustmentMagnitude(PhotoAdjustments a) {
     a.brightness,
     a.contrast,
     a.saturation,
+    a.highlights,
+    a.shadows,
     a.temperature,
     a.tint,
   ].map((e) => e.abs()).fold(0.0, math.max);
