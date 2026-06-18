@@ -126,16 +126,34 @@ class CanonicalGainmapSpace private constructor(
         return out
     }
 
-    /** Wraps canonical-space contents into a [Gainmap] with matching parameters. */
-    fun toGainmap(contents: Bitmap): Gainmap {
+    /**
+     * Wraps canonical-space contents into a [Gainmap].
+     *
+     * The gain *encoding* (ratioMin/Max, gamma) describes this canonical space,
+     * but the HDR *rendering* metadata — epsilon and the display-headroom
+     * transition range — is carried in from the source(s). Those fields control
+     * how much of the gain map a given display actually applies; pinning
+     * [displayRatioForFullHdr] to [canonMax] (the peak gain ratio) made the
+     * boost only reach full strength on a display whose headroom hits that peak,
+     * which phones rarely do, so the export looked dimmer than the live preview.
+     */
+    fun toGainmap(
+        contents: Bitmap,
+        displayRatioForFullHdr: Float,
+        minDisplayRatioForHdrTransition: Float,
+        epsilonSdr: FloatArray,
+        epsilonHdr: FloatArray,
+    ): Gainmap {
+        val capMax = displayRatioForFullHdr.coerceAtLeast(1f)
+        val capMin = minDisplayRatioForHdrTransition.coerceIn(1f, capMax)
         return Gainmap(contents).apply {
             setRatioMin(canonMin, canonMin, canonMin)
             setRatioMax(canonMax, canonMax, canonMax)
             setGamma(1f, 1f, 1f)
-            setEpsilonSdr(DEFAULT_EPSILON, DEFAULT_EPSILON, DEFAULT_EPSILON)
-            setEpsilonHdr(DEFAULT_EPSILON, DEFAULT_EPSILON, DEFAULT_EPSILON)
-            displayRatioForFullHdr = canonMax
-            minDisplayRatioForHdrTransition = 1f
+            setEpsilonSdr(epsilonSdr[0], epsilonSdr[1], epsilonSdr[2])
+            setEpsilonHdr(epsilonHdr[0], epsilonHdr[1], epsilonHdr[2])
+            this.displayRatioForFullHdr = capMax
+            this.minDisplayRatioForHdrTransition = capMin
         }
     }
 
@@ -151,6 +169,10 @@ class CanonicalGainmapSpace private constructor(
 
         /** Luminance (0..1) where synthesized boost starts ramping in. */
         const val SYNTHESIS_LUMA_START = 0.6f
+
+        /** Epsilon to declare when no real source contributes one (synthesis-only). */
+        fun defaultEpsilon(): FloatArray =
+            floatArrayOf(DEFAULT_EPSILON, DEFAULT_EPSILON, DEFAULT_EPSILON)
 
         fun log2(x: Float): Float = (ln(x.toDouble()) / ln(2.0)).toFloat()
 

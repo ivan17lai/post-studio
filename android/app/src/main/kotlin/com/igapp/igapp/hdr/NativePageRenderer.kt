@@ -13,6 +13,7 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import java.io.ByteArrayOutputStream
 import java.io.File
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -231,6 +232,10 @@ object NativePageRenderer {
                     ratioMin = gainmap.ratioMin.copyOf(),
                     ratioMax = gainmap.ratioMax.copyOf(),
                     gamma = gainmap.gamma.copyOf(),
+                    epsilonSdr = gainmap.epsilonSdr.copyOf(),
+                    epsilonHdr = gainmap.epsilonHdr.copyOf(),
+                    displayRatioForFullHdr = gainmap.displayRatioForFullHdr,
+                    minDisplayRatioForHdrTransition = gainmap.minDisplayRatioForHdrTransition,
                     srcRect = gainmapSrcRect,
                     dstRect = dstRect,
                     radius = radius,
@@ -369,6 +374,10 @@ object NativePageRenderer {
             val ratioMin: FloatArray,
             val ratioMax: FloatArray,
             val gamma: FloatArray,
+            val epsilonSdr: FloatArray,
+            val epsilonHdr: FloatArray,
+            val displayRatioForFullHdr: Float,
+            val minDisplayRatioForHdrTransition: Float,
             val srcRect: Rect,
             val dstRect: Rect,
             val radius: Float,
@@ -459,7 +468,42 @@ object NativePageRenderer {
             }
         }
 
-        baseBitmap.gainmap = space.toGainmap(gainmapBitmap)
+        // Carry the HDR rendering metadata from the real sources so the rebuilt
+        // gain map reaches full strength at the same display headroom as the
+        // originals — otherwise the export looks dimmer than the live preview,
+        // which renders the source gain map directly. With several HDR sources we
+        // take the widest transition (max displayRatioForFullHdr, min transition
+        // floor) so no source is pushed past its intended peak.
+        val capMax: Float
+        val capMin: Float
+        val epsilonSdr: FloatArray
+        val epsilonHdr: FloatArray
+        if (hdrSources.isNotEmpty()) {
+            var cMax = 1f
+            var cMin = Float.MAX_VALUE
+            val eS = floatArrayOf(0f, 0f, 0f)
+            val eH = floatArrayOf(0f, 0f, 0f)
+            for (op in hdrSources) {
+                cMax = max(cMax, op.displayRatioForFullHdr)
+                cMin = min(cMin, op.minDisplayRatioForHdrTransition)
+                for (c in 0..2) {
+                    eS[c] = max(eS[c], op.epsilonSdr[c])
+                    eH[c] = max(eH[c], op.epsilonHdr[c])
+                }
+            }
+            capMax = cMax
+            capMin = if (cMin == Float.MAX_VALUE) 1f else cMin
+            epsilonSdr = eS
+            epsilonHdr = eH
+        } else {
+            capMax = space.canonMax
+            capMin = 1f
+            epsilonSdr = CanonicalGainmapSpace.defaultEpsilon()
+            epsilonHdr = CanonicalGainmapSpace.defaultEpsilon()
+        }
+
+        baseBitmap.gainmap =
+            space.toGainmap(gainmapBitmap, capMax, capMin, epsilonSdr, epsilonHdr)
         return gainmapBitmap
     }
 
