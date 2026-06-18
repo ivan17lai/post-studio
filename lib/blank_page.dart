@@ -7779,6 +7779,21 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
       newHeight = 0.05;
     }
 
+    // Edge snapping: when the dragged edge nears the page boundary, snap it
+    // flush to it (0 or 1). Boundary-only — no centre or cross-element guides.
+    const edgeSnap = 0.02;
+    if (edge == 'left' && newX.abs() < edgeSnap) {
+      newWidth += newX;
+      newX = 0.0;
+    } else if (edge == 'right' && (newX + newWidth - 1.0).abs() < edgeSnap) {
+      newWidth = 1.0 - newX;
+    } else if (edge == 'top' && newY.abs() < edgeSnap) {
+      newHeight += newY;
+      newY = 0.0;
+    } else if (edge == 'bottom' && (newY + newHeight - 1.0).abs() < edgeSnap) {
+      newHeight = 1.0 - newY;
+    }
+
     final newAspectRatio = newWidth / newHeight;
     final frameWidth = newWidth * widget.canvasWidth;
     final frameHeight = newHeight * widget.canvasHeight;
@@ -10857,7 +10872,19 @@ class _AdjustTabPage extends StatelessWidget {
         child: Column(
           children: [
             const SizedBox(height: 6),
-            if (hdrEnabled)
+            colorRow(strings.t('adjBrightness'), 'brightness', adj.brightness),
+            colorRow(strings.t('adjContrast'), 'contrast', adj.contrast),
+            colorRow(strings.t('adjSaturation'), 'saturation', adj.saturation),
+            colorRow(strings.t('adjHighlights'), 'highlights', adj.highlights),
+            colorRow(strings.t('adjShadows'), 'shadows', adj.shadows),
+            colorRow(
+              strings.t('adjTemperature'),
+              'temperature',
+              adj.temperature,
+            ),
+            colorRow(strings.t('adjTint'), 'tint', adj.tint),
+            if (hdrEnabled) ...[
+              const SizedBox(height: 4),
               _SnapAdjustSlider(
                 label: isUltraHdr
                     ? strings.t('hdrBrightness')
@@ -10872,17 +10899,7 @@ class _AdjustTabPage extends StatelessWidget {
                 onChanged: onHdrBrightnessChanged,
                 onChangeEnd: onHdrBrightnessChangeEnd,
               ),
-            colorRow(strings.t('adjBrightness'), 'brightness', adj.brightness),
-            colorRow(strings.t('adjContrast'), 'contrast', adj.contrast),
-            colorRow(strings.t('adjSaturation'), 'saturation', adj.saturation),
-            colorRow(strings.t('adjHighlights'), 'highlights', adj.highlights),
-            colorRow(strings.t('adjShadows'), 'shadows', adj.shadows),
-            colorRow(
-              strings.t('adjTemperature'),
-              'temperature',
-              adj.temperature,
-            ),
-            colorRow(strings.t('adjTint'), 'tint', adj.tint),
+            ],
             const SizedBox(height: 6),
           ],
         ),
