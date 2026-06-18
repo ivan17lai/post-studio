@@ -342,7 +342,8 @@ class _MainPageState extends State<MainPage> {
 
     try {
       final projectId = DateTime.now().microsecondsSinceEpoch.toString();
-      final preparedPaths = <({String displayPath, String originalPath})>[];
+      final preparedPaths =
+          <({String displayPath, String originalPath, bool isUltraHdr})>[];
 
       for (final path in imagePaths) {
         final prepared = await _prepareImageAsset(projectId, path);
@@ -476,6 +477,7 @@ class _MainPageState extends State<MainPage> {
                   'originalSrc': prep.originalPath,
                   'aspectRatio': aspect,
                   'originalAspectRatio': aspect,
+                  'isUltraHdr': prep.isUltraHdr,
                 },
               ),
             );
@@ -499,6 +501,7 @@ class _MainPageState extends State<MainPage> {
                   'originalSrc': prep.originalPath,
                   'aspectRatio': aspect,
                   'originalAspectRatio': aspect,
+                  'isUltraHdr': prep.isUltraHdr,
                 },
               ),
             );
@@ -542,6 +545,7 @@ class _MainPageState extends State<MainPage> {
                   'originalSrc': prep.originalPath,
                   'aspectRatio': aspect,
                   'originalAspectRatio': aspect,
+                  'isUltraHdr': prep.isUltraHdr,
                 },
               ),
             );
@@ -561,11 +565,12 @@ class _MainPageState extends State<MainPage> {
         );
       }
 
-      final List<Map<String, String>> importedImagesList = [];
+      final List<Map<String, dynamic>> importedImagesList = [];
       for (final prep in preparedPaths) {
-        importedImagesList.add({
+        importedImagesList.add(<String, dynamic>{
           'src': prep.displayPath,
           'originalSrc': prep.originalPath,
+          'isUltraHdr': prep.isUltraHdr,
         });
       }
 
@@ -599,10 +604,8 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  Future<({String displayPath, String originalPath})> _prepareImageAsset(
-    String projectId,
-    String sourcePath,
-  ) async {
+  Future<({String displayPath, String originalPath, bool isUltraHdr})>
+  _prepareImageAsset(String projectId, String sourcePath) async {
     try {
       final result =
           await _galleryChannel.invokeMapMethod<String, dynamic>(
@@ -623,9 +626,17 @@ class _MainPageState extends State<MainPage> {
           result['originalPath'] as String? ??
           result['displayPath'] as String? ??
           sourcePath;
-      return (displayPath: displayPath, originalPath: originalPath);
+      return (
+        displayPath: displayPath,
+        originalPath: originalPath,
+        isUltraHdr: result['isUltraHdr'] == true,
+      );
     } catch (_) {
-      return (displayPath: sourcePath, originalPath: sourcePath);
+      return (
+        displayPath: sourcePath,
+        originalPath: sourcePath,
+        isUltraHdr: false,
+      );
     }
   }
 

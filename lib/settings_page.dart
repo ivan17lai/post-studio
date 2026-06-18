@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'app_settings.dart';
 import 'app_strings.dart';
+import 'hdr/ultra_hdr.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({
@@ -34,12 +35,24 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _isCheckingApi = false;
   bool _isCheckingUpdate = false;
   final bool _showExtensions = false;
+  HdrCapabilities _hdrCapabilities = HdrCapabilities.unsupported;
 
   @override
   void initState() {
     super.initState();
     _apiKeyController = TextEditingController(text: _settings.geminiApiKey);
     _settings.addListener(_handleSettingsChanged);
+    unawaited(_loadHdrCapabilities());
+  }
+
+  Future<void> _loadHdrCapabilities() async {
+    final capabilities = await UltraHdr.capabilities();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _hdrCapabilities = capabilities;
+    });
   }
 
   @override
@@ -216,6 +229,24 @@ class _SettingsPageState extends State<SettingsPage> {
                 await _settings.setLanguage(value);
               },
               strings: strings,
+            ),
+            const SizedBox(height: 22),
+            _SettingsSectionTitle(title: strings.t('hdrSectionTitle')),
+            const SizedBox(height: 10),
+            _SettingsCard(
+              primary: primary,
+              icon: Icons.hdr_on_rounded,
+              title: strings.t('hdrSettingTitle'),
+              subtitle: _hdrCapabilities.supportsGainmap
+                  ? strings.t('hdrSettingSubtitle')
+                  : strings.t('hdrUnsupported'),
+              trailing: Switch(
+                value: _hdrCapabilities.supportsGainmap && _settings.hdrEnabled,
+                activeThumbColor: primary,
+                onChanged: _hdrCapabilities.supportsGainmap
+                    ? (value) => unawaited(_settings.setHdrEnabled(value))
+                    : null,
+              ),
             ),
             const SizedBox(height: 22),
             // Keep the code preserved but hidden for later development

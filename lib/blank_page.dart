@@ -11,16 +11,25 @@ import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 
+import 'package:path_provider/path_provider.dart';
+
 import 'app_settings.dart';
 import 'app_strings.dart';
+import 'hdr/hdr_image_view.dart';
+import 'hdr/lossless_passthrough.dart';
+import 'hdr/ultra_hdr.dart';
 import 'project_record.dart';
 import 'theme_constants.dart';
 
 enum PageDisplayMode { single, preview }
 
-enum ExportQualityMode { igStandard1080, high2400 }
+enum ExportQualityMode { igStandard1080, high2400, originalLossless }
 
-typedef _PreparedImageAsset = ({String displayPath, String originalPath});
+typedef _PreparedImageAsset = ({
+  String displayPath,
+  String originalPath,
+  bool isUltraHdr,
+});
 
 const int _pageWhiteBackgroundColorValue = 0xFFFFFFFF;
 const int _pageBlackBackgroundColorValue = 0xFF000000;
@@ -731,7 +740,72 @@ class _BlankPageState extends State<BlankPage> {
       if (widget.initialImportedSourcePaths.isNotEmpty) {
         unawaited(_importSourcePaths(widget.initialImportedSourcePaths));
       }
+      unawaited(_backfillUltraHdrFlags());
     });
+  }
+
+  /// Projects saved before the Ultra HDR feature carry no `isUltraHdr` flag on
+  /// their image elements. Detect it from the source files once per project
+  /// open so HDR badges and export behavior work for old projects too.
+  Future<void> _backfillUltraHdrFlags() async {
+    final capabilities = await UltraHdr.capabilities();
+    if (!capabilities.supportsGainmap) {
+      return;
+    }
+
+    String elementSource(CanvasElement element) =>
+        element.data['originalSrc'] as String? ??
+        element.data['src'] as String? ??
+        '';
+
+    final pendingPaths = <String>{};
+    for (final page in _project.pages) {
+      for (final element in page.elements) {
+        if (element.type != 'image' || element.data.containsKey('isUltraHdr')) {
+          continue;
+        }
+        final src = elementSource(element);
+        if (src.isNotEmpty) {
+          pendingPaths.add(src);
+        }
+      }
+    }
+    if (pendingPaths.isEmpty) {
+      return;
+    }
+
+    final verdicts = <String, bool>{};
+    for (final path in pendingPaths) {
+      verdicts[path] = await UltraHdr.isUltraHdrFile(path);
+    }
+    if (!mounted) {
+      return;
+    }
+
+    var changed = false;
+    final updatedPages = _project.pages.map((page) {
+      var pageChanged = false;
+      final updatedElements = page.elements.map((element) {
+        if (element.type != 'image' ||
+            element.data.containsKey('isUltraHdr')) {
+          return element;
+        }
+        final verdict = verdicts[elementSource(element)];
+        if (verdict == null) {
+          return element;
+        }
+        pageChanged = true;
+        changed = true;
+        return element.copyWith(
+          data: <String, dynamic>{...element.data, 'isUltraHdr': verdict},
+        );
+      }).toList();
+      return pageChanged ? page.copyWith(elements: updatedElements) : page;
+    }).toList();
+
+    if (changed) {
+      await _saveProject(_project.copyWith(pages: updatedPages));
+    }
   }
 
   void _handleSettingsChanged() {
@@ -989,7 +1063,7 @@ class _BlankPageState extends State<BlankPage> {
 
     for (final item in rawList) {
       if (item is String && item == path) {
-        return (displayPath: item, originalPath: item);
+        return (displayPath: item, originalPath: item, isUltraHdr: false);
       }
       if (item is Map) {
         final src = item['src'] as String?;
@@ -998,7 +1072,11 @@ class _BlankPageState extends State<BlankPage> {
           continue;
         }
         if (path == src || path == originalSrc) {
-          return (displayPath: src, originalPath: originalSrc ?? src);
+          return (
+            displayPath: src,
+            originalPath: originalSrc ?? src,
+            isUltraHdr: item['isUltraHdr'] == true,
+          );
         }
       }
     }
@@ -1040,6 +1118,7 @@ class _BlankPageState extends State<BlankPage> {
           (image) => <String, dynamic>{
             'src': image.displayPath,
             'originalSrc': image.originalPath,
+            'isUltraHdr': image.isUltraHdr,
           },
         )
         .toList();
@@ -1083,7 +1162,11 @@ class _BlankPageState extends State<BlankPage> {
           result['originalPath'] as String? ??
           result['displayPath'] as String? ??
           sourcePath;
-      return (displayPath: displayPath, originalPath: originalPath);
+      return (
+        displayPath: displayPath,
+        originalPath: originalPath,
+        isUltraHdr: result['isUltraHdr'] == true,
+      );
     } finally {
       if (managePreparingState && mounted) {
         setState(() {
@@ -2339,6 +2422,7 @@ class _BlankPageState extends State<BlankPage> {
         'originalSrc': preparedImage.originalPath,
         'aspectRatio': aspectRatio,
         'originalAspectRatio': aspectRatio,
+        'isUltraHdr': preparedImage.isUltraHdr,
       },
     );
     final updatedPage = currentPage.copyWith(
@@ -2411,6 +2495,7 @@ class _BlankPageState extends State<BlankPage> {
             (image) => <String, dynamic>{
               'src': image.displayPath,
               'originalSrc': image.originalPath,
+              'isUltraHdr': image.isUltraHdr,
             },
           ),
         ),
@@ -2535,6 +2620,7 @@ class _BlankPageState extends State<BlankPage> {
         ...selectedImage.data,
         'src': preparedImage.displayPath,
         'originalSrc': preparedImage.originalPath,
+        'isUltraHdr': preparedImage.isUltraHdr,
         'cropOffsetX': 0.0,
         'cropOffsetY': 0.0,
         'cropScale': 1.0,
@@ -2573,9 +2659,34 @@ class _BlankPageState extends State<BlankPage> {
     return completer.future;
   }
 
+  /// Writes the freshly exported page bytes to a temp file and opens the HDR
+  /// big-view dialog, so the user can inspect the true (gain-map boosted)
+  /// result before leaving the export flow.
+  Future<void> _showExportedPageHdrPreview(_CompletedExportPage page) async {
+    try {
+      final directory = await getTemporaryDirectory();
+      final file = File(
+        '${directory.path}/igapp_export_preview_${page.pageNumber}.jpg',
+      );
+      await file.writeAsBytes(page.bytes, flush: true);
+      if (!mounted) {
+        return;
+      }
+      _showImportedImagePreview(file.path);
+    } catch (_) {
+      // Preview is best-effort; the export itself already succeeded.
+    }
+  }
+
   void _showImportedImagePreview(String imagePath) {
     if (imagePath.isEmpty) {
       return;
+    }
+
+    // Prefer the untouched original so the HDR preview shows full fidelity.
+    final originalPath = _importedImageOriginalPath(imagePath);
+    if (originalPath.isNotEmpty) {
+      imagePath = originalPath;
     }
 
     showGeneralDialog<void>(
@@ -4439,6 +4550,26 @@ class _BlankPageState extends State<BlankPage> {
     return result ?? false;
   }
 
+  /// Lossless passthrough: copies the original file into the gallery without
+  /// any re-encode, preserving gain map, EXIF and ICC data bit-for-bit.
+  Future<bool> _saveOriginalToGallery({
+    required String path,
+    required String name,
+  }) async {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return false;
+    }
+    try {
+      final result = await _galleryChannel.invokeMethod<bool>(
+        'saveOriginalToGallery',
+        <String, dynamic>{'path': path, 'name': name},
+      );
+      return result ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
   Future<void> _primeExportImageCache({
     void Function(double progress, String label)? onProgress,
   }) async {
@@ -4770,8 +4901,12 @@ class _BlankPageState extends State<BlankPage> {
     required int exportWidth,
     required List<int> pageIndexes,
     required int targetListIndex,
+    HdrExportMode hdrMode = HdrExportMode.off,
   }) async {
-    if (_pageIndexesContainText(pageIndexes)) {
+    final containsText = _pageIndexesContainText(pageIndexes);
+    // The native renderer draws text itself, so Android pages always take the
+    // native path — that is the only way gain maps survive the export.
+    if (containsText && defaultTargetPlatform != TargetPlatform.android) {
       return _renderProjectPageInSetBytesWithFlutter(
         exportWidth: exportWidth,
         pageIndexes: pageIndexes,
@@ -4852,6 +4987,16 @@ class _BlankPageState extends State<BlankPage> {
                     'cropOffsetY': _cropOffsetYFromData(element.data),
                     'cropScale': _cropScaleFromData(element.data),
                     'borderRadiusRatio': (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0,
+                    if (element.type == 'text') ...<String, dynamic>{
+                      'text': _textContentFromData(element.data),
+                      'colorValue': _textColorFromData(
+                        element.data,
+                      ).toARGB32(),
+                      'fontSizeRatio': _textFontSizeRatioFromData(element.data),
+                      'maxLines': _textLineCount(
+                        _textContentFromData(element.data),
+                      ),
+                    },
                   },
                 )
                 .toList(),
@@ -4862,6 +5007,7 @@ class _BlankPageState extends State<BlankPage> {
     final payload = <String, dynamic>{
       'exportWidth': exportWidth,
       'targetPageIndex': targetListIndex,
+      'hdrMode': hdrMode.payloadValue,
       'images': <String, Uint8List>{
         for (final path in usedImagePaths) path: _exportImageBytesCache[path]!,
       },
@@ -4869,15 +5015,27 @@ class _BlankPageState extends State<BlankPage> {
     };
 
     if (defaultTargetPlatform == TargetPlatform.android) {
-      final result = await _galleryChannel.invokeMethod<Uint8List>(
-        'renderPageToJpgNative',
-        payload,
-      );
-      if (result != null) {
-        return result;
+      try {
+        final result = await _galleryChannel.invokeMethod<Uint8List>(
+          'renderPageToJpgNative',
+          payload,
+        );
+        if (result != null) {
+          return result;
+        }
+      } on PlatformException {
+        // Fall back to the Dart renderers below (SDR-only) so the export
+        // still completes even if the native path fails.
       }
     }
 
+    if (containsText) {
+      return _renderProjectPageInSetBytesWithFlutter(
+        exportWidth: exportWidth,
+        pageIndexes: pageIndexes,
+        targetListIndex: targetListIndex,
+      );
+    }
     return compute(_renderSelectedPageJpgBytes, payload);
   }
 
@@ -4885,6 +5043,7 @@ class _BlankPageState extends State<BlankPage> {
     required bool reverseOrder,
     required ExportQualityMode qualityMode,
     required Set<int> selectedPageIndexes,
+    HdrExportMode hdrMode = HdrExportMode.off,
     void Function(double progress, String label)? onProgress,
     ValueChanged<_CompletedExportPage>? onCompletedPage,
   }) async {
@@ -4901,6 +5060,7 @@ class _BlankPageState extends State<BlankPage> {
     try {
       await _primeExportImageCache(onProgress: onProgress);
       var successCount = 0;
+      var losslessFallbackCount = 0;
       final selectedIndexes =
           selectedPageIndexes
               .where((index) => index >= 0 && index < _project.pages.length)
@@ -4912,7 +5072,9 @@ class _BlankPageState extends State<BlankPage> {
       final totalPages = selectedIndexes.length;
       final exportWidth = switch (qualityMode) {
         ExportQualityMode.igStandard1080 => 1080,
-        ExportQualityMode.high2400 => 2400,
+        // Pages that miss the passthrough conditions fall back to the highest
+        // re-render quality.
+        ExportQualityMode.high2400 || ExportQualityMode.originalLossless => 2400,
       };
       final pageIndexes = reverseOrder
           ? selectedIndexes.reversed.toList()
@@ -4926,35 +5088,68 @@ class _BlankPageState extends State<BlankPage> {
           label: strings.t('renderPages'),
           onProgress: onProgress,
         );
-        final jpgBytes = await _renderProjectPageInSetBytesForGallery(
-          exportWidth: exportWidth,
-          pageIndexes: pageIndexes,
-          targetListIndex: listIndex,
-        );
 
-        _setExportProgress(
-          progress: 0.55 + ((exportIndex - 1) / totalPages) * 0.45,
-          label: strings.t(
-            'exportPageProgress',
-            args: <String, String>{
-              'current': '$exportIndex',
-              'total': '$totalPages',
-            },
-          ),
-          onProgress: onProgress,
-        );
+        var isSuccess = false;
+        Uint8List? completedBytes;
 
-        final isSuccess = await _saveImageToGallery(
-          bytes: jpgBytes,
-          name: _buildGalleryExportName(pageIndex),
-        );
+        if (qualityMode == ExportQualityMode.originalLossless) {
+          final decision = evaluateLosslessExport(
+            project: _project,
+            pageIndex: pageIndex,
+          );
+          if (decision.eligible) {
+            isSuccess = await _saveOriginalToGallery(
+              path: decision.originalPath!,
+              name: _buildGalleryExportName(pageIndex),
+            );
+            if (isSuccess) {
+              completedBytes =
+                  await _readImageBytesForExport(decision.displayPath!) ??
+                  await _readImageBytesForExport(decision.originalPath!);
+            }
+          }
+          if (!isSuccess) {
+            losslessFallbackCount += 1;
+          }
+        }
+
+        if (!isSuccess) {
+          final jpgBytes = await _renderProjectPageInSetBytesForGallery(
+            exportWidth: exportWidth,
+            pageIndexes: pageIndexes,
+            targetListIndex: listIndex,
+            hdrMode: hdrMode,
+          );
+
+          _setExportProgress(
+            progress: 0.55 + ((exportIndex - 1) / totalPages) * 0.45,
+            label: strings.t(
+              'exportPageProgress',
+              args: <String, String>{
+                'current': '$exportIndex',
+                'total': '$totalPages',
+              },
+            ),
+            onProgress: onProgress,
+          );
+
+          isSuccess = await _saveImageToGallery(
+            bytes: jpgBytes,
+            name: _buildGalleryExportName(pageIndex),
+          );
+          completedBytes = jpgBytes;
+        }
+
         if (isSuccess) {
           successCount += 1;
-          final completedPage = _CompletedExportPage(
-            pageNumber: pageIndex + 1,
-            bytes: jpgBytes,
-          );
-          onCompletedPage?.call(completedPage);
+          if (completedBytes != null) {
+            onCompletedPage?.call(
+              _CompletedExportPage(
+                pageNumber: pageIndex + 1,
+                bytes: completedBytes,
+              ),
+            );
+          }
         }
 
         _setExportProgress(
@@ -4984,6 +5179,19 @@ class _BlankPageState extends State<BlankPage> {
           SnackBar(content: Text(strings.t('partialExportFailed'))),
         );
       }
+      if (qualityMode == ExportQualityMode.originalLossless &&
+          losslessFallbackCount > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              strings.t(
+                'losslessFallbackNotice',
+                args: <String, String>{'count': '$losslessFallbackCount'},
+              ),
+            ),
+          ),
+        );
+      }
     } catch (_) {
       if (!mounted) {
         return;
@@ -5007,8 +5215,16 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final strings = AppStrings.of(context);
+    final hdrCapabilities = await UltraHdr.capabilities();
+    if (!mounted) {
+      return;
+    }
     var reverseOrder = true;
     var qualityMode = ExportQualityMode.igStandard1080;
+    var hdrExportOn =
+        hdrCapabilities.supportsGainmap &&
+        AppSettingsController.instance.hdrEnabled;
+    var sdrEnhanced = false;
     var exportStarted = false;
     var exportRunning = false;
     var exportDone = false;
@@ -5036,10 +5252,15 @@ class _BlankPageState extends State<BlankPage> {
         dialogCompletedPages = <_CompletedExportPage>[];
       });
 
+      final hdrMode = !hdrCapabilities.supportsGainmap || !hdrExportOn
+          ? HdrExportMode.off
+          : (sdrEnhanced ? HdrExportMode.enhanced : HdrExportMode.on);
+
       await _exportAllPagesToGallery(
         reverseOrder: reverseOrder,
         qualityMode: qualityMode,
         selectedPageIndexes: selectedExportPageIndexes,
+        hdrMode: hdrMode,
         onProgress: (progress, label) {
           if (!dialogContext.mounted) {
             return;
@@ -5166,7 +5387,7 @@ class _BlankPageState extends State<BlankPage> {
                                       },
                                     ),
                                   ),
-                                  const SizedBox(width: 10),
+                                  const SizedBox(width: 8),
                                   Expanded(
                                     child: _ExportQualityButton(
                                       label: '高畫質',
@@ -5182,8 +5403,124 @@ class _BlankPageState extends State<BlankPage> {
                                       },
                                     ),
                                   ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: _ExportQualityButton(
+                                      label: strings.t('qualityOriginalLabel'),
+                                      detail: strings.t(
+                                        'qualityOriginalDetail',
+                                      ),
+                                      selected:
+                                          qualityMode ==
+                                          ExportQualityMode.originalLossless,
+                                      onTap: () {
+                                        setDialogState(() {
+                                          qualityMode = ExportQualityMode
+                                              .originalLossless;
+                                        });
+                                      },
+                                    ),
+                                  ),
                                 ],
                               ),
+                              if (qualityMode ==
+                                  ExportQualityMode.originalLossless) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  strings.t('losslessQualityHint'),
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    height: 1.35,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF8A8A8A),
+                                  ),
+                                ),
+                              ],
+                              if (hdrCapabilities.supportsGainmap) ...[
+                                const SizedBox(height: 14),
+                                Row(
+                                  children: [
+                                    _ExportReverseSwitch(
+                                      value: hdrExportOn,
+                                      onChanged: (value) {
+                                        setDialogState(() {
+                                          hdrExportOn = value;
+                                        });
+                                      },
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        strings.t('hdrExportToggle'),
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600,
+                                          color: Color(0xFF1F1F1F),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                AnimatedSize(
+                                  duration: const Duration(milliseconds: 180),
+                                  curve: Curves.easeInOut,
+                                  child: hdrExportOn
+                                      ? Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            const SizedBox(height: 10),
+                                            Text(
+                                              strings.t('sdrTreatmentLabel'),
+                                              style: const TextStyle(
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.w700,
+                                                color: Color(0xFF6A6A6A),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 8),
+                                            Row(
+                                              children: [
+                                                Expanded(
+                                                  child: _ExportQualityButton(
+                                                    label: strings.t(
+                                                      'sdrNeutralLabel',
+                                                    ),
+                                                    detail: strings.t(
+                                                      'sdrNeutralDetail',
+                                                    ),
+                                                    selected: !sdrEnhanced,
+                                                    onTap: () {
+                                                      setDialogState(() {
+                                                        sdrEnhanced = false;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: _ExportQualityButton(
+                                                    label: strings.t(
+                                                      'sdrEnhancedLabel',
+                                                    ),
+                                                    detail: strings.t(
+                                                      'sdrEnhancedDetail',
+                                                    ),
+                                                    selected: sdrEnhanced,
+                                                    onTap: () {
+                                                      setDialogState(() {
+                                                        sdrEnhanced = true;
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        )
+                                      : const SizedBox.shrink(),
+                                ),
+                              ],
                               const SizedBox(height: 14),
                               Row(
                                 children: [
@@ -5232,6 +5569,9 @@ class _BlankPageState extends State<BlankPage> {
                                   _ExportProgressPanel(
                                     progress: dialogProgress,
                                     completedPages: dialogCompletedPages,
+                                    onPreviewPage: (page) => unawaited(
+                                      _showExportedPageHdrPreview(page),
+                                    ),
                                   ),
                                 ],
                               )
@@ -7423,26 +7763,53 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                         size: 24,
                       ),
                     )
-                  : _CroppedImageFile(
-                      path: src,
-                      frameWidth: width,
-                      frameHeight: height,
-                      sourceAspectRatio:
-                          (widget.element.data['originalAspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (widget.element.data['aspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (width / height),
-                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                      cropScale: _cropScaleFromData(widget.element.data),
-                      cacheWidth: _previewImageCacheExtent(
-                        context,
-                        width,
-                        height,
-                      ),
-                    ),
+                  : (widget.element.data['isUltraHdr'] == true &&
+                          !widget.isCropMode &&
+                          !kIsWeb &&
+                          defaultTargetPlatform == TargetPlatform.android &&
+                          AppSettingsController.instance.hdrEnabled)
+                      ? HdrImageView(
+                          key: ValueKey(
+                            'hdr_${src}_'
+                            '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
+                          ),
+                          path: src,
+                          sourceAspectRatio:
+                              (widget.element.data['originalAspectRatio']
+                                      as num?)
+                                  ?.toDouble() ??
+                              (widget.element.data['aspectRatio'] as num?)
+                                  ?.toDouble() ??
+                              0.0,
+                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                          cropScale: _cropScaleFromData(widget.element.data),
+                        )
+                      : _CroppedImageFile(
+                          path: src,
+                          frameWidth: width,
+                          frameHeight: height,
+                          sourceAspectRatio:
+                              (widget.element.data['originalAspectRatio']
+                                      as num?)
+                                  ?.toDouble() ??
+                              (widget.element.data['aspectRatio'] as num?)
+                                  ?.toDouble() ??
+                              (width / height),
+                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                          cropScale: _cropScaleFromData(widget.element.data),
+                          cacheWidth: _previewImageCacheExtent(
+                            context,
+                            width,
+                            height,
+                          ),
+                        ),
             ),
+            if (widget.element.data['isUltraHdr'] == true)
+              const Positioned(left: 6, top: 6, child: _HdrBadge()),
             _DeleteConfirmOverlay(
               visible: widget.isDeleteArmed,
               onConfirm: widget.onConfirmDelete,
@@ -7761,26 +8128,53 @@ class _PreviewImageElementWidgetState
                         size: 24,
                       ),
                     )
-                  : _CroppedImageFile(
-                      path: src,
-                      frameWidth: width,
-                      frameHeight: height,
-                      sourceAspectRatio:
-                          (widget.element.data['originalAspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (widget.element.data['aspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (width / height),
-                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                      cropScale: _cropScaleFromData(widget.element.data),
-                      cacheWidth: _previewImageCacheExtent(
-                        context,
-                        width,
-                        height,
-                      ),
-                    ),
+                  : (widget.element.data['isUltraHdr'] == true &&
+                          !widget.isCropMode &&
+                          !kIsWeb &&
+                          defaultTargetPlatform == TargetPlatform.android &&
+                          AppSettingsController.instance.hdrEnabled)
+                      ? HdrImageView(
+                          key: ValueKey(
+                            'hdr_${src}_'
+                            '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
+                            '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
+                          ),
+                          path: src,
+                          sourceAspectRatio:
+                              (widget.element.data['originalAspectRatio']
+                                      as num?)
+                                  ?.toDouble() ??
+                              (widget.element.data['aspectRatio'] as num?)
+                                  ?.toDouble() ??
+                              0.0,
+                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                          cropScale: _cropScaleFromData(widget.element.data),
+                        )
+                      : _CroppedImageFile(
+                          path: src,
+                          frameWidth: width,
+                          frameHeight: height,
+                          sourceAspectRatio:
+                              (widget.element.data['originalAspectRatio']
+                                      as num?)
+                                  ?.toDouble() ??
+                              (widget.element.data['aspectRatio'] as num?)
+                                  ?.toDouble() ??
+                              (width / height),
+                          cropOffsetX: _cropOffsetXFromData(widget.element.data),
+                          cropOffsetY: _cropOffsetYFromData(widget.element.data),
+                          cropScale: _cropScaleFromData(widget.element.data),
+                          cacheWidth: _previewImageCacheExtent(
+                            context,
+                            width,
+                            height,
+                          ),
+                        ),
             ),
+            if (widget.element.data['isUltraHdr'] == true)
+              const Positioned(left: 6, top: 6, child: _HdrBadge()),
             _DeleteConfirmOverlay(
               visible: widget.isDeleteArmed,
               onConfirm: widget.onConfirmDelete,
@@ -8389,10 +8783,12 @@ class _ExportProgressPanel extends StatelessWidget {
   const _ExportProgressPanel({
     required this.progress,
     required this.completedPages,
+    this.onPreviewPage,
   });
 
   final double progress;
   final List<_CompletedExportPage> completedPages;
+  final ValueChanged<_CompletedExportPage>? onPreviewPage;
 
   @override
   Widget build(BuildContext context) {
@@ -8429,7 +8825,10 @@ class _ExportProgressPanel extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       const SizedBox(height: 10),
-                      _CompletedExportPagesStrip(pages: completedPages),
+                      _CompletedExportPagesStrip(
+                        pages: completedPages,
+                        onPreviewPage: onPreviewPage,
+                      ),
                     ],
                   ),
           ),
@@ -8440,9 +8839,10 @@ class _ExportProgressPanel extends StatelessWidget {
 }
 
 class _CompletedExportPagesStrip extends StatelessWidget {
-  const _CompletedExportPagesStrip({required this.pages});
+  const _CompletedExportPagesStrip({required this.pages, this.onPreviewPage});
 
   final List<_CompletedExportPage> pages;
+  final ValueChanged<_CompletedExportPage>? onPreviewPage;
 
   @override
   Widget build(BuildContext context) {
@@ -8454,7 +8854,10 @@ class _CompletedExportPagesStrip extends StatelessWidget {
         separatorBuilder: (context, index) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
           final page = pages[index];
-          return _CompletedExportPageTile(page: page);
+          return _CompletedExportPageTile(
+            page: page,
+            onTap: onPreviewPage == null ? null : () => onPreviewPage!(page),
+          );
         },
       ),
     );
@@ -8462,62 +8865,66 @@ class _CompletedExportPagesStrip extends StatelessWidget {
 }
 
 class _CompletedExportPageTile extends StatelessWidget {
-  const _CompletedExportPageTile({required this.page});
+  const _CompletedExportPageTile({required this.page, this.onTap});
 
   final _CompletedExportPage page;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedScale(
-      duration: const Duration(milliseconds: 180),
-      curve: Curves.easeInOut,
-      scale: 1,
-      child: Container(
-        width: 54,
-        height: 76,
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF7F7F7),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: const Color(0xFFE0E0E0)),
-        ),
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: Image.memory(
-                  page.bytes,
-                  fit: BoxFit.contain,
-                  cacheHeight: 144,
-                  filterQuality: FilterQuality.low,
-                  gaplessPlayback: true,
-                ),
-              ),
-            ),
-            Positioned(
-              right: 2,
-              bottom: 2,
-              child: Container(
-                height: 18,
-                constraints: const BoxConstraints(minWidth: 18),
-                alignment: Alignment.center,
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.68),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  '${page.pageNumber}',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedScale(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeInOut,
+        scale: 1,
+        child: Container(
+          width: 54,
+          height: 76,
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF7F7F7),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFFE0E0E0)),
+          ),
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: Image.memory(
+                    page.bytes,
+                    fit: BoxFit.contain,
+                    cacheHeight: 144,
+                    filterQuality: FilterQuality.low,
+                    gaplessPlayback: true,
                   ),
                 ),
               ),
-            ),
-          ],
+              Positioned(
+                right: 2,
+                bottom: 2,
+                child: Container(
+                  height: 18,
+                  constraints: const BoxConstraints(minWidth: 18),
+                  alignment: Alignment.center,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.68),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    '${page.pageNumber}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -10804,24 +11211,30 @@ class _ImportedImageCard extends StatelessWidget {
   }
 }
 
-class HdrImageView extends StatelessWidget {
-  final String path;
-  final BoxFit fit;
-  const HdrImageView({required this.path, this.fit = BoxFit.fill, super.key});
+/// Small chip marking canvas elements whose source photo is Ultra HDR.
+class _HdrBadge extends StatelessWidget {
+  const _HdrBadge();
 
   @override
   Widget build(BuildContext context) {
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      return AndroidView(
-        viewType: 'igapp/hdr_image_view',
-        creationParams: <String, dynamic>{
-          'path': path,
-          'fit': fit == BoxFit.contain ? 'contain' : 'fill',
-        },
-        creationParamsCodec: const StandardMessageCodec(),
-      );
-    }
-    return Image.file(File(path), fit: fit, gaplessPlayback: true);
+    return IgnorePointer(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: const Text(
+          'HDR',
+          style: TextStyle(
+            fontSize: 9,
+            fontWeight: FontWeight.w800,
+            color: Colors.white,
+            letterSpacing: 0.4,
+          ),
+        ),
+      ),
+    );
   }
 }
 

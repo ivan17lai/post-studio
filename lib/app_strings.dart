@@ -123,6 +123,24 @@ class AppStrings {
     'languageEnglish': 'English',
     'languageChangeNotice': '變更語言後將會立即套用。',
     'layers': '圖層',
+
+    // Ultra HDR
+    'hdrSectionTitle': 'Ultra HDR',
+    'hdrSettingTitle': 'HDR 顯示與匯出',
+    'hdrSettingSubtitle':
+        '在支援的裝置上以 HDR 顯示與匯出 Ultra HDR 照片（Android 14+）。關閉後一律以 SDR 處理。',
+    'hdrUnsupported': '此裝置不支援 Ultra HDR（需 Android 14 以上）',
+    'hdrExportToggle': 'Ultra HDR 匯出',
+    'sdrTreatmentLabel': 'SDR 圖片處理',
+    'sdrNeutralLabel': '中性',
+    'sdrNeutralDetail': '保持原樣',
+    'sdrEnhancedLabel': '增強',
+    'sdrEnhancedDetail': '提亮高光',
+    'qualityOriginalLabel': '原始',
+    'qualityOriginalDetail': '無損',
+    'losslessQualityHint':
+        '單張滿版未裁切的頁面會直接複製原始檔（0 重新編碼，HDR/EXIF 完整保留）；其他頁面以 2.4K 高品質重新渲染。',
+    'losslessFallbackNotice': '{count} 頁不符合無損直出條件，已以 2.4K 重新渲染',
     'noLayers': '目前頁面沒有圖層',
   };
 
@@ -251,6 +269,25 @@ class AppStrings {
     'languageEnglish': 'English',
     'languageChangeNotice': 'Language changes will be applied immediately.',
     'layers': 'Layers',
+
+    // Ultra HDR
+    'hdrSectionTitle': 'Ultra HDR',
+    'hdrSettingTitle': 'HDR display & export',
+    'hdrSettingSubtitle':
+        'Show and export Ultra HDR photos with real HDR on supported devices (Android 14+). When off, everything stays SDR.',
+    'hdrUnsupported': 'This device does not support Ultra HDR (requires Android 14+).',
+    'hdrExportToggle': 'Ultra HDR export',
+    'sdrTreatmentLabel': 'SDR images',
+    'sdrNeutralLabel': 'Neutral',
+    'sdrNeutralDetail': 'as-is',
+    'sdrEnhancedLabel': 'Enhanced',
+    'sdrEnhancedDetail': 'boost highlights',
+    'qualityOriginalLabel': 'Original',
+    'qualityOriginalDetail': 'lossless',
+    'losslessQualityHint':
+        'Pages that are a single full-bleed, uncropped photo are copied byte-for-byte (no re-encode, HDR/EXIF preserved); other pages re-render at 2.4K.',
+    'losslessFallbackNotice':
+        '{count} page(s) did not qualify for lossless passthrough and were re-rendered at 2.4K',
     'noLayers': 'No layers on this page',
   };
 
