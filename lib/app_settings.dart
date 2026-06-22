@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'hdr/ultra_hdr.dart';
 
-const String kAppDisplayVersion = '1.7.9';
+const String kAppDisplayVersion = '1.7.10';
 const String kGeminiSortModel = 'gemini-3.5-flash';
 const Color kDefaultPrimaryAccentColor = Color(0xFFC3AEFF);
 
@@ -26,6 +27,7 @@ class AppSettingsController extends ChangeNotifier {
   static const String _primaryColorKey = 'settings_primary_color';
   static const String _aiSortCountKey = 'settings_ai_sort_count';
   static const String _languageKey = 'settings_language';
+  static const String _fullScreenEnabledKey = 'settings_full_screen_enabled';
 
   /// Also read natively in MainActivity.onCreate (as
   /// `flutter.settings_hdr_enabled`) to set the window color mode before the
@@ -41,6 +43,7 @@ class AppSettingsController extends ChangeNotifier {
   int _primaryColorValue = kDefaultPrimaryAccentColor.toARGB32();
   int _aiSortCount = 0;
   String _language = 'system';
+  bool _fullScreenEnabled = false;
   bool _hdrEnabled = true;
   List<int> _savedColors = <int>[];
 
@@ -51,6 +54,7 @@ class AppSettingsController extends ChangeNotifier {
   bool get hasGeminiApiKey => _geminiApiKey.trim().isNotEmpty;
   int get aiSortCount => _aiSortCount;
   String get language => _language;
+  bool get fullScreenEnabled => _fullScreenEnabled;
   bool get hdrEnabled => _hdrEnabled;
 
   /// User-saved page colours, in insertion order.
@@ -68,12 +72,14 @@ class AppSettingsController extends ChangeNotifier {
         prefs.getInt(_primaryColorKey) ?? kDefaultPrimaryAccentColor.toARGB32();
     _aiSortCount = prefs.getInt(_aiSortCountKey) ?? 0;
     _language = prefs.getString(_languageKey) ?? 'system';
+    _fullScreenEnabled = prefs.getBool(_fullScreenEnabledKey) ?? false;
     _hdrEnabled = prefs.getBool(_hdrEnabledKey) ?? true;
     _savedColors = (prefs.getStringList(_savedColorsKey) ?? const <String>[])
         .map(int.tryParse)
         .whereType<int>()
         .toList();
     _loaded = true;
+    await _applySystemUiMode(_fullScreenEnabled);
     notifyListeners();
   }
 
@@ -111,6 +117,24 @@ class AppSettingsController extends ChangeNotifier {
     await prefs.setBool(_hdrEnabledKey, value);
     await UltraHdr.setWindowHdrColorMode(value);
     notifyListeners();
+  }
+
+  Future<void> setFullScreenEnabled(bool value) async {
+    _fullScreenEnabled = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_fullScreenEnabledKey, value);
+    await _applySystemUiMode(value);
+    notifyListeners();
+  }
+
+  Future<void> _applySystemUiMode(bool fullScreenEnabled) {
+    if (fullScreenEnabled) {
+      return SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    }
+    return SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: SystemUiOverlay.values,
+    );
   }
 
   Future<void> setLanguage(String value) async {

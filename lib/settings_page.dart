@@ -231,6 +231,21 @@ class _SettingsPageState extends State<SettingsPage> {
               strings: strings,
             ),
             const SizedBox(height: 22),
+            _SettingsSectionTitle(title: strings.t('displaySetting')),
+            const SizedBox(height: 10),
+            _SettingsCard(
+              primary: primary,
+              icon: Icons.fullscreen_rounded,
+              title: strings.t('fullScreenMode'),
+              subtitle: strings.t('fullScreenModeSubtitle'),
+              trailing: Switch(
+                value: _settings.fullScreenEnabled,
+                activeThumbColor: primary,
+                onChanged: (value) =>
+                    unawaited(_settings.setFullScreenEnabled(value)),
+              ),
+            ),
+            const SizedBox(height: 22),
             _SettingsSectionTitle(title: strings.t('hdrSectionTitle')),
             const SizedBox(height: 10),
             _SettingsCard(

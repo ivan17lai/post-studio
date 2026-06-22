@@ -62,6 +62,9 @@ class AppStrings {
     'settingsTitle': '設定',
     'appTagline': '輕鬆製作貼文',
     'themeColor': '主題色調',
+    'displaySetting': '顯示設定',
+    'fullScreenMode': '全螢幕模式',
+    'fullScreenModeSubtitle': '隱藏狀態列與底部導覽列，從螢幕邊緣滑動可暫時叫出。',
     'extensions': '擴充功能',
     'aiCollaboration': 'AI 協作',
     'aiCollaborationSubtitleActive': '演算法交織的視覺交響，為你的排版尋找最完美的敘事順序。',
@@ -216,6 +219,10 @@ class AppStrings {
     'settingsTitle': 'Settings',
     'appTagline': 'Easily create posts',
     'themeColor': 'Theme Color',
+    'displaySetting': 'Display Settings',
+    'fullScreenMode': 'Full Screen Mode',
+    'fullScreenModeSubtitle':
+        'Hide the status bar and bottom navigation bar. Swipe from the screen edge to reveal them temporarily.',
     'extensions': 'Extensions',
     'aiCollaboration': 'AI Collaboration',
     'aiCollaborationSubtitleActive':
@@ -305,7 +312,8 @@ class AppStrings {
     'hdrSettingTitle': 'HDR display & export',
     'hdrSettingSubtitle':
         'Show and export Ultra HDR photos with real HDR on supported devices (Android 14+). When off, everything stays SDR.',
-    'hdrUnsupported': 'This device does not support Ultra HDR (requires Android 14+).',
+    'hdrUnsupported':
+        'This device does not support Ultra HDR (requires Android 14+).',
     'hdrExportToggle': 'Ultra HDR export',
     'sdrTreatmentLabel': 'SDR images',
     'sdrNeutralLabel': 'Neutral',

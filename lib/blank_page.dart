@@ -64,6 +64,14 @@ PhotoAdjustments _photoAdjustmentsFromData(Map<String, dynamic> data) {
   return PhotoAdjustments.fromData(data['adjustments']);
 }
 
+/// Whether a canvas element contributes HDR content to a page: an Ultra HDR
+/// source photo, or an SDR photo brightened past 1.0 (synthesised HDR).
+bool _elementHasHdrContent(CanvasElement element) {
+  return element.type == 'image' &&
+      (element.data['isUltraHdr'] == true ||
+          _hdrBrightnessFromData(element.data) > 1.0);
+}
+
 /// Wraps an SDR (Flutter) image child in the element's colour adjustments.
 /// HDR elements instead pass the matrix to the native [HdrImageView], because
 /// a Flutter [ColorFiltered] does not reach platform-view pixels.
@@ -726,9 +734,9 @@ class _BlankPageState extends State<BlankPage> {
   static const String _tabPage = 'page';
   static const String _tabTemplate = 'template';
   static const String _tabElements = 'elements';
-  static const String _tabImageSource = 'image_source';
   static const String _tabImage = 'image';
   // Sub-tab ids inside the consolidated 圖片 tab (second row).
+  static const String _tabImageSource = 'image_source';
   static const String _tabImagePosition = 'image_position';
   static const String _tabImageSettings = 'image_settings';
   static const String _tabImageAdjust = 'image_adjust';
@@ -892,8 +900,7 @@ class _BlankPageState extends State<BlankPage> {
     return 75.0;
   }
 
-  bool _isImageTab(String tab) =>
-      tab == _tabElements || tab == _tabLayers || tab == _tabImage;
+  bool _isImageTab(String tab) => tab == _tabLayers || tab == _tabImage;
 
   bool _isTextTab(String tab) =>
       tab == _tabElements ||
@@ -976,11 +983,8 @@ class _BlankPageState extends State<BlankPage> {
     return switch (tabKey) {
       _tabPage => strings.t('page'),
       _tabTemplate => strings.t('template'),
-      _tabElements =>
-        _selectedImageElement == null
-            ? strings.t('elements')
-            : strings.t('replaceImage'),
-      _tabImageSource => strings.t('imageSource'),
+      _tabElements => strings.t('elements'),
+      _tabImageSource => strings.t('replaceImage'),
       _tabImagePosition => strings.t('imagePosition'),
       _tabImageSettings => strings.t('imageSettings'),
       _tabImageAdjust => strings.t('color'),
@@ -1302,13 +1306,7 @@ class _BlankPageState extends State<BlankPage> {
 
   List<String> get _bottomTabs {
     if (_selectedImageElement != null) {
-      return const <String>[
-        _tabPage,
-        _tabTemplate,
-        _tabElements,
-        _tabImage,
-        _tabLayers,
-      ];
+      return const <String>[_tabPage, _tabTemplate, _tabImage, _tabLayers];
     }
     if (_selectedTextElement != null) {
       return const <String>[
@@ -1352,13 +1350,23 @@ class _BlankPageState extends State<BlankPage> {
   void _syncBottomTab() {
     final tabs = _bottomTabs;
     if (!tabs.contains(_selectedBottomTab)) {
+      final nextTab =
+          _selectedImageElement != null && _selectedBottomTab == _tabElements
+          ? _tabImage
+          : tabs.last;
       if (mounted) {
         setState(() {
-          _selectedBottomTab = tabs.last;
+          _selectedBottomTab = nextTab;
+          if (nextTab == _tabImage) {
+            _imageSubTab = _tabImageSource;
+          }
           _refreshPageControllerViewportIfNeeded();
         });
       } else {
-        _selectedBottomTab = tabs.last;
+        _selectedBottomTab = nextTab;
+        if (nextTab == _tabImage) {
+          _imageSubTab = _tabImageSource;
+        }
         _refreshPageControllerViewportIfNeeded();
       }
     }
@@ -2493,10 +2501,11 @@ class _BlankPageState extends State<BlankPage> {
       _selectedElementId = newElement.id;
       _croppingElementId = null;
       _deleteArmedElementId = null;
-      _selectedBottomTab = _tabElements;
+      _selectedBottomTab = _tabImage;
+      _imageSubTab = _tabImageSource;
     });
     if (_bottomTabPageController.hasClients) {
-      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabElements));
+      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabImage));
     }
   }
 
@@ -2581,10 +2590,11 @@ class _BlankPageState extends State<BlankPage> {
       _selectedElementId = newElement.id;
       _croppingElementId = null;
       _deleteArmedElementId = null;
-      _selectedBottomTab = _tabElements;
+      _selectedBottomTab = _tabImage;
+      _imageSubTab = _tabImageSource;
     });
     if (_bottomTabPageController.hasClients) {
-      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabElements));
+      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabImage));
     }
   }
 
@@ -2778,10 +2788,11 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     setState(() {
-      _selectedBottomTab = _tabElements;
+      _selectedBottomTab = _tabImage;
+      _imageSubTab = _tabImageSource;
     });
     if (_bottomTabPageController.hasClients) {
-      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabElements));
+      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabImage));
     }
   }
 
@@ -2900,22 +2911,30 @@ class _BlankPageState extends State<BlankPage> {
       if (_croppingElementId != null && _croppingElementId != elementId) {
         _croppingElementId = null;
       }
-      final isValidTabForSelectedElement = selectedElement?.type == 'image'
+      final isSelectedImage = selectedElement?.type == 'image';
+      final isValidTabForSelectedElement = isSelectedImage
           ? _isImageTab(_selectedBottomTab)
           : selectedElement?.type == 'text'
           ? _isTextTab(_selectedBottomTab)
           : _selectedBottomTab == _tabElements;
       if (_selectedBottomTab != _tabPage && !isValidTabForSelectedElement) {
-        _selectedBottomTab = selectedElement?.type == 'text'
-            ? _tabTextSettings
-            : _tabElements;
+        if (selectedElement?.type == 'text') {
+          _selectedBottomTab = _tabTextSettings;
+        } else if (isSelectedImage) {
+          _selectedBottomTab = _tabImage;
+          _imageSubTab = _tabImageSource;
+        } else {
+          _selectedBottomTab = _tabElements;
+        }
       } else if (selectedElement?.type == 'text' &&
           _selectedBottomTab == _tabElements) {
         _selectedBottomTab = _tabTextSettings;
-      } else if (selectedElement?.type == 'image' &&
+      } else if (isSelectedImage &&
           (_selectedBottomTab == _tabTextPosition ||
-              _selectedBottomTab == _tabTextSettings)) {
-        _selectedBottomTab = _tabElements;
+              _selectedBottomTab == _tabTextSettings ||
+              _selectedBottomTab == _tabElements)) {
+        _selectedBottomTab = _tabImage;
+        _imageSubTab = _tabImageSource;
       }
       _refreshPageControllerViewportIfNeeded();
     });
@@ -5438,10 +5457,16 @@ class _BlankPageState extends State<BlankPage> {
     if (!mounted) {
       return;
     }
+    // Only surface the Ultra HDR export option when the project actually has
+    // HDR content; an all-SDR project gains nothing from a gain map.
+    final projectHasHdr = _project.pages.any(
+      (page) => page.elements.any(_elementHasHdrContent),
+    );
     var reverseOrder = true;
     var qualityMode = ExportQualityMode.igStandard1080;
     var hdrExportOn =
         hdrCapabilities.supportsGainmap &&
+        projectHasHdr &&
         AppSettingsController.instance.hdrEnabled;
     var sdrEnhanced = false;
     var exportStarted = false;
@@ -5655,7 +5680,8 @@ class _BlankPageState extends State<BlankPage> {
                                   ),
                                 ),
                               ],
-                              if (hdrCapabilities.supportsGainmap) ...[
+                              if (hdrCapabilities.supportsGainmap &&
+                                  projectHasHdr) ...[
                                 const SizedBox(height: 14),
                                 Row(
                                   children: [
@@ -6497,26 +6523,30 @@ class _BlankPageState extends State<BlankPage> {
                                         page: currentPage,
                                         onApplyTemplate: _applyTemplate,
                                       ),
-                                      _ElementTabPage(
-                                        showTextOption: false,
-                                        onAddText: _addTextElement,
-                                        onImportImages: _importImages,
-                                        importedImagePaths: _importedImagePaths,
-                                        onTapImportedImage:
-                                            _addImageElementFromPath,
-                                        onLongPressImportedImage:
-                                            _showImportedImagePreview,
-                                      ),
                                       Column(
                                         crossAxisAlignment:
                                             CrossAxisAlignment.start,
                                         children: [
-                                          Padding(
+                                          SingleChildScrollView(
+                                            scrollDirection: Axis.horizontal,
                                             padding: const EdgeInsets.symmetric(
                                               horizontal: 16,
                                             ),
                                             child: Row(
                                               children: [
+                                                _BottomTab(
+                                                  label: AppStrings.of(
+                                                    context,
+                                                  ).t('replaceImage'),
+                                                  selected:
+                                                      _imageSubTab ==
+                                                      _tabImageSource,
+                                                  onTap: () => setState(() {
+                                                    _imageSubTab =
+                                                        _tabImageSource;
+                                                  }),
+                                                ),
+                                                const SizedBox(width: 18),
                                                 _BottomTab(
                                                   label: AppStrings.of(
                                                     context,
@@ -6562,6 +6592,17 @@ class _BlankPageState extends State<BlankPage> {
                                             height: bottomTabPanelGap,
                                           ),
                                           switch (_imageSubTab) {
+                                            _tabImageSource => _ElementTabPage(
+                                              showTextOption: false,
+                                              onAddText: _addTextElement,
+                                              onImportImages: _importImages,
+                                              importedImagePaths:
+                                                  _importedImagePaths,
+                                              onTapImportedImage:
+                                                  _addImageElementFromPath,
+                                              onLongPressImportedImage:
+                                                  _showImportedImagePreview,
+                                            ),
                                             _tabImagePosition =>
                                               _ElementPositionTabPage(
                                                 range: _elementPositionSliderRange(
@@ -10344,13 +10385,7 @@ class _PageTabPage extends StatelessWidget {
     // Only offer "HDR白" when the page actually has an HDR element (or it is
     // already selected, so the user can still change away from it).
     final showHdrWhite =
-        isHdrWhiteSelected ||
-        page.elements.any(
-          (element) =>
-              element.type == 'image' &&
-              (element.data['isUltraHdr'] == true ||
-                  _hdrBrightnessFromData(element.data) > 1.0),
-        );
+        isHdrWhiteSelected || page.elements.any(_elementHasHdrContent);
     final isWhiteSelected =
         selectedPreset == _pageBackgroundColorPresetWhite ||
         (!isKnownPreset &&
@@ -11570,48 +11605,48 @@ class _PageColorCard extends StatelessWidget {
       child: _PressableScale(
         onTap: onTap,
         child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeInOut,
-        width: 75,
-        height: 75,
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: selected
-              ? Border.all(color: kPrimaryAccentColor, width: 2)
-              : null,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeInOut,
-              width: 26,
-              height: 26,
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: BorderRadius.circular(999),
-                border: color == Colors.white
-                    ? Border.all(color: const Color(0xFFD0D0D0))
-                    : null,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeInOut,
+          width: 75,
+          height: 75,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: selected
+                ? Border.all(color: kPrimaryAccentColor, width: 2)
+                : null,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeInOut,
+                width: 26,
+                height: 26,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(999),
+                  border: color == Colors.white
+                      ? Border.all(color: const Color(0xFFD0D0D0))
+                      : null,
+                ),
               ),
-            ),
-            const Spacer(),
-            AnimatedDefaultTextStyle(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeInOut,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
-                color: const Color(0xFF1F1F1F),
+              const Spacer(),
+              AnimatedDefaultTextStyle(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeInOut,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                  color: const Color(0xFF1F1F1F),
+                ),
+                child: Text(label),
               ),
-              child: Text(label),
-            ),
-          ],
+            ],
+          ),
         ),
-      ),
       ),
     );
   }
