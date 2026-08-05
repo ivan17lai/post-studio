@@ -4249,8 +4249,23 @@ class _BlankPageState extends State<BlankPage> {
     await _replaceElement(updatedElement, persist: true);
   }
 
-  Future<bool> _confirmApplyTemplateIfNeeded(ProjectPage page) async {
-    if (page.elements.isEmpty) {
+  static bool _elementHoldsPhoto(CanvasElement element) =>
+      element.type == 'image' &&
+      ((element.data['src'] as String?) ?? '').isNotEmpty;
+
+  /// Applying a template re-flows the photos already on the page into its slots
+  /// and keeps every text element, so the only thing that can actually be lost
+  /// is a photo that the new layout has no slot for. Confirm for that, and that
+  /// alone — asking whenever the page merely had elements on it meant the empty
+  /// slots a template leaves behind triggered the dialog every time.
+  Future<bool> _confirmApplyTemplateIfNeeded(
+    ProjectPage page,
+    TemplateOption option,
+  ) async {
+    final photoCount = page.elements.where(_elementHoldsPhoto).length;
+    final slotCount = option.slots.length;
+    final droppedCount = photoCount - slotCount;
+    if (droppedCount <= 0) {
       return true;
     }
 
@@ -4295,7 +4310,14 @@ class _BlankPageState extends State<BlankPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  strings.t('applyTemplateWarning'),
+                  strings.t(
+                    'applyTemplateDropWarning',
+                    args: <String, String>{
+                      'photos': '$photoCount',
+                      'slots': '$slotCount',
+                      'dropped': '$droppedCount',
+                    },
+                  ),
                   style: const TextStyle(
                     fontSize: 14,
                     height: 1.4,
@@ -4314,7 +4336,7 @@ class _BlankPageState extends State<BlankPage> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: _DialogActionButton(
-                        label: strings.t('clearAndApply'),
+                        label: strings.t('removeAndApply'),
                         isPrimary: true,
                         onTap: () => Navigator.of(context).pop(true),
                       ),
@@ -4333,7 +4355,10 @@ class _BlankPageState extends State<BlankPage> {
 
   Future<void> _applyTemplate(TemplateOption option) async {
     final currentPage = _project.pages[_currentPageIndex];
-    final shouldApply = await _confirmApplyTemplateIfNeeded(currentPage);
+    final shouldApply = await _confirmApplyTemplateIfNeeded(
+      currentPage,
+      option,
+    );
     if (!mounted || !shouldApply) {
       return;
     }
@@ -4419,10 +4444,7 @@ class _BlankPageState extends State<BlankPage> {
 
     updatedElements.addAll(existingTexts);
 
-    final updatedPage = currentPage.copyWith(
-      elements: updatedElements,
-      extras: <String, dynamic>{...currentPage.extras, 'templateId': option.id},
-    );
+    final updatedPage = currentPage.copyWith(elements: updatedElements);
 
     final updatedPages = List<ProjectPage>.from(_project.pages);
     updatedPages[_currentPageIndex] = updatedPage;
@@ -4438,7 +4460,9 @@ class _BlankPageState extends State<BlankPage> {
     setState(() {
       _selectedElementId = null;
       _deleteArmedElementId = null;
-      _selectedBottomTab = _tabElements;
+      // Stay on the template picker: applying doubles as the preview, so the
+      // user can flip between layouts and see which card is highlighted.
+      _selectedBottomTab = _tabTemplate;
     });
     _syncBottomTab();
   }
@@ -10848,6 +10872,7 @@ class _TemplateTabPage extends StatelessWidget {
                     option: templates[i],
                     page: page,
                     marginRatio: marginRatio,
+                    selected: templates[i].matchesLayout(page, marginRatio),
                     onTap: () => onApplyTemplate(templates[i]),
                   ),
                   if (i != templates.length - 1) const SizedBox(width: 12),
@@ -11710,12 +11735,14 @@ class _TemplateCard extends StatelessWidget {
     required this.option,
     required this.page,
     required this.marginRatio,
+    required this.selected,
     required this.onTap,
   });
 
   final TemplateOption option;
   final ProjectPage page;
   final double marginRatio;
+  final bool selected;
   final VoidCallback onTap;
 
   @override
@@ -11732,6 +11759,9 @@ class _TemplateCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(16),
+          border: selected
+              ? Border.all(color: kPrimaryAccentColor, width: 2)
+              : null,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -11747,10 +11777,10 @@ class _TemplateCard extends StatelessWidget {
             const Spacer(),
             Text(
               strings.t(option.label),
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: Color(0xFF1F1F1F),
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                color: const Color(0xFF1F1F1F),
               ),
             ),
           ],

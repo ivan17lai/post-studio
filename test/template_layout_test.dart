@@ -268,6 +268,134 @@ void main() {
     });
   });
 
+  group('matchesLayout', () {
+    ProjectPage pageWith(List<CanvasElement> elements) {
+      return ProjectPage(
+        id: 'page-1',
+        title: 'Page 1',
+        type: 'page',
+        aspectWidth: 3,
+        aspectHeight: 4,
+        elements: elements,
+        extras: const <String, dynamic>{},
+      );
+    }
+
+    test('a freshly applied template matches its own layout', () {
+      for (final marginRatio in <double>[0, 0.05]) {
+        final laidOut = pageWith(
+          _twoRows.buildElements('page-1', _page(3, 4), marginRatio),
+        );
+        expect(_twoRows.matchesLayout(laidOut, marginRatio), isTrue);
+      }
+    });
+
+    test('a different template does not match', () {
+      final laidOut = pageWith(
+        _twoRows.buildElements('page-1', _page(3, 4), 0),
+      );
+      expect(_twoColumns.matchesLayout(laidOut, 0), isFalse);
+      expect(_heroTopTwoBottom.matchesLayout(laidOut, 0), isFalse);
+    });
+
+    test('moving a slot stops it matching', () {
+      final elements = _twoRows.buildElements('page-1', _page(3, 4), 0);
+      final moved = <CanvasElement>[
+        elements.first.copyWith(x: elements.first.x + 0.05),
+        elements.last,
+      ];
+      expect(_twoRows.matchesLayout(pageWith(moved), 0), isFalse);
+    });
+
+    test('resizing a slot stops it matching', () {
+      final elements = _twoRows.buildElements('page-1', _page(3, 4), 0);
+      final resized = <CanvasElement>[
+        elements.first.copyWith(
+          width: 0.6,
+          data: <String, dynamic>{...elements.first.data, 'aspectRatio': 1.0},
+        ),
+        elements.last,
+      ];
+      expect(_twoRows.matchesLayout(pageWith(resized), 0), isFalse);
+    });
+
+    test('removing a slot stops it matching', () {
+      final elements = _twoRows.buildElements('page-1', _page(3, 4), 0);
+      expect(
+        _twoRows.matchesLayout(pageWith(<CanvasElement>[elements.first]), 0),
+        isFalse,
+      );
+    });
+
+    test('reordering layers still matches', () {
+      final elements = _twoRows.buildElements('page-1', _page(3, 4), 0);
+      final reordered = elements.reversed.toList();
+      expect(_twoRows.matchesLayout(pageWith(reordered), 0), isTrue);
+    });
+
+    test('text elements are ignored', () {
+      final elements = _twoRows.buildElements('page-1', _page(3, 4), 0);
+      final withText = <CanvasElement>[
+        ...elements,
+        CanvasElement.text(pageId: 'page-1'),
+      ];
+      expect(_twoRows.matchesLayout(pageWith(withText), 0), isTrue);
+    });
+
+    test('changing the margin stops the old layout matching', () {
+      final laidOut = pageWith(
+        _twoRows.buildElements('page-1', _page(3, 4), 0),
+      );
+      expect(_twoRows.matchesLayout(laidOut, 0), isTrue);
+      expect(_twoRows.matchesLayout(laidOut, 0.05), isFalse);
+    });
+
+    group('contain fill', () {
+      const fill = TemplateOption(
+        id: 'page_fill',
+        label: 'fill',
+        isContainFill: true,
+      );
+
+      test('matches while the slot is still empty', () {
+        final laidOut = pageWith(fill.buildElements('page-1', _page(3, 4), 0));
+        expect(fill.matchesLayout(laidOut, 0), isTrue);
+      });
+
+      test('matches a photo letterboxed to its own ratio', () {
+        const photoAspect = 16 / 9;
+        final fitted = containFillRect(
+          page: _page(3, 4),
+          imageAspectRatio: photoAspect,
+          marginRatio: 0,
+        );
+        final placed = fill
+            .buildElements('page-1', _page(3, 4), 0)
+            .single
+            .copyWith(
+              x: fitted.x,
+              y: fitted.y,
+              width: fitted.width,
+              height: fitted.height,
+              data: <String, dynamic>{
+                'src': '/photos/a.jpg',
+                'aspectRatio': photoAspect,
+                'originalAspectRatio': photoAspect,
+                'templateSlot': 'fill',
+              },
+            );
+        expect(fill.matchesLayout(pageWith(<CanvasElement>[placed]), 0), isTrue);
+      });
+
+      test('does not match a two-slot layout', () {
+        final laidOut = pageWith(
+          _twoRows.buildElements('page-1', _page(3, 4), 0),
+        );
+        expect(fill.matchesLayout(laidOut, 0), isFalse);
+      });
+    });
+  });
+
   group('buildElements', () {
     test('slots carry the frame ratio the layout computed', () {
       final page = _page(3, 4);

@@ -146,6 +146,74 @@ class TemplateOption {
     return tracks;
   }
 
+  /// Whether [page] is currently laid out exactly as this template would lay
+  /// it out.
+  ///
+  /// The template picker highlights the matching card, and derives that from
+  /// the page instead of remembering which template was applied. Moving,
+  /// resizing or deleting any slot stops the page from matching, so the
+  /// highlight clears on its own — no bookkeeping to keep in step with every
+  /// path that can edit an element, and undo, page changes and reopening a
+  /// project all stay correct for free.
+  bool matchesLayout(ProjectPage page, double marginRatio) {
+    final images = page.elements
+        .where((element) => element.type == 'image')
+        .toList();
+
+    if (isContainFill) {
+      if (images.length != 1) {
+        return false;
+      }
+      // "Fill" letterboxes the photo, so once one is in place the frame takes
+      // the photo's own ratio rather than the slot's.
+      final image = images.single;
+      final source = (image.data['src'] as String?) ?? '';
+      final expected = source.isEmpty
+          ? resolveRects(page, marginRatio).single
+          : containFillRect(
+              page: page,
+              imageAspectRatio:
+                  (image.data['originalAspectRatio'] as num?)?.toDouble() ??
+                  (image.data['aspectRatio'] as num?)?.toDouble() ??
+                  1.0,
+              marginRatio: marginRatio,
+            );
+      return _matches(image, expected);
+    }
+
+    final rects = resolveRects(page, marginRatio);
+    if (images.length != rects.length) {
+      return false;
+    }
+
+    // Matched without regard to order, so reordering layers does not read as a
+    // change to the layout.
+    final unmatched = List<CanvasElement>.from(images);
+    for (final rect in rects) {
+      final index = unmatched.indexWhere((image) => _matches(image, rect));
+      if (index == -1) {
+        return false;
+      }
+      unmatched.removeAt(index);
+    }
+    return true;
+  }
+
+  static bool _matches(CanvasElement element, TemplateRect rect) {
+    // Rendered height follows from the frame ratio rather than from `height`,
+    // so the ratio is what has to agree.
+    final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
+    return aspectRatio != null &&
+        _closeEnough(element.x, rect.x) &&
+        _closeEnough(element.y, rect.y) &&
+        _closeEnough(element.width, rect.width) &&
+        _closeEnough(aspectRatio, rect.aspectRatio);
+  }
+
+  /// Loose enough to absorb the rounding a save/load round trip through JSON
+  /// can introduce, tight enough that a deliberate nudge never passes.
+  static bool _closeEnough(double a, double b) => (a - b).abs() < 0.001;
+
   List<CanvasElement> buildElements(
     String pageId,
     ProjectPage page,

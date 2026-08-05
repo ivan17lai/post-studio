@@ -124,8 +124,9 @@ class AppStrings {
     'continueLabel': '繼續',
     'editText': '編輯文字',
     'applyTemplate': '套用模板',
-    'applyTemplateWarning': '目前頁面已有內容，套用模板會清空原有圖片與文字。確定要清空並套用嗎？',
-    'clearAndApply': '清空套用',
+    'applyTemplateDropWarning':
+        '新版型只有 {slots} 格，目前的 {photos} 張照片會保留前 {slots} 張，其餘 {dropped} 張將被移除。文字不受影響。',
+    'removeAndApply': '移除並套用',
     'done': '完成',
     'nudgePosition': '位置微調',
     'crop': '裁切',
@@ -305,9 +306,9 @@ class AppStrings {
     'continueLabel': 'Continue',
     'editText': 'Edit Text',
     'applyTemplate': 'Apply Template',
-    'applyTemplateWarning':
-        'The current page already has content, applying the template will clear existing images and text. Clear and apply?',
-    'clearAndApply': 'Clear & Apply',
+    'applyTemplateDropWarning':
+        'This layout has only {slots} slots. The first {slots} of your {photos} photos are kept and the remaining {dropped} will be removed. Text is unaffected.',
+    'removeAndApply': 'Remove & Apply',
     'done': 'Done',
     'nudgePosition': 'Nudge Position',
     'crop': 'Crop',
