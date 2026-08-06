@@ -428,4 +428,110 @@ void main() {
       expect(elements.single.data.containsKey('aspectPreset'), isFalse);
     });
   });
+
+  group('kTemplateOptions', () {
+    test('every template has a unique id', () {
+      final ids = kTemplateOptions.map((option) => option.id).toList();
+      expect(ids.toSet(), hasLength(ids.length));
+    });
+
+    test('every page aspect the picker offers has templates for it', () {
+      for (final aspect in <List<double>>[
+        <double>[1, 1],
+        <double>[4, 5],
+        <double>[3, 4],
+        <double>[4, 3],
+        <double>[5, 4],
+        <double>[3, 2],
+        <double>[16, 9],
+      ]) {
+        final page = _page(aspect.first, aspect.last);
+        final offered = kTemplateOptions.where(
+          (option) => option.matchesPage(page),
+        );
+        expect(
+          offered,
+          isNotEmpty,
+          reason: 'no templates offered for ${aspect.first}:${aspect.last}',
+        );
+      }
+    });
+
+    test('an aspect-restricted template is withheld from other aspects', () {
+      final portraitOnly = kTemplateOptions.firstWhere(
+        (option) => option.id == 'portrait_split_1_2',
+      );
+      expect(portraitOnly.matchesPage(_page(4, 5)), isTrue);
+      expect(portraitOnly.matchesPage(_page(16, 9)), isFalse);
+    });
+  });
+
+  group('templateAppliedTo', () {
+    ProjectPage pageWith(List<CanvasElement> elements) {
+      return ProjectPage(
+        id: 'page-1',
+        title: 'Page 1',
+        type: 'page',
+        aspectWidth: 4,
+        aspectHeight: 5,
+        elements: elements,
+        extras: const <String, dynamic>{},
+      );
+    }
+
+    test('recognises a page laid out by a template', () {
+      final option = kTemplateOptions.firstWhere(
+        (option) => option.id == 'grid_2x2',
+      );
+      final laidOut = pageWith(
+        option.buildElements('page-1', _page(4, 5), 0.05),
+      );
+
+      expect(templateAppliedTo(laidOut, 0.05)?.id, 'grid_2x2');
+    });
+
+    test('recognises a page only at the margin it was built with', () {
+      final option = kTemplateOptions.firstWhere(
+        (option) => option.id == 'grid_rows_2',
+      );
+      final laidOut = pageWith(option.buildElements('page-1', _page(4, 5), 0));
+
+      // This is what drives the live margin re-flow: the page is found by the
+      // ratio it currently carries, then rebuilt at the new one.
+      expect(templateAppliedTo(laidOut, 0)?.id, 'grid_rows_2');
+      expect(templateAppliedTo(laidOut, 0.05), isNull);
+    });
+
+    test('returns null for a hand-edited page', () {
+      final option = kTemplateOptions.firstWhere(
+        (option) => option.id == 'grid_rows_2',
+      );
+      final elements = option.buildElements('page-1', _page(4, 5), 0);
+      final nudged = <CanvasElement>[
+        elements.first.copyWith(x: elements.first.x + 0.08),
+        elements.last,
+      ];
+
+      expect(templateAppliedTo(pageWith(nudged), 0), isNull);
+    });
+
+    test('returns null for an empty page', () {
+      expect(templateAppliedTo(pageWith(const <CanvasElement>[]), 0), isNull);
+    });
+
+    test('a re-flow at a new margin is recognised at that new margin', () {
+      final option = kTemplateOptions.firstWhere(
+        (option) => option.id == 'hero_top_two_bottom',
+      );
+      final before = pageWith(option.buildElements('page-1', _page(4, 5), 0));
+
+      final found = templateAppliedTo(before, 0);
+      expect(found, isNotNull);
+
+      final after = pageWith(
+        found!.buildElements('page-1', _page(4, 5), 0.08),
+      );
+      expect(templateAppliedTo(after, 0.08)?.id, 'hero_top_two_bottom');
+    });
+  });
 }

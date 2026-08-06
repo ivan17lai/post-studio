@@ -38,6 +38,10 @@ jobs:
 
       - run: flutter pub get
 
+      # Ahead of the build, so a broken layout rule is reported as a failed test
+      # rather than as an APK that installs and then lays a page out wrongly.
+      - run: flutter test
+
       # The release build is signed with the debug keys (see
       # android/app/build.gradle.kts), so no keystore secret is needed. It is
       # the better build to hand round for testing — a debug APK is much larger

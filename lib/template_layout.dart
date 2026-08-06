@@ -244,6 +244,205 @@ class TemplateOption {
   }
 }
 
+const List<String> _portraitAspects = <String>['4:5', '3:4'];
+const List<String> _landscapeAspects = <String>['4:3', '5:4', '3:2', '16:9'];
+const List<String> _wideAspects = <String>['3:2', '16:9'];
+
+/// Every template the picker offers, in display order.
+///
+/// Kept beside the layout maths rather than inside the picker widget because
+/// the editor also has to search it: re-flowing a page after the margin changes
+/// means first recognising which template the page is already laid out as.
+const List<TemplateOption> kTemplateOptions = <TemplateOption>[
+  // --- Universal layouts, valid on every page aspect. ---
+  TemplateOption(id: 'page_fill', label: 'fill', isContainFill: true),
+  TemplateOption(
+    id: 'grid_rows_2',
+    label: 'stackedImages',
+    rowWeights: <double>[1, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0),
+      TemplateSlot(column: 0, row: 1),
+    ],
+  ),
+  TemplateOption(
+    id: 'grid_columns_2',
+    label: 'sideBySideImages',
+    columnWeights: <double>[1, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0),
+      TemplateSlot(column: 1, row: 0),
+    ],
+  ),
+  TemplateOption(
+    id: 'grid_2x2',
+    label: 'grid2x2',
+    columnWeights: <double>[1, 1],
+    rowWeights: <double>[1, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0),
+      TemplateSlot(column: 1, row: 0),
+      TemplateSlot(column: 0, row: 1),
+      TemplateSlot(column: 1, row: 1),
+    ],
+  ),
+  TemplateOption(
+    id: 'grid_rows_3',
+    label: 'stackedImages3',
+    rowWeights: <double>[1, 1, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0),
+      TemplateSlot(column: 0, row: 1),
+      TemplateSlot(column: 0, row: 2),
+    ],
+  ),
+  TemplateOption(
+    id: 'grid_columns_3',
+    label: 'sideBySideImages3',
+    columnWeights: <double>[1, 1, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0),
+      TemplateSlot(column: 1, row: 0),
+      TemplateSlot(column: 2, row: 0),
+    ],
+  ),
+  TemplateOption(
+    id: 'hero_top_two_bottom',
+    label: 'heroTopTwoBottom',
+    columnWeights: <double>[1, 1],
+    rowWeights: <double>[2, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0, columnSpan: 2),
+      TemplateSlot(column: 0, row: 1),
+      TemplateSlot(column: 1, row: 1),
+    ],
+  ),
+  TemplateOption(
+    id: 'hero_bottom_two_top',
+    label: 'heroBottomTwoTop',
+    columnWeights: <double>[1, 1],
+    rowWeights: <double>[1, 2],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0),
+      TemplateSlot(column: 1, row: 0),
+      TemplateSlot(column: 0, row: 1, columnSpan: 2),
+    ],
+  ),
+  TemplateOption(
+    id: 'hero_left_two_right',
+    label: 'heroLeftTwoRight',
+    columnWeights: <double>[2, 1],
+    rowWeights: <double>[1, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0, rowSpan: 2),
+      TemplateSlot(column: 1, row: 0),
+      TemplateSlot(column: 1, row: 1),
+    ],
+  ),
+  TemplateOption(
+    id: 'hero_right_two_left',
+    label: 'heroRightTwoLeft',
+    columnWeights: <double>[1, 2],
+    rowWeights: <double>[1, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0),
+      TemplateSlot(column: 0, row: 1),
+      TemplateSlot(column: 1, row: 0, rowSpan: 2),
+    ],
+  ),
+  TemplateOption(
+    id: 'grid_3x3',
+    label: 'grid3x3',
+    columnWeights: <double>[1, 1, 1],
+    rowWeights: <double>[1, 1, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0),
+      TemplateSlot(column: 1, row: 0),
+      TemplateSlot(column: 2, row: 0),
+      TemplateSlot(column: 0, row: 1),
+      TemplateSlot(column: 1, row: 1),
+      TemplateSlot(column: 2, row: 1),
+      TemplateSlot(column: 0, row: 2),
+      TemplateSlot(column: 1, row: 2),
+      TemplateSlot(column: 2, row: 2),
+    ],
+  ),
+  // The empty bottom track is deliberate — it leaves a caption band in the
+  // page background colour.
+  TemplateOption(
+    id: 'caption_bottom',
+    label: 'captionBottom',
+    rowWeights: <double>[4, 1],
+    slots: <TemplateSlot>[TemplateSlot(column: 0, row: 0)],
+  ),
+
+  // --- Aspect-specific layouts, whose cells only stay usable on the page
+  // shapes they are offered for. ---
+  TemplateOption(
+    id: 'wide_strip_4',
+    label: 'wideStrip4',
+    pageAspects: _wideAspects,
+    columnWeights: <double>[1, 1, 1, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0),
+      TemplateSlot(column: 1, row: 0),
+      TemplateSlot(column: 2, row: 0),
+      TemplateSlot(column: 3, row: 0),
+    ],
+  ),
+  TemplateOption(
+    id: 'wide_hero_side_3',
+    label: 'wideHeroSide3',
+    pageAspects: _landscapeAspects,
+    columnWeights: <double>[2, 1],
+    rowWeights: <double>[1, 1, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0, rowSpan: 3),
+      TemplateSlot(column: 1, row: 0),
+      TemplateSlot(column: 1, row: 1),
+      TemplateSlot(column: 1, row: 2),
+    ],
+  ),
+  TemplateOption(
+    id: 'portrait_hero_strip_3',
+    label: 'portraitHeroStrip3',
+    pageAspects: _portraitAspects,
+    columnWeights: <double>[1, 1, 1],
+    rowWeights: <double>[3, 1],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0, columnSpan: 3),
+      TemplateSlot(column: 0, row: 1),
+      TemplateSlot(column: 1, row: 1),
+      TemplateSlot(column: 2, row: 1),
+    ],
+  ),
+  TemplateOption(
+    id: 'portrait_split_1_2',
+    label: 'portraitSplit12',
+    pageAspects: _portraitAspects,
+    rowWeights: <double>[1, 2],
+    slots: <TemplateSlot>[
+      TemplateSlot(column: 0, row: 0),
+      TemplateSlot(column: 0, row: 1),
+    ],
+  ),
+];
+
+/// The template [page] is currently laid out as, or `null` if nothing matches.
+///
+/// The applied template is derived rather than stored, exactly as the picker's
+/// highlight is — see [TemplateOption.matchesLayout]. That keeps the margin
+/// re-flow honest: a page the user has since nudged by hand matches nothing and
+/// is therefore left alone instead of being silently snapped back onto a grid.
+TemplateOption? templateAppliedTo(ProjectPage page, double marginRatio) {
+  for (final option in kTemplateOptions) {
+    if (option.matchesPage(page) && option.matchesLayout(page, marginRatio)) {
+      return option;
+    }
+  }
+  return null;
+}
+
 String aspectKey(double width, double height) {
   String format(double value) => value == value.roundToDouble()
       ? value.toInt().toString()

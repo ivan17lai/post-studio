@@ -779,6 +779,12 @@ class _BlankPageState extends State<BlankPage> {
   _EditorSnapshot? _lastSnapshot;
   bool _hasPendingElementUndoSnapshot = false;
 
+  /// The template margin the pages on screen are currently laid out with, so a
+  /// change to the setting can be told apart from every other settings change
+  /// and the old value is still around to recognise those pages by.
+  double _templateMarginRatio =
+      AppSettingsController.instance.templateMarginRatio;
+
   @override
   void initState() {
     super.initState();
@@ -867,8 +873,20 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   void _handleSettingsChanged() {
-    if (mounted) {
-      setState(() {});
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
+
+    // The margin controls live in the template picker but write to global
+    // settings, so this listener is where a change to them is noticed. The
+    // previous ratio is what the pages on screen were built with, and is what
+    // they have to be recognised by before they can be rebuilt at the new one.
+    final marginRatio = AppSettingsController.instance.templateMarginRatio;
+    if (marginRatio != _templateMarginRatio) {
+      final previousRatio = _templateMarginRatio;
+      _templateMarginRatio = marginRatio;
+      unawaited(_reflowTemplateMargins(previousRatio, marginRatio));
     }
   }
 
@@ -4353,19 +4371,18 @@ class _BlankPageState extends State<BlankPage> {
     return shouldApply == true;
   }
 
-  Future<void> _applyTemplate(TemplateOption option) async {
-    final currentPage = _project.pages[_currentPageIndex];
-    final shouldApply = await _confirmApplyTemplateIfNeeded(
-      currentPage,
-      option,
-    );
-    if (!mounted || !shouldApply) {
-      return;
-    }
-
-    _storeUndoSnapshot();
-
-    final existingImages = currentPage.elements
+  /// Re-flows [page]'s photos into [option]'s slots at [marginRatio], keeping
+  /// every text element and dropping only the photos the layout has no slot
+  /// for.
+  ///
+  /// Pure, so the margin controls can re-run it on an already-templated page
+  /// without going through the apply flow's confirmation and undo handling.
+  ProjectPage _pageWithTemplateApplied(
+    ProjectPage page,
+    TemplateOption option,
+    double marginRatio,
+  ) {
+    final existingImages = page.elements
         .where(
           (e) =>
               e.type == 'image' &&
@@ -4373,16 +4390,9 @@ class _BlankPageState extends State<BlankPage> {
               (e.data['src'] as String).isNotEmpty,
         )
         .toList();
-    final existingTexts = currentPage.elements
-        .where((e) => e.type == 'text')
-        .toList();
+    final existingTexts = page.elements.where((e) => e.type == 'text').toList();
 
-    final marginRatio = AppSettingsController.instance.templateMarginRatio;
-    final templateElements = option.buildElements(
-      currentPage.id,
-      currentPage,
-      marginRatio,
-    );
+    final templateElements = option.buildElements(page.id, page, marginRatio);
     final updatedElements = <CanvasElement>[];
 
     int imgPtr = 0;
@@ -4413,7 +4423,7 @@ class _BlankPageState extends State<BlankPage> {
           // frame takes the photo's own ratio and is centred inside whatever
           // box the margin leaves.
           final fitted = containFillRect(
-            page: currentPage,
+            page: page,
             imageAspectRatio: originalAspect,
             marginRatio: marginRatio,
           );
@@ -4444,7 +4454,68 @@ class _BlankPageState extends State<BlankPage> {
 
     updatedElements.addAll(existingTexts);
 
-    final updatedPage = currentPage.copyWith(elements: updatedElements);
+    return page.copyWith(elements: updatedElements);
+  }
+
+  /// Re-flows every page that is still laid out as a template so the new margin
+  /// shows on the canvas the moment the toggle or a size chip is tapped,
+  /// instead of only on the next template the user applies.
+  ///
+  /// Pages are matched against [previousRatio] — the margin they were built
+  /// with — and rebuilt at [marginRatio]. A page the user has since edited by
+  /// hand matches nothing and is left exactly as it is.
+  ///
+  /// Every page is re-flowed, not just the visible one: the margin is a global
+  /// setting, so leaving the other pages on the old margin would make the same
+  /// project print two different borders. Nothing can be lost doing so — it is
+  /// the same template with the same slot count, only the gutters change.
+  Future<void> _reflowTemplateMargins(
+    double previousRatio,
+    double marginRatio,
+  ) async {
+    final pages = _project.pages;
+    final updatedPages = List<ProjectPage>.from(pages);
+    var changed = false;
+
+    for (var i = 0; i < pages.length; i++) {
+      final option = templateAppliedTo(pages[i], previousRatio);
+      if (option == null) {
+        continue;
+      }
+      updatedPages[i] = _pageWithTemplateApplied(pages[i], option, marginRatio);
+      changed = true;
+    }
+
+    if (!changed || !mounted) {
+      return;
+    }
+
+    // Deliberately not an undo step. The margin controls are a preview the user
+    // flips back and forth to compare, and each tap is undone by tapping again;
+    // recording every flip would bury the edits either side of it in the undo
+    // stack.
+    await _saveProject(
+      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+    );
+  }
+
+  Future<void> _applyTemplate(TemplateOption option) async {
+    final currentPage = _project.pages[_currentPageIndex];
+    final shouldApply = await _confirmApplyTemplateIfNeeded(
+      currentPage,
+      option,
+    );
+    if (!mounted || !shouldApply) {
+      return;
+    }
+
+    _storeUndoSnapshot();
+
+    final updatedPage = _pageWithTemplateApplied(
+      currentPage,
+      option,
+      AppSettingsController.instance.templateMarginRatio,
+    );
 
     final updatedPages = List<ProjectPage>.from(_project.pages);
     updatedPages[_currentPageIndex] = updatedPage;
@@ -10638,194 +10709,10 @@ class _TemplateTabPage extends StatelessWidget {
   final ValueChanged<bool> onMarginEnabledChanged;
   final ValueChanged<String> onMarginSizeChanged;
 
-  static const List<String> _portraitAspects = <String>['4:5', '3:4'];
-  static const List<String> _landscapeAspects = <String>[
-    '4:3',
-    '5:4',
-    '3:2',
-    '16:9',
-  ];
-  static const List<String> _wideAspects = <String>['3:2', '16:9'];
-
-  static const List<TemplateOption> _allTemplates = <TemplateOption>[
-    // --- Universal layouts, valid on every page aspect. ---
-    TemplateOption(id: 'page_fill', label: 'fill', isContainFill: true),
-    TemplateOption(
-      id: 'grid_rows_2',
-      label: 'stackedImages',
-      rowWeights: <double>[1, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0),
-        TemplateSlot(column: 0, row: 1),
-      ],
-    ),
-    TemplateOption(
-      id: 'grid_columns_2',
-      label: 'sideBySideImages',
-      columnWeights: <double>[1, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0),
-        TemplateSlot(column: 1, row: 0),
-      ],
-    ),
-    TemplateOption(
-      id: 'grid_2x2',
-      label: 'grid2x2',
-      columnWeights: <double>[1, 1],
-      rowWeights: <double>[1, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0),
-        TemplateSlot(column: 1, row: 0),
-        TemplateSlot(column: 0, row: 1),
-        TemplateSlot(column: 1, row: 1),
-      ],
-    ),
-    TemplateOption(
-      id: 'grid_rows_3',
-      label: 'stackedImages3',
-      rowWeights: <double>[1, 1, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0),
-        TemplateSlot(column: 0, row: 1),
-        TemplateSlot(column: 0, row: 2),
-      ],
-    ),
-    TemplateOption(
-      id: 'grid_columns_3',
-      label: 'sideBySideImages3',
-      columnWeights: <double>[1, 1, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0),
-        TemplateSlot(column: 1, row: 0),
-        TemplateSlot(column: 2, row: 0),
-      ],
-    ),
-    TemplateOption(
-      id: 'hero_top_two_bottom',
-      label: 'heroTopTwoBottom',
-      columnWeights: <double>[1, 1],
-      rowWeights: <double>[2, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0, columnSpan: 2),
-        TemplateSlot(column: 0, row: 1),
-        TemplateSlot(column: 1, row: 1),
-      ],
-    ),
-    TemplateOption(
-      id: 'hero_bottom_two_top',
-      label: 'heroBottomTwoTop',
-      columnWeights: <double>[1, 1],
-      rowWeights: <double>[1, 2],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0),
-        TemplateSlot(column: 1, row: 0),
-        TemplateSlot(column: 0, row: 1, columnSpan: 2),
-      ],
-    ),
-    TemplateOption(
-      id: 'hero_left_two_right',
-      label: 'heroLeftTwoRight',
-      columnWeights: <double>[2, 1],
-      rowWeights: <double>[1, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0, rowSpan: 2),
-        TemplateSlot(column: 1, row: 0),
-        TemplateSlot(column: 1, row: 1),
-      ],
-    ),
-    TemplateOption(
-      id: 'hero_right_two_left',
-      label: 'heroRightTwoLeft',
-      columnWeights: <double>[1, 2],
-      rowWeights: <double>[1, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0),
-        TemplateSlot(column: 0, row: 1),
-        TemplateSlot(column: 1, row: 0, rowSpan: 2),
-      ],
-    ),
-    TemplateOption(
-      id: 'grid_3x3',
-      label: 'grid3x3',
-      columnWeights: <double>[1, 1, 1],
-      rowWeights: <double>[1, 1, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0),
-        TemplateSlot(column: 1, row: 0),
-        TemplateSlot(column: 2, row: 0),
-        TemplateSlot(column: 0, row: 1),
-        TemplateSlot(column: 1, row: 1),
-        TemplateSlot(column: 2, row: 1),
-        TemplateSlot(column: 0, row: 2),
-        TemplateSlot(column: 1, row: 2),
-        TemplateSlot(column: 2, row: 2),
-      ],
-    ),
-    // The empty bottom track is deliberate — it leaves a caption band in the
-    // page background colour.
-    TemplateOption(
-      id: 'caption_bottom',
-      label: 'captionBottom',
-      rowWeights: <double>[4, 1],
-      slots: <TemplateSlot>[TemplateSlot(column: 0, row: 0)],
-    ),
-
-    // --- Aspect-specific layouts, whose cells only stay usable on the page
-    // shapes they are offered for. ---
-    TemplateOption(
-      id: 'wide_strip_4',
-      label: 'wideStrip4',
-      pageAspects: _wideAspects,
-      columnWeights: <double>[1, 1, 1, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0),
-        TemplateSlot(column: 1, row: 0),
-        TemplateSlot(column: 2, row: 0),
-        TemplateSlot(column: 3, row: 0),
-      ],
-    ),
-    TemplateOption(
-      id: 'wide_hero_side_3',
-      label: 'wideHeroSide3',
-      pageAspects: _landscapeAspects,
-      columnWeights: <double>[2, 1],
-      rowWeights: <double>[1, 1, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0, rowSpan: 3),
-        TemplateSlot(column: 1, row: 0),
-        TemplateSlot(column: 1, row: 1),
-        TemplateSlot(column: 1, row: 2),
-      ],
-    ),
-    TemplateOption(
-      id: 'portrait_hero_strip_3',
-      label: 'portraitHeroStrip3',
-      pageAspects: _portraitAspects,
-      columnWeights: <double>[1, 1, 1],
-      rowWeights: <double>[3, 1],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0, columnSpan: 3),
-        TemplateSlot(column: 0, row: 1),
-        TemplateSlot(column: 1, row: 1),
-        TemplateSlot(column: 2, row: 1),
-      ],
-    ),
-    TemplateOption(
-      id: 'portrait_split_1_2',
-      label: 'portraitSplit12',
-      pageAspects: _portraitAspects,
-      rowWeights: <double>[1, 2],
-      slots: <TemplateSlot>[
-        TemplateSlot(column: 0, row: 0),
-        TemplateSlot(column: 0, row: 1),
-      ],
-    ),
-  ];
-
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
-    final templates = _allTemplates
+    final templates = kTemplateOptions
         .where((template) => template.matchesPage(page))
         .toList();
 
@@ -11803,56 +11690,59 @@ class _TemplatePreview extends StatelessWidget {
   final ProjectPage page;
   final double marginRatio;
 
+  /// The preview used to be drawn inside a fixed 42x32 chip with the page
+  /// floated in the middle of it. That chip is landscape whatever the page is,
+  /// and being the only filled shape in the card it read *as* the page — so a
+  /// 4:5 project showed a wide thumbnail for a portrait layout.
+  ///
+  /// There is no chip now: the page itself is the preview, and the box below
+  /// only bounds it. Whichever limit the page aspect hits first decides the
+  /// size, so the thumbnail is always the shape of the real page.
+  static const double _maxWidth = 46;
+  static const double _maxHeight = 32;
+
   @override
   Widget build(BuildContext context) {
-    const outerWidth = 42.0;
-    const outerHeight = 32.0;
-    final previewAspectRatio = page.aspectWidth / page.aspectHeight;
+    final pageWidth = page.aspectWidth;
+    final pageHeight = page.aspectHeight;
+    final pageAspectRatio = (pageWidth > 0 && pageHeight > 0)
+        ? pageWidth / pageHeight
+        : 1.0;
 
-    double innerWidth = outerWidth - 10;
-    double innerHeight = innerWidth / previewAspectRatio;
-
-    if (innerHeight > outerHeight - 8) {
-      innerHeight = outerHeight - 8;
-      innerWidth = innerHeight * previewAspectRatio;
+    double width = _maxWidth;
+    double height = width / pageAspectRatio;
+    if (height > _maxHeight) {
+      height = _maxHeight;
+      width = height * pageAspectRatio;
     }
 
     final rects = option.resolveRects(page, marginRatio);
 
-    return Container(
-      width: outerWidth,
-      height: outerHeight,
-      decoration: BoxDecoration(
-        color: const Color(0xFFF2F2F2),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Center(
-        child: SizedBox(
-          width: innerWidth,
-          height: innerHeight,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(2),
-            ),
-            child: Stack(
-              children: <Widget>[
-                for (final rect in rects)
-                  Positioned(
-                    left: rect.x * innerWidth,
-                    top: rect.y * innerHeight,
-                    width: rect.width * innerWidth,
-                    height: rect.height * innerHeight,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFD8D8D8),
-                        borderRadius: BorderRadius.circular(1.5),
-                      ),
-                    ),
+    return SizedBox(
+      width: width,
+      height: height,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(3),
+          border: Border.all(color: const Color(0xFFE2E2E2)),
+        ),
+        child: Stack(
+          children: <Widget>[
+            for (final rect in rects)
+              Positioned(
+                left: rect.x * width,
+                top: rect.y * height,
+                width: rect.width * width,
+                height: rect.height * height,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFC9C9C9),
+                    borderRadius: BorderRadius.circular(1.5),
                   ),
-              ],
-            ),
-          ),
+                ),
+              ),
+          ],
         ),
       ),
     );
