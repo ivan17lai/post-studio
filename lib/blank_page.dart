@@ -11690,16 +11690,16 @@ class _TemplatePreview extends StatelessWidget {
   final ProjectPage page;
   final double marginRatio;
 
-  /// The preview used to be drawn inside a fixed 42x32 chip with the page
-  /// floated in the middle of it. That chip is landscape whatever the page is,
-  /// and being the only filled shape in the card it read *as* the page — so a
-  /// 4:5 project showed a wide thumbnail for a portrait layout.
+  /// The tile is a fixed size so the cards line up whatever the project's page
+  /// aspect is, and it keeps the padding the page floats in.
   ///
-  /// There is no chip now: the page itself is the preview, and the box below
-  /// only bounds it. Whichever limit the page aspect hits first decides the
-  /// size, so the thumbnail is always the shape of the real page.
-  static const double _maxWidth = 46;
-  static const double _maxHeight = 32;
+  /// It is square, though, where it used to be 42x32. A landscape tile is the
+  /// only filled shape in the card, so it read *as* the page and a 4:5 project
+  /// advertised every template with a wide thumbnail for a portrait layout. A
+  /// square tile implies no orientation, which leaves the page inside it as the
+  /// only thing that does.
+  static const double _tileSize = 32;
+  static const double _tilePadding = 4;
 
   @override
   Widget build(BuildContext context) {
@@ -11709,40 +11709,52 @@ class _TemplatePreview extends StatelessWidget {
         ? pageWidth / pageHeight
         : 1.0;
 
-    double width = _maxWidth;
+    const available = _tileSize - _tilePadding * 2;
+    double width = available;
     double height = width / pageAspectRatio;
-    if (height > _maxHeight) {
-      height = _maxHeight;
+    if (height > available) {
+      height = available;
       width = height * pageAspectRatio;
     }
 
     final rects = option.resolveRects(page, marginRatio);
 
-    return SizedBox(
-      width: width,
-      height: height,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(3),
-          border: Border.all(color: const Color(0xFFE2E2E2)),
-        ),
-        child: Stack(
-          children: <Widget>[
-            for (final rect in rects)
-              Positioned(
-                left: rect.x * width,
-                top: rect.y * height,
-                width: rect.width * width,
-                height: rect.height * height,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFC9C9C9),
-                    borderRadius: BorderRadius.circular(1.5),
+    return Container(
+      width: _tileSize,
+      height: _tileSize,
+      decoration: BoxDecoration(
+        color: const Color(0xFFF2F2F2),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Center(
+        child: SizedBox(
+          width: width,
+          height: height,
+          child: DecoratedBox(
+            // White against the tile's grey, so the page's own shape is what
+            // the eye picks out rather than the tile's.
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(2),
+            ),
+            child: Stack(
+              children: <Widget>[
+                for (final rect in rects)
+                  Positioned(
+                    left: rect.x * width,
+                    top: rect.y * height,
+                    width: rect.width * width,
+                    height: rect.height * height,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFC2C2C2),
+                        borderRadius: BorderRadius.circular(1.5),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-          ],
+              ],
+            ),
+          ),
         ),
       ),
     );
