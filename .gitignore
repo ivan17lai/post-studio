@@ -46,3 +46,8 @@ app.*.map.json
 
 # Built/distributed APKs — ship via GitHub Releases / NAS, never commit binaries
 *.apk
+
+# Screenshots and files attached to remote coding sessions. They land in the
+# working tree automatically, and they are the sort of thing that carries an API
+# key in an error message — keep them out of version control entirely.
+.codex-remote-attachments/
