@@ -177,13 +177,26 @@ bool isVisibleOnPage({
 List<CanvasElement> elementsVisibleOnPage(
   ProjectRecord project,
   int pageIndex,
-) {
-  final pageCount = project.pages.length;
+) => visibleElementsOnPage(
+  pages: project.pages,
+  elements: project.elements,
+  pageIndex: pageIndex,
+);
+
+/// [elementsVisibleOnPage] for callers holding the two lists rather than a
+/// whole [ProjectRecord] — the thumbnail widgets, which are handed a page and
+/// its elements and never see the project.
+List<CanvasElement> visibleElementsOnPage({
+  required List<ProjectPage> pages,
+  required List<CanvasElement> elements,
+  required int pageIndex,
+}) {
+  final pageCount = pages.length;
   return <CanvasElement>[
-    for (final element in project.elements)
+    for (final element in elements)
       if (isVisibleOnPage(
         element: element,
-        anchorPage: anchorPage(element, project),
+        anchorPage: pages[anchorPageIndex(element, pageCount)],
         anchorPageIndex: anchorPageIndex(element, pageCount),
         targetPageIndex: pageIndex,
       ))

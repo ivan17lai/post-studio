@@ -2927,10 +2927,7 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
-  void _handleElementDoubleTap({
-    required String pageId,
-    required String elementId,
-  }) {
+  void _handleElementDoubleTap({required String elementId}) {
     final element = _findElementById(elementId);
 
     if (_selectedElementId != elementId) {
@@ -2944,12 +2941,10 @@ class _BlankPageState extends State<BlankPage> {
     // A photo already straddling a seam snaps flush across the pages it
     // touches; one sitting on a single page falls back to fitting that page.
     if (element != null && _elementTouchesMultiplePages(element)) {
-      unawaited(
-        _fillElementAcrossTouchedPages(pageId: pageId, elementId: elementId),
-      );
+      unawaited(_fillElementAcrossTouchedPages(elementId: elementId));
       return;
     }
-    unawaited(_fitElementToCanvas(pageId: pageId, elementId: elementId));
+    unawaited(_fitElementToCanvas(elementId: elementId));
   }
 
   bool _elementTouchesMultiplePages(CanvasElement element) {
@@ -3099,7 +3094,6 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   void _updateElementPosition({
-    required String pageId,
     required String elementId,
     required double x,
     required double y,
@@ -3390,7 +3384,6 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   void _updateElementSize({
-    required String pageId,
     required String elementId,
     required double width,
     required bool persist,
@@ -3399,13 +3392,16 @@ class _BlankPageState extends State<BlankPage> {
       _storeUndoSnapshot();
       _hasPendingElementUndoSnapshot = true;
     }
-    final pageIndex = _project.pages.indexWhere((page) => page.id == pageId);
-    if (pageIndex == -1) {
+    final element = _findElementById(elementId);
+    if (element == null) {
       return;
     }
 
+    // Derived from where the element is, not from a page passed in by the
+    // caller: a caller holding a stale page was how resizing a cross-page
+    // element used to clamp it back onto the page it no longer started on.
+    final pageIndex = _anchorIndexOf(element);
     final page = _project.pages[pageIndex];
-    final element = _findElementById(elementId)!;
     final aspectRatio =
         (element.data['aspectRatio'] as num?)?.toDouble() ??
         (element.width / element.height);
@@ -3785,7 +3781,6 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
     _updateElementPosition(
-      pageId: selectedImage.pageId,
       elementId: selectedImage.id,
       x: x,
       y: y,
@@ -3803,7 +3798,6 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
     _updateElementPosition(
-      pageId: selectedText.pageId,
       elementId: selectedText.id,
       x: x,
       y: y,
@@ -3820,7 +3814,6 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
     _updateElementSize(
-      pageId: selectedImage.pageId,
       elementId: selectedImage.id,
       width: width,
       persist: persist,
@@ -4110,20 +4103,14 @@ class _BlankPageState extends State<BlankPage> {
     );
   }
 
-  Future<void> _fitElementToCanvas({
-    required String pageId,
-    required String elementId,
-  }) async {
-    final pageIndex = _project.pages.indexWhere((page) => page.id == pageId);
-    if (pageIndex == -1) {
-      return;
-    }
-
-    final page = _project.pages[pageIndex];
+  Future<void> _fitElementToCanvas({required String elementId}) async {
     final element = _findElementById(elementId);
     if (element == null) {
       return;
     }
+
+    final pageIndex = _anchorIndexOf(element);
+    final page = _project.pages[pageIndex];
 
     final imageAspectRatio =
         (element.data['originalAspectRatio'] as num?)?.toDouble() ??
@@ -4144,7 +4131,8 @@ class _BlankPageState extends State<BlankPage> {
     _storeUndoSnapshot();
     await _replaceElement(
       element.copyWith(
-        x: (1 - fittedWidth) / 2,
+        // Centred on the page it is anchored to, in document space.
+        x: pageIndex + (1 - fittedWidth) / 2,
         y: (1 - fittedHeight) / 2,
         width: fittedWidth,
         height: fittedHeight,
@@ -4163,20 +4151,14 @@ class _BlankPageState extends State<BlankPage> {
   /// the rightmost. The frame aspect changes to match that span, so the photo
   /// is cropped to fill rather than stretched.
   Future<void> _fillElementAcrossTouchedPages({
-    required String pageId,
     required String elementId,
   }) async {
-    final pageIndex = _project.pages.indexWhere((page) => page.id == pageId);
-    if (pageIndex == -1) {
-      return;
-    }
-
-    final page = _project.pages[pageIndex];
     final element = _findElementById(elementId);
     if (element == null) {
       return;
     }
 
+    final page = _anchorPageOf(element);
     final range = touchedPageRange(
       element: element,
       pageCount: _project.pages.length,
@@ -4185,7 +4167,8 @@ class _BlankPageState extends State<BlankPage> {
 
     _storeUndoSnapshot();
     var updatedElement = element.copyWith(
-      x: (range.first - pageIndex).toDouble(),
+      // The leftmost page it touches — already a document-space position.
+      x: range.first.toDouble(),
       y: 0,
       width: spanWidth,
       height: 1,
@@ -4272,10 +4255,13 @@ class _BlankPageState extends State<BlankPage> {
   /// alone — asking whenever the page merely had elements on it meant the empty
   /// slots a template leaves behind triggered the dialog every time.
   Future<bool> _confirmApplyTemplateIfNeeded(
-    ProjectPage page,
+    int pageIndex,
     TemplateOption option,
   ) async {
-    final photoCount = elementsVisibleOnPage(
+    // Anchored, not merely visible: applying a template only ever rewrites the
+    // elements filed under this page, so a photo bleeding in from a neighbour
+    // is not at risk and must not be counted as one that would be dropped.
+    final photoCount = elementsAnchoredToPage(
       _project,
       pageIndex,
     ).where(_elementHoldsPhoto).length;
@@ -4372,7 +4358,7 @@ class _BlankPageState extends State<BlankPage> {
   Future<void> _applyTemplate(TemplateOption option) async {
     final currentPage = _project.pages[_currentPageIndex];
     final shouldApply = await _confirmApplyTemplateIfNeeded(
-      currentPage,
+      _currentPageIndex,
       option,
     );
     if (!mounted || !shouldApply) {
@@ -4518,16 +4504,13 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
-  Future<void> _confirmDeleteElement({
-    required String pageId,
-    required String elementId,
-  }) async {
+  Future<void> _confirmDeleteElement({required String elementId}) async {
     if (_deleteArmedElementId != elementId) {
       return;
     }
 
     _storeUndoSnapshot();
-    await _deleteElement(pageId: pageId, elementId: elementId);
+    await _deleteElement(elementId: elementId);
   }
 
   void _cancelDeleteElement(String elementId) {
@@ -4888,10 +4871,14 @@ class _BlankPageState extends State<BlankPage> {
     required int exportWidth,
   }) {
     final pageIndex = _project.pages.indexWhere((item) => item.id == page.id);
-    if (pageIndex != -1 &&
-        elementsVisibleOnPage(_project, pageIndex).any(
-          (element) => element.type == 'text',
-        )) {
+    // Everything that shows here, including whatever bleeds in from a
+    // neighbour — this used to be the page's own elements, so a photo anchored
+    // next door simply vanished from the thumbnail.
+    final visible = pageIndex == -1
+        ? const <CanvasElement>[]
+        : elementsVisibleOnPage(_project, pageIndex);
+
+    if (visible.any((element) => element.type == 'text')) {
       return _renderProjectPageInSetBytesWithFlutter(
         exportWidth: exportWidth,
         pageIndexes: <int>[pageIndex],
@@ -4907,7 +4894,7 @@ class _BlankPageState extends State<BlankPage> {
           (page.extras['backgroundColorValue'] as num?)?.toInt() ??
           Colors.white.value,
       'images': <String, Uint8List>{
-        for (final element in page.elements)
+        for (final element in visible)
           if (element.type == 'image')
             ...() {
               final src =
@@ -4924,11 +4911,12 @@ class _BlankPageState extends State<BlankPage> {
               return <String, Uint8List>{src: bytes};
             }(),
       },
-      'elements': page.elements
+      // The isolate renders one page, so x goes back to page-local here.
+      'elements': visible
           .map(
             (element) => <String, dynamic>{
               'type': element.type,
-              'x': element.x,
+              'x': element.x - pageIndex,
               'y': element.y,
               'width': element.width,
               'height': element.height,
@@ -4996,123 +4984,116 @@ class _BlankPageState extends State<BlankPage> {
     );
 
     try {
-      // Every page is a potential *source* of cross-page content, even one the
-      // user did not tick for export: the element bleeding onto this page is
-      // owned by its neighbour. Only the target is drawn from the selection.
-      for (
-        var sourceOriginalIndex = 0;
-        sourceOriginalIndex < _project.pages.length;
-        sourceOriginalIndex++
-      ) {
-        final sourcePage = _project.pages[sourceOriginalIndex];
-        for (final element in sourcePage.elements) {
-          if (!isVisibleOnPage(
-            element: element,
-            sourcePage: sourcePage,
-            sourcePageIndex: sourceOriginalIndex,
-            targetPageIndex: targetOriginalIndex,
-          )) {
+      // One flat pass over the project in z-order. The old double loop walked
+      // pages then their elements, which is this list with a partition drawn
+      // through it — and that partition is exactly what stopped an element
+      // anchored to one page from ever drawing above one anchored to another.
+      for (final element in _project.elements) {
+        final anchorIndex = anchorPageIndex(element, _project.pages.length);
+        if (!isVisibleOnPage(
+          element: element,
+          anchorPage: _project.pages[anchorIndex],
+          anchorPageIndex: anchorIndex,
+          targetPageIndex: targetOriginalIndex,
+        )) {
+          continue;
+        }
+
+        final targetX = ((element.x - targetOriginalIndex) * exportWidth)
+            .roundToDouble();
+        final targetY = (element.y * exportHeight).roundToDouble();
+
+        if (element.type == 'image') {
+          final src =
+              element.data['originalSrc'] as String? ??
+              element.data['src'] as String? ??
+              '';
+          final bytes = _exportImageBytesCache[src];
+          if (bytes == null) {
             continue;
           }
+          final sourceImage = await _decodeUiImageForExport(bytes);
+          if (sourceImage == null) {
+            continue;
+          }
+          decodedImages.add(sourceImage);
 
-          final targetX =
-              ((element.x + sourceOriginalIndex - targetOriginalIndex) *
-                      exportWidth)
-                  .roundToDouble();
-          final targetY = (element.y * exportHeight).roundToDouble();
-
-          if (element.type == 'image') {
-            final src =
-                element.data['originalSrc'] as String? ??
-                element.data['src'] as String? ??
-                '';
-            final bytes = _exportImageBytesCache[src];
-            if (bytes == null) {
-              continue;
-            }
-            final sourceImage = await _decodeUiImageForExport(bytes);
-            if (sourceImage == null) {
-              continue;
-            }
-            decodedImages.add(sourceImage);
-
-            final aspectRatio =
-                (element.data['aspectRatio'] as num?)?.toDouble() ??
-                (sourceImage.width / sourceImage.height);
-            final targetWidth = (element.width * exportWidth)
-                .round()
-                .clamp(1, 20000)
-                .toDouble();
-            final targetHeight = (targetWidth / aspectRatio)
-                .round()
-                .clamp(1, 20000)
-                .toDouble();
-            final cropRect = _sourceCropRectForFrame(
-              sourceWidth: sourceImage.width,
-              sourceHeight: sourceImage.height,
-              frameAspectRatio: aspectRatio,
-              cropOffsetX: _cropOffsetXFromData(element.data),
-              cropOffsetY: _cropOffsetYFromData(element.data),
-              cropScale: _cropScaleFromData(element.data),
-            );
-            final borderRadiusRatio =
-                (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
-            final double radius =
-                borderRadiusRatio *
-                (targetWidth < targetHeight ? targetWidth : targetHeight);
-            if (radius > 0) {
-              canvas.save();
-              final rrect = RRect.fromRectAndRadius(
-                Rect.fromLTWH(targetX, targetY, targetWidth, targetHeight),
-                Radius.circular(radius),
-              );
-              canvas.clipRRect(rrect);
-            }
-            canvas.drawImageRect(
-              sourceImage,
-              Rect.fromLTWH(
-                cropRect.x.toDouble(),
-                cropRect.y.toDouble(),
-                cropRect.width.toDouble(),
-                cropRect.height.toDouble(),
-              ),
-              Rect.fromLTWH(targetX, targetY, targetWidth, targetHeight),
-              Paint()..filterQuality = FilterQuality.high,
-            );
-            if (radius > 0) {
-              canvas.restore();
-            }
-          } else if (element.type == 'text') {
-            final text = _textContentFromData(element.data);
-            final fontSize =
-                _textFontSizeRatioFromData(element.data) * exportWidth;
-            final maxWidth = (element.width * exportWidth)
-                .round()
-                .clamp(1, 20000)
-                .toDouble();
-            final textPainter = TextPainter(
-              text: TextSpan(
-                text: text,
-                style: TextStyle(
-                  color: _textColorFromData(element.data),
-                  fontSize: fontSize,
-                  height: 1.12,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              textDirection: TextDirection.ltr,
-              maxLines: _textLineCount(text),
-            )..layout(maxWidth: maxWidth);
-            final clipHeight = textPainter.height
-                .clamp(1.0, exportHeight)
-                .toDouble();
+          final aspectRatio =
+              (element.data['aspectRatio'] as num?)?.toDouble() ??
+              (sourceImage.width / sourceImage.height);
+          final targetWidth = (element.width * exportWidth)
+              .round()
+              .clamp(1, 20000)
+              .toDouble();
+          final targetHeight = (targetWidth / aspectRatio)
+              .round()
+              .clamp(1, 20000)
+              .toDouble();
+          final cropRect = _sourceCropRectForFrame(
+            sourceWidth: sourceImage.width,
+            sourceHeight: sourceImage.height,
+            frameAspectRatio: aspectRatio,
+            cropOffsetX: _cropOffsetXFromData(element.data),
+            cropOffsetY: _cropOffsetYFromData(element.data),
+            cropScale: _cropScaleFromData(element.data),
+          );
+          final borderRadiusRatio =
+              (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
+          final double radius =
+              borderRadiusRatio *
+              (targetWidth < targetHeight ? targetWidth : targetHeight);
+          if (radius > 0) {
             canvas.save();
-            canvas.clipRect(
-              Rect.fromLTWH(targetX, targetY, maxWidth, clipHeight),
+            final rrect = RRect.fromRectAndRadius(
+              Rect.fromLTWH(targetX, targetY, targetWidth, targetHeight),
+              Radius.circular(radius),
             );
-            textPainter.paint(canvas, Offset(targetX, targetY));
+            canvas.clipRRect(rrect);
+          }
+          canvas.drawImageRect(
+            sourceImage,
+            Rect.fromLTWH(
+              cropRect.x.toDouble(),
+              cropRect.y.toDouble(),
+              cropRect.width.toDouble(),
+              cropRect.height.toDouble(),
+            ),
+            Rect.fromLTWH(targetX, targetY, targetWidth, targetHeight),
+            Paint()..filterQuality = FilterQuality.high,
+          );
+          if (radius > 0) {
             canvas.restore();
           }
+        } else if (element.type == 'text') {
+          final text = _textContentFromData(element.data);
+          final fontSize =
+              _textFontSizeRatioFromData(element.data) * exportWidth;
+          final maxWidth = (element.width * exportWidth)
+              .round()
+              .clamp(1, 20000)
+              .toDouble();
+          final textPainter = TextPainter(
+            text: TextSpan(
+              text: text,
+              style: TextStyle(
+                color: _textColorFromData(element.data),
+                fontSize: fontSize,
+                height: 1.12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            textDirection: TextDirection.ltr,
+            maxLines: _textLineCount(text),
+          )..layout(maxWidth: maxWidth);
+          final clipHeight = textPainter.height
+              .clamp(1.0, exportHeight)
+              .toDouble();
+          canvas.save();
+          canvas.clipRect(
+            Rect.fromLTWH(targetX, targetY, maxWidth, clipHeight),
+          );
+          textPainter.paint(canvas, Offset(targetX, targetY));
+          canvas.restore();
         }
       }
 
@@ -5160,34 +5141,27 @@ class _BlankPageState extends State<BlankPage> {
 
     final targetOriginalIndex = pageIndexes[targetListIndex];
     final usedImagePaths = <String>{};
+    for (final element in _project.elements) {
+      if (element.type != 'image') {
+        continue;
+      }
 
-    for (
-      var sourceOriginalIndex = 0;
-      sourceOriginalIndex < _project.pages.length;
-      sourceOriginalIndex++
-    ) {
-      final sourcePage = _project.pages[sourceOriginalIndex];
-      for (final element in sourcePage.elements) {
-        if (element.type != 'image') {
-          continue;
-        }
+      final anchorIndex = anchorPageIndex(element, _project.pages.length);
+      if (!isVisibleOnPage(
+        element: element,
+        anchorPage: _project.pages[anchorIndex],
+        anchorPageIndex: anchorIndex,
+        targetPageIndex: targetOriginalIndex,
+      )) {
+        continue;
+      }
 
-        if (!isVisibleOnPage(
-          element: element,
-          sourcePage: sourcePage,
-          sourcePageIndex: sourceOriginalIndex,
-          targetPageIndex: targetOriginalIndex,
-        )) {
-          continue;
-        }
-
-        final src =
-            element.data['originalSrc'] as String? ??
-            element.data['src'] as String? ??
-            '';
-        if (src.isNotEmpty && _exportImageBytesCache.containsKey(src)) {
-          usedImagePaths.add(src);
-        }
+      final src =
+          element.data['originalSrc'] as String? ??
+          element.data['src'] as String? ??
+          '';
+      if (src.isNotEmpty && _exportImageBytesCache.containsKey(src)) {
+        usedImagePaths.add(src);
       }
     }
 
@@ -5217,54 +5191,60 @@ class _BlankPageState extends State<BlankPage> {
                     .extras[_pageBackgroundColorPresetKey] ==
                 _pageBackgroundColorPresetHdrWhite,
             'originalIndex': pageIndex,
-            'elements': _project.pages[pageIndex].elements
-                .map(
-                  (element) => <String, dynamic>{
-                    'type': element.type,
-                    'x': element.x,
-                    'y': element.y,
-                    'width': element.width,
-                    'height': element.height,
-                    'allowCrossPage': element.allowCrossPage,
-                    'src':
-                        element.data['originalSrc'] as String? ??
-                        element.data['src'] as String? ??
-                        '',
-                    'aspectRatio': (element.data['aspectRatio'] as num?)
-                        ?.toDouble(),
-                    'cropOffsetX': _cropOffsetXFromData(element.data),
-                    'cropOffsetY': _cropOffsetYFromData(element.data),
-                    'cropScale': _cropScaleFromData(element.data),
-                    'borderRadiusRatio':
-                        (element.data['borderRadiusRatio'] as num?)
-                            ?.toDouble() ??
-                        0.0,
-                    'hdrBrightness': _hdrBrightnessFromData(element.data),
-                    if (_photoAdjustmentsFromData(element.data).hasMatrix)
-                      'colorMatrix': PhotoAdjustments.roundMatrix(
-                        _photoAdjustmentsFromData(element.data).toColorMatrix(),
-                      ),
-                    if (_photoAdjustmentsFromData(
-                      element.data,
-                    ).hasToneCurve) ...<String, dynamic>{
-                      'highlights': _photoAdjustmentsFromData(
-                        element.data,
-                      ).highlights,
-                      'shadows': _photoAdjustmentsFromData(
-                        element.data,
-                      ).shadows,
-                    },
-                    if (element.type == 'text') ...<String, dynamic>{
-                      'text': _textContentFromData(element.data),
-                      'colorValue': _textColorFromData(element.data).toARGB32(),
-                      'fontSizeRatio': _textFontSizeRatioFromData(element.data),
-                      'maxLines': _textLineCount(
-                        _textContentFromData(element.data),
-                      ),
-                    },
-                  },
-                )
-                .toList(),
+          },
+        )
+        .toList();
+
+    // Elements ride alongside the pages now rather than inside them: one flat
+    // list in z-order, spanning the whole project. Each carries the page it is
+    // anchored to, which is all the renderer needs to size its frame, and `x`
+    // is document space, so placing it on the target page is a subtraction.
+    final elementPayloads = _project.elements
+        .map(
+          (element) => <String, dynamic>{
+            'type': element.type,
+            'x': element.x,
+            'y': element.y,
+            'width': element.width,
+            'height': element.height,
+            'allowCrossPage': element.allowCrossPage,
+            'anchorPageIndex': anchorPageIndex(element, _project.pages.length),
+            'src':
+                element.data['originalSrc'] as String? ??
+                element.data['src'] as String? ??
+                '',
+            'aspectRatio': (element.data['aspectRatio'] as num?)
+                ?.toDouble(),
+            'cropOffsetX': _cropOffsetXFromData(element.data),
+            'cropOffsetY': _cropOffsetYFromData(element.data),
+            'cropScale': _cropScaleFromData(element.data),
+            'borderRadiusRatio':
+                (element.data['borderRadiusRatio'] as num?)
+                    ?.toDouble() ??
+                0.0,
+            'hdrBrightness': _hdrBrightnessFromData(element.data),
+            if (_photoAdjustmentsFromData(element.data).hasMatrix)
+              'colorMatrix': PhotoAdjustments.roundMatrix(
+                _photoAdjustmentsFromData(element.data).toColorMatrix(),
+              ),
+            if (_photoAdjustmentsFromData(
+              element.data,
+            ).hasToneCurve) ...<String, dynamic>{
+              'highlights': _photoAdjustmentsFromData(
+                element.data,
+              ).highlights,
+              'shadows': _photoAdjustmentsFromData(
+                element.data,
+              ).shadows,
+            },
+            if (element.type == 'text') ...<String, dynamic>{
+              'text': _textContentFromData(element.data),
+              'colorValue': _textColorFromData(element.data).toARGB32(),
+              'fontSizeRatio': _textFontSizeRatioFromData(element.data),
+              'maxLines': _textLineCount(
+                _textContentFromData(element.data),
+              ),
+            },
           },
         )
         .toList();
@@ -5279,6 +5259,7 @@ class _BlankPageState extends State<BlankPage> {
         for (final path in usedImagePaths) path: _exportImageBytesCache[path]!,
       },
       'pages': pagePayloads,
+      'elements': elementPayloads,
     };
 
     if (defaultTargetPlatform == TargetPlatform.android) {
@@ -5622,6 +5603,7 @@ class _BlankPageState extends State<BlankPage> {
                               const SizedBox(height: 10),
                               _ExportPageSelectionStrip(
                                 pages: _project.pages,
+                                elements: _project.elements,
                                 selectedIndexes: selectedExportPageIndexes,
                                 onToggle: (pageIndex) {
                                   setDialogState(() {
@@ -6208,8 +6190,13 @@ class _BlankPageState extends State<BlankPage> {
                                                   horizontal: singlePageGap,
                                                 ),
                                                 child: _CanvasViewport(
-                                                  pages: pages,
+                                                  elements:
+                                                      elementsVisibleOnPage(
+                                                        _project,
+                                                        index,
+                                                      ),
                                                   pageIndex: index,
+                                                  pageCount: pages.length,
                                                   page: page,
                                                   viewportWidth:
                                                       singleCanvasWidth,
@@ -6237,7 +6224,6 @@ class _BlankPageState extends State<BlankPage> {
                                                   onDoubleTapElement:
                                                       (elementId) {
                                                         _handleElementDoubleTap(
-                                                          pageId: page.id,
                                                           elementId: elementId,
                                                         );
                                                       },
@@ -6249,7 +6235,6 @@ class _BlankPageState extends State<BlankPage> {
                                                         persist,
                                                       ) {
                                                         _updateElementPosition(
-                                                          pageId: page.id,
                                                           elementId: elementId,
                                                           x: x,
                                                           y: y,
@@ -6263,7 +6248,6 @@ class _BlankPageState extends State<BlankPage> {
                                                         persist,
                                                       ) {
                                                         _updateElementSize(
-                                                          pageId: page.id,
                                                           elementId: elementId,
                                                           width: width,
                                                           persist: persist,
@@ -6328,7 +6312,6 @@ class _BlankPageState extends State<BlankPage> {
                                                       (elementId) {
                                                         unawaited(
                                                           _confirmDeleteElement(
-                                                            pageId: page.id,
                                                             elementId:
                                                                 elementId,
                                                           ),
@@ -6357,6 +6340,7 @@ class _BlankPageState extends State<BlankPage> {
                                                 : const NeverScrollableScrollPhysics(),
                                             child: _PreviewCanvasStrip(
                                               pages: pages,
+                                              elements: _project.elements,
                                               currentPageIndex:
                                                   _currentPageIndex,
                                               viewportWidth: previewCanvasWidth,
@@ -6378,31 +6362,13 @@ class _BlankPageState extends State<BlankPage> {
                                                   _clearSelectedElement,
                                               onTapElement: _selectElement,
                                               onDoubleTapElement: (elementId) {
-                                                final pageId = pages
-                                                    .firstWhere(
-                                                      (item) =>
-                                                          item.elements.any(
-                                                            (element) =>
-                                                                element.id ==
-                                                                elementId,
-                                                          ),
-                                                    )
-                                                    .id;
                                                 _handleElementDoubleTap(
-                                                  pageId: pageId,
                                                   elementId: elementId,
                                                 );
                                               },
                                               onMoveElement:
-                                                  (
-                                                    pageId,
-                                                    elementId,
-                                                    x,
-                                                    y,
-                                                    persist,
-                                                  ) {
+                                                  (elementId, x, y, persist) {
                                                     _updateElementPosition(
-                                                      pageId: pageId,
                                                       elementId: elementId,
                                                       x: x,
                                                       y: y,
@@ -6410,14 +6376,8 @@ class _BlankPageState extends State<BlankPage> {
                                                     );
                                                   },
                                               onResizeElement:
-                                                  (
-                                                    pageId,
-                                                    elementId,
-                                                    width,
-                                                    persist,
-                                                  ) {
+                                                  (elementId, width, persist) {
                                                     _updateElementSize(
-                                                      pageId: pageId,
                                                       elementId: elementId,
                                                       width: width,
                                                       persist: persist,
@@ -6464,16 +6424,15 @@ class _BlankPageState extends State<BlankPage> {
                                                       persist: persist,
                                                     );
                                                   },
-                                              onDeleteElement: (_, elementId) {
+                                              onDeleteElement: (elementId) {
                                                 _requestDeleteElement(
                                                   elementId: elementId,
                                                 );
                                               },
                                               onConfirmDeleteElement:
-                                                  (pageId, elementId) {
+                                                  (elementId) {
                                                     unawaited(
                                                       _confirmDeleteElement(
-                                                        pageId: pageId,
                                                         elementId: elementId,
                                                       ),
                                                     );
@@ -6500,6 +6459,7 @@ class _BlankPageState extends State<BlankPage> {
                             Positioned.fill(
                               child: _PageSorterView(
                                 pages: pages,
+                                elements: _project.elements,
                                 selectedPageId: _selectedSorterPageId,
                                 onTapPage: _toggleSorterPageSelection,
                                 onReorder: _reorderPages,
@@ -6554,6 +6514,7 @@ class _BlankPageState extends State<BlankPage> {
                                   ? <Widget>[
                                       _PageTabPage(
                                         page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         onAspectSelected: (width, height) {
                                           _updateCurrentPageAspect(
                                             aspectWidth: width,
@@ -6575,6 +6536,11 @@ class _BlankPageState extends State<BlankPage> {
                                       ),
                                       _TemplateTabPage(
                                         page: currentPage,
+                                        pageIndex: _currentPageIndex,
+                                        elements: elementsAnchoredToPage(
+                                          _project,
+                                          _currentPageIndex,
+                                        ),
                                         onApplyTemplate: _applyTemplate,
                                         marginEnabled: AppSettingsController
                                             .instance
@@ -6823,7 +6789,7 @@ class _BlankPageState extends State<BlankPage> {
                                         ],
                                       ),
                                       _LayersTabPage(
-                                        page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         selectedElementId: _selectedElementId,
                                         onSelectElement: (elementId) {
                                           if (_selectedElementId != elementId) {
@@ -6841,6 +6807,7 @@ class _BlankPageState extends State<BlankPage> {
                                   ? <Widget>[
                                       _PageTabPage(
                                         page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         onAspectSelected: (width, height) {
                                           _updateCurrentPageAspect(
                                             aspectWidth: width,
@@ -6862,6 +6829,11 @@ class _BlankPageState extends State<BlankPage> {
                                       ),
                                       _TemplateTabPage(
                                         page: currentPage,
+                                        pageIndex: _currentPageIndex,
+                                        elements: elementsAnchoredToPage(
+                                          _project,
+                                          _currentPageIndex,
+                                        ),
                                         onApplyTemplate: _applyTemplate,
                                         marginEnabled: AppSettingsController
                                             .instance
@@ -6942,7 +6914,7 @@ class _BlankPageState extends State<BlankPage> {
                                         },
                                       ),
                                       _LayersTabPage(
-                                        page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         selectedElementId: _selectedElementId,
                                         onSelectElement: (elementId) {
                                           if (_selectedElementId != elementId) {
@@ -6959,6 +6931,7 @@ class _BlankPageState extends State<BlankPage> {
                                   : <Widget>[
                                       _PageTabPage(
                                         page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         onAspectSelected: (width, height) {
                                           _updateCurrentPageAspect(
                                             aspectWidth: width,
@@ -6980,6 +6953,11 @@ class _BlankPageState extends State<BlankPage> {
                                       ),
                                       _TemplateTabPage(
                                         page: currentPage,
+                                        pageIndex: _currentPageIndex,
+                                        elements: elementsAnchoredToPage(
+                                          _project,
+                                          _currentPageIndex,
+                                        ),
                                         onApplyTemplate: _applyTemplate,
                                         marginEnabled: AppSettingsController
                                             .instance
@@ -7010,7 +6988,7 @@ class _BlankPageState extends State<BlankPage> {
                                             _showImportedImagePreview,
                                       ),
                                       _LayersTabPage(
-                                        page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         selectedElementId: _selectedElementId,
                                         onSelectElement: (elementId) {
                                           if (_selectedElementId != elementId) {
@@ -7086,6 +7064,7 @@ class _CanvasViewport extends StatelessWidget {
   const _CanvasViewport({
     required this.elements,
     required this.pageIndex,
+    required this.pageCount,
     required this.page,
     required this.viewportWidth,
     required this.viewportHeight,
@@ -7117,6 +7096,10 @@ class _CanvasViewport extends StatelessWidget {
   final List<CanvasElement> elements;
 
   final int pageIndex;
+
+  /// Only so the divider knows not to draw past the last page.
+  final int pageCount;
+
   final ProjectPage page;
   final double viewportWidth;
   final double viewportHeight;
@@ -7299,7 +7282,7 @@ class _CanvasViewport extends StatelessWidget {
                   ),
                 ),
               ),
-            if (showPageDivider && pageIndex < pages.length - 1)
+            if (showPageDivider && pageIndex < pageCount - 1)
               Positioned(
                 right: -1,
                 top: canvasTop,
@@ -8811,11 +8794,16 @@ class _ExportSelectionSummary extends StatelessWidget {
 class _ExportPageSelectionStrip extends StatelessWidget {
   const _ExportPageSelectionStrip({
     required this.pages,
+    required this.elements,
     required this.selectedIndexes,
     required this.onToggle,
   });
 
   final List<ProjectPage> pages;
+
+  /// Every element in the project; each tile takes the slice that shows on it.
+  final List<CanvasElement> elements;
+
   final Set<int> selectedIndexes;
   final ValueChanged<int> onToggle;
 
@@ -8831,6 +8819,11 @@ class _ExportPageSelectionStrip extends StatelessWidget {
           return _ExportPageSelectionTile(
             page: pages[index],
             pageNumber: index + 1,
+            elements: visibleElementsOnPage(
+              pages: pages,
+              elements: elements,
+              pageIndex: index,
+            ),
             selected: selectedIndexes.contains(index),
             onTap: () => onToggle(index),
           );
@@ -8844,12 +8837,14 @@ class _ExportPageSelectionTile extends StatelessWidget {
   const _ExportPageSelectionTile({
     required this.page,
     required this.pageNumber,
+    required this.elements,
     required this.selected,
     required this.onTap,
   });
 
   final ProjectPage page;
   final int pageNumber;
+  final List<CanvasElement> elements;
   final bool selected;
   final VoidCallback onTap;
 
@@ -8886,6 +8881,8 @@ class _ExportPageSelectionTile extends StatelessWidget {
                 children: [
                   _MiniPagePreview(
                     page: page,
+                    pageIndex: pageNumber - 1,
+                    elements: elements,
                     width: previewWidth,
                     height: previewHeight,
                   ),
@@ -9370,6 +9367,7 @@ class _PageIndicatorButton extends StatelessWidget {
 class _PageSorterView extends StatelessWidget {
   const _PageSorterView({
     required this.pages,
+    required this.elements,
     required this.selectedPageId,
     required this.onTapPage,
     required this.onReorder,
@@ -9377,6 +9375,10 @@ class _PageSorterView extends StatelessWidget {
   });
 
   final List<ProjectPage> pages;
+
+  /// Every element in the project; each thumbnail takes the slice on its page.
+  final List<CanvasElement> elements;
+
   final String? selectedPageId;
   final ValueChanged<int> onTapPage;
   final void Function(int oldIndex, int newIndex) onReorder;
@@ -9427,6 +9429,11 @@ class _PageSorterView extends StatelessWidget {
                               key: ValueKey('page_sorter_${pages[index].id}'),
                               page: pages[index],
                               pageNumber: index + 1,
+                              elements: visibleElementsOnPage(
+                                pages: pages,
+                                elements: elements,
+                                pageIndex: index,
+                              ),
                               selected: pages[index].id == selectedPageId,
                               onTap: () => onTapPage(index),
                             ),
@@ -9553,12 +9560,14 @@ class _PageThumbnailCard extends StatelessWidget {
     super.key,
     required this.page,
     required this.pageNumber,
+    required this.elements,
     required this.selected,
     required this.onTap,
   });
 
   final ProjectPage page;
   final int pageNumber;
+  final List<CanvasElement> elements;
   final bool selected;
   final VoidCallback onTap;
 
@@ -9573,6 +9582,7 @@ class _PageThumbnailCard extends StatelessWidget {
     final card = _PageThumbnailContent(
       page: page,
       pageNumber: pageNumber,
+      elements: elements,
       selected: selected,
       previewWidth: previewWidth,
       previewHeight: previewHeight,
@@ -9598,6 +9608,7 @@ class _PageThumbnailContent extends StatelessWidget {
   const _PageThumbnailContent({
     required this.page,
     required this.pageNumber,
+    required this.elements,
     required this.selected,
     required this.previewWidth,
     required this.previewHeight,
@@ -9606,6 +9617,7 @@ class _PageThumbnailContent extends StatelessWidget {
 
   final ProjectPage page;
   final int pageNumber;
+  final List<CanvasElement> elements;
   final bool selected;
   final double previewWidth;
   final double previewHeight;
@@ -9631,6 +9643,8 @@ class _PageThumbnailContent extends StatelessWidget {
             ),
             child: _MiniPagePreview(
               page: page,
+              pageIndex: pageNumber - 1,
+              elements: elements,
               width: previewWidth,
               height: previewHeight,
             ),
@@ -9654,11 +9668,22 @@ class _PageThumbnailContent extends StatelessWidget {
 class _MiniPagePreview extends StatelessWidget {
   const _MiniPagePreview({
     required this.page,
+    required this.pageIndex,
+    required this.elements,
     required this.width,
     required this.height,
   });
 
   final ProjectPage page;
+
+  /// Needed because element x is in document space: the thumbnail draws one
+  /// page, so it has to shift that window back to the origin.
+  final int pageIndex;
+
+  /// Everything visible on this page, back to front — including whatever
+  /// bleeds in from a neighbour.
+  final List<CanvasElement> elements;
+
   final double width;
   final double height;
 
@@ -9675,18 +9700,20 @@ class _MiniPagePreview extends StatelessWidget {
       child: Stack(
         clipBehavior: Clip.hardEdge,
         children: [
-          for (final element in page.elements)
+          for (final element in elements)
             if (element.type == 'image')
               _MiniImageElement(
                 element: element,
                 pageWidth: width,
                 pageHeight: height,
+                pageOffsetX: -pageIndex * width,
               )
             else if (element.type == 'text')
               _MiniTextElement(
                 element: element,
                 pageWidth: width,
                 pageHeight: height,
+                pageOffsetX: -pageIndex * width,
               ),
         ],
       ),
@@ -9699,17 +9726,19 @@ class _MiniImageElement extends StatelessWidget {
     required this.element,
     required this.pageWidth,
     required this.pageHeight,
+    required this.pageOffsetX,
   });
 
   final CanvasElement element;
   final double pageWidth;
   final double pageHeight;
+  final double pageOffsetX;
 
   @override
   Widget build(BuildContext context) {
     final src = element.data['src'] as String? ?? '';
     final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
-    final left = element.x * pageWidth;
+    final left = element.x * pageWidth + pageOffsetX;
     final top = element.y * pageHeight;
     final width = element.width * pageWidth;
     final height = aspectRatio != null && aspectRatio > 0
@@ -9753,16 +9782,18 @@ class _MiniTextElement extends StatelessWidget {
     required this.element,
     required this.pageWidth,
     required this.pageHeight,
+    required this.pageOffsetX,
   });
 
   final CanvasElement element;
   final double pageWidth;
   final double pageHeight;
+  final double pageOffsetX;
 
   @override
   Widget build(BuildContext context) {
     final text = _textContentFromData(element.data);
-    final left = element.x * pageWidth;
+    final left = element.x * pageWidth + pageOffsetX;
     final top = element.y * pageHeight;
     final width = element.width * pageWidth;
     final fontSize = (_textFontSizeRatioFromData(element.data) * pageWidth)
@@ -10024,6 +10055,7 @@ class _BottomTab extends StatelessWidget {
 class _PageTabPage extends StatelessWidget {
   const _PageTabPage({
     required this.page,
+    required this.elements,
     required this.onAspectSelected,
     required this.onColorSelected,
     required this.onCustomColorTap,
@@ -10032,6 +10064,11 @@ class _PageTabPage extends StatelessWidget {
   });
 
   final ProjectPage page;
+
+  /// Everything visible on this page — the background sits behind all of it,
+  /// so a photo bleeding in from a neighbour counts for the HDR check too.
+  final List<CanvasElement> elements;
+
   final void Function(double aspectWidth, double aspectHeight) onAspectSelected;
   final void Function(Color color, String preset) onColorSelected;
   final Future<void> Function() onCustomColorTap;
@@ -10066,7 +10103,7 @@ class _PageTabPage extends StatelessWidget {
     // Only offer "HDR白" when the page actually has an HDR element (or it is
     // already selected, so the user can still change away from it).
     final showHdrWhite =
-        isHdrWhiteSelected || page.elements.any(_elementHasHdrContent);
+        isHdrWhiteSelected || elements.any(_elementHasHdrContent);
     final isWhiteSelected =
         selectedPreset == _pageBackgroundColorPresetWhite ||
         (!isKnownPreset &&
@@ -10222,6 +10259,8 @@ class _PageTabPage extends StatelessWidget {
 class _TemplateTabPage extends StatelessWidget {
   const _TemplateTabPage({
     required this.page,
+    required this.pageIndex,
+    required this.elements,
     required this.onApplyTemplate,
     required this.marginEnabled,
     required this.marginSize,
@@ -10231,6 +10270,14 @@ class _TemplateTabPage extends StatelessWidget {
   });
 
   final ProjectPage page;
+
+  /// Templates lay out one page in page-local coordinates; element x is in
+  /// document space, and this is what converts between the two.
+  final int pageIndex;
+
+  /// Elements anchored to this page — the ones applying a template rewrites.
+  final List<CanvasElement> elements;
+
   final ValueChanged<TemplateOption> onApplyTemplate;
   final bool marginEnabled;
   final String marginSize;
@@ -10472,7 +10519,12 @@ class _TemplateTabPage extends StatelessWidget {
                     option: templates[i],
                     page: page,
                     marginRatio: marginRatio,
-                    selected: templates[i].matchesLayout(page, marginRatio),
+                    selected: templates[i].matchesLayout(
+                      page,
+                      elements,
+                      pageIndex,
+                      marginRatio,
+                    ),
                     onTap: () => onApplyTemplate(templates[i]),
                   ),
                   if (i != templates.length - 1) const SizedBox(width: 12),
@@ -11843,13 +11895,22 @@ class _HdrBadge extends StatelessWidget {
 
 class _LayersTabPage extends StatelessWidget {
   const _LayersTabPage({
-    required this.page,
+    required this.elements,
     required this.selectedElementId,
     required this.onSelectElement,
     required this.onReorderElement,
   });
 
-  final ProjectPage page;
+  /// Every element visible on the current page, back to front.
+  ///
+  /// This listed the page's own elements before, which is what made the panel
+  /// lie about cross-page photos: one straddling a seam appeared on the page it
+  /// happened to be filed under and nowhere else, so on the other page it could
+  /// be neither selected nor restacked. Reordering here moves the element
+  /// within the project's single z-order, so a photo anchored to one page can
+  /// now be raised above one anchored to another.
+  final List<CanvasElement> elements;
+
   final String? selectedElementId;
   final ValueChanged<String> onSelectElement;
   final void Function(int oldIndex, int newIndex) onReorderElement;
@@ -11857,7 +11918,6 @@ class _LayersTabPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
-    final elements = page.elements;
 
     if (elements.isEmpty) {
       return Container(
