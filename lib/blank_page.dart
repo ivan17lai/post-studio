@@ -19,6 +19,7 @@ import 'hdr/hdr_image_view.dart';
 import 'hdr/lossless_passthrough.dart';
 import 'hdr/ultra_hdr.dart';
 import 'photo_adjustments.dart';
+import 'template_layout.dart';
 import 'project_record.dart';
 import 'theme_constants.dart';
 
@@ -2736,18 +2737,17 @@ class _BlankPageState extends State<BlankPage> {
     var y = selectedImage.y;
 
     if (isFillSlot) {
-      const pageAspect = 3.0 / 4.0;
-      final targetRatio = aspectRatio / pageAspect;
-
-      if (targetRatio > 1.0) {
-        width = 1.0;
-        height = pageAspect / aspectRatio;
-      } else {
-        height = 1.0;
-        width = height * targetRatio;
-      }
-      x = (1.0 - width) / 2;
-      y = (1.0 - height) / 2;
+      final fitted = containFillRect(
+        page: _project.pages[_currentPageIndex],
+        imageAspectRatio: aspectRatio,
+        marginRatio:
+            (selectedImage.data['templateMarginRatio'] as num?)?.toDouble() ??
+            0.0,
+      );
+      width = fitted.width;
+      height = fitted.height;
+      x = fitted.x;
+      y = fitted.y;
     } else if (!shouldKeepFrame) {
       width = selectedImage.width.clamp(0.12, 0.7);
       height = width / aspectRatio;
@@ -4249,8 +4249,23 @@ class _BlankPageState extends State<BlankPage> {
     await _replaceElement(updatedElement, persist: true);
   }
 
-  Future<bool> _confirmApplyTemplateIfNeeded(ProjectPage page) async {
-    if (page.elements.isEmpty) {
+  static bool _elementHoldsPhoto(CanvasElement element) =>
+      element.type == 'image' &&
+      ((element.data['src'] as String?) ?? '').isNotEmpty;
+
+  /// Applying a template re-flows the photos already on the page into its slots
+  /// and keeps every text element, so the only thing that can actually be lost
+  /// is a photo that the new layout has no slot for. Confirm for that, and that
+  /// alone — asking whenever the page merely had elements on it meant the empty
+  /// slots a template leaves behind triggered the dialog every time.
+  Future<bool> _confirmApplyTemplateIfNeeded(
+    ProjectPage page,
+    TemplateOption option,
+  ) async {
+    final photoCount = page.elements.where(_elementHoldsPhoto).length;
+    final slotCount = option.slots.length;
+    final droppedCount = photoCount - slotCount;
+    if (droppedCount <= 0) {
       return true;
     }
 
@@ -4295,7 +4310,14 @@ class _BlankPageState extends State<BlankPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  strings.t('applyTemplateWarning'),
+                  strings.t(
+                    'applyTemplateDropWarning',
+                    args: <String, String>{
+                      'photos': '$photoCount',
+                      'slots': '$slotCount',
+                      'dropped': '$droppedCount',
+                    },
+                  ),
                   style: const TextStyle(
                     fontSize: 14,
                     height: 1.4,
@@ -4314,7 +4336,7 @@ class _BlankPageState extends State<BlankPage> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: _DialogActionButton(
-                        label: strings.t('clearAndApply'),
+                        label: strings.t('removeAndApply'),
                         isPrimary: true,
                         onTap: () => Navigator.of(context).pop(true),
                       ),
@@ -4331,9 +4353,12 @@ class _BlankPageState extends State<BlankPage> {
     return shouldApply == true;
   }
 
-  Future<void> _applyTemplate(_TemplateOption option) async {
+  Future<void> _applyTemplate(TemplateOption option) async {
     final currentPage = _project.pages[_currentPageIndex];
-    final shouldApply = await _confirmApplyTemplateIfNeeded(currentPage);
+    final shouldApply = await _confirmApplyTemplateIfNeeded(
+      currentPage,
+      option,
+    );
     if (!mounted || !shouldApply) {
       return;
     }
@@ -4352,7 +4377,12 @@ class _BlankPageState extends State<BlankPage> {
         .where((e) => e.type == 'text')
         .toList();
 
-    final templateElements = option.buildElements(currentPage.id, currentPage);
+    final marginRatio = AppSettingsController.instance.templateMarginRatio;
+    final templateElements = option.buildElements(
+      currentPage.id,
+      currentPage,
+      marginRatio,
+    );
     final updatedElements = <CanvasElement>[];
 
     int imgPtr = 0;
@@ -4365,45 +4395,46 @@ class _BlankPageState extends State<BlankPage> {
         final src = existingData['src'] as String? ?? '';
         final originalSrc = existingData['originalSrc'] as String? ?? '';
         final originalAspect =
-            existingData['originalAspectRatio'] as double? ??
-            existingData['aspectRatio'] as double? ??
+            (existingData['originalAspectRatio'] as num?)?.toDouble() ??
+            (existingData['aspectRatio'] as num?)?.toDouble() ??
             1.0;
 
         final newData = Map<String, dynamic>.from(element.data);
         newData['src'] = src;
         newData['originalSrc'] = originalSrc;
         newData['originalAspectRatio'] = originalAspect;
+        newData['isUltraHdr'] = existingData['isUltraHdr'] ?? false;
+        newData['cropOffsetX'] = 0.0;
+        newData['cropOffsetY'] = 0.0;
+        newData['cropScale'] = 1.0;
 
-        if (option.id == 'page_fill') {
-          const pageAspect = 3.0 / 4.0;
-          final targetRatio = originalAspect / pageAspect;
-
-          double wNorm, hNorm;
-          if (targetRatio > 1.0) {
-            wNorm = 1.0;
-            hNorm = pageAspect / originalAspect;
-          } else {
-            hNorm = 1.0;
-            wNorm = hNorm * targetRatio;
-          }
-
-          final xCoord = (1.0 - wNorm) / 2;
-          final yCoord = (1.0 - hNorm) / 2;
+        if (option.isContainFill) {
+          // "Fill" letterboxes the whole photo instead of cropping it, so the
+          // frame takes the photo's own ratio and is centred inside whatever
+          // box the margin leaves.
+          final fitted = containFillRect(
+            page: currentPage,
+            imageAspectRatio: originalAspect,
+            marginRatio: marginRatio,
+          );
 
           newData['aspectRatio'] = originalAspect;
           newData.remove('aspectPreset');
 
           updatedElements.add(
             element.copyWith(
-              x: xCoord,
-              y: yCoord,
-              width: wNorm,
-              height: hNorm,
+              x: fitted.x,
+              y: fitted.y,
+              width: fitted.width,
+              height: fitted.height,
               data: newData,
             ),
           );
         } else {
-          newData['aspectRatio'] = originalAspect;
+          // Keep the slot's own frame ratio — the photo is cropped into it.
+          // Overwriting it with the photo's ratio would resize the slot and
+          // break the layout, since rendered height is derived from
+          // `aspectRatio` rather than from `height`.
           updatedElements.add(element.copyWith(data: newData));
         }
       } else {
@@ -4413,10 +4444,7 @@ class _BlankPageState extends State<BlankPage> {
 
     updatedElements.addAll(existingTexts);
 
-    final updatedPage = currentPage.copyWith(
-      elements: updatedElements,
-      extras: <String, dynamic>{...currentPage.extras, 'templateId': option.id},
-    );
+    final updatedPage = currentPage.copyWith(elements: updatedElements);
 
     final updatedPages = List<ProjectPage>.from(_project.pages);
     updatedPages[_currentPageIndex] = updatedPage;
@@ -4432,7 +4460,9 @@ class _BlankPageState extends State<BlankPage> {
     setState(() {
       _selectedElementId = null;
       _deleteArmedElementId = null;
-      _selectedBottomTab = _tabElements;
+      // Stay on the template picker: applying doubles as the preview, so the
+      // user can flip between layouts and see which card is highlighted.
+      _selectedBottomTab = _tabTemplate;
     });
     _syncBottomTab();
   }
@@ -6522,6 +6552,23 @@ class _BlankPageState extends State<BlankPage> {
                                       _TemplateTabPage(
                                         page: currentPage,
                                         onApplyTemplate: _applyTemplate,
+                                        marginEnabled: AppSettingsController
+                                            .instance
+                                            .templateMarginEnabled,
+                                        marginSize: AppSettingsController
+                                            .instance
+                                            .templateMarginSize,
+                                        marginRatio: AppSettingsController
+                                            .instance
+                                            .templateMarginRatio,
+                                        onMarginEnabledChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginEnabled,
+                                        onMarginSizeChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginSize,
                                       ),
                                       Column(
                                         crossAxisAlignment:
@@ -6792,6 +6839,23 @@ class _BlankPageState extends State<BlankPage> {
                                       _TemplateTabPage(
                                         page: currentPage,
                                         onApplyTemplate: _applyTemplate,
+                                        marginEnabled: AppSettingsController
+                                            .instance
+                                            .templateMarginEnabled,
+                                        marginSize: AppSettingsController
+                                            .instance
+                                            .templateMarginSize,
+                                        marginRatio: AppSettingsController
+                                            .instance
+                                            .templateMarginRatio,
+                                        onMarginEnabledChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginEnabled,
+                                        onMarginSizeChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginSize,
                                       ),
                                       _ElementTabPage(
                                         showTextOption: true,
@@ -6893,6 +6957,23 @@ class _BlankPageState extends State<BlankPage> {
                                       _TemplateTabPage(
                                         page: currentPage,
                                         onApplyTemplate: _applyTemplate,
+                                        marginEnabled: AppSettingsController
+                                            .instance
+                                            .templateMarginEnabled,
+                                        marginSize: AppSettingsController
+                                            .instance
+                                            .templateMarginSize,
+                                        marginRatio: AppSettingsController
+                                            .instance
+                                            .templateMarginRatio,
+                                        onMarginEnabledChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginEnabled,
+                                        onMarginSizeChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginSize,
                                       ),
                                       _ElementTabPage(
                                         showTextOption: true,
@@ -10539,103 +10620,268 @@ class _PageTabPage extends StatelessWidget {
 }
 
 class _TemplateTabPage extends StatelessWidget {
-  const _TemplateTabPage({required this.page, required this.onApplyTemplate});
+  const _TemplateTabPage({
+    required this.page,
+    required this.onApplyTemplate,
+    required this.marginEnabled,
+    required this.marginSize,
+    required this.marginRatio,
+    required this.onMarginEnabledChanged,
+    required this.onMarginSizeChanged,
+  });
 
   final ProjectPage page;
-  final ValueChanged<_TemplateOption> onApplyTemplate;
+  final ValueChanged<TemplateOption> onApplyTemplate;
+  final bool marginEnabled;
+  final String marginSize;
+  final double marginRatio;
+  final ValueChanged<bool> onMarginEnabledChanged;
+  final ValueChanged<String> onMarginSizeChanged;
 
-  static final List<_TemplateOption> _allTemplates = <_TemplateOption>[
-    _TemplateOption(
-      id: 'page_fill',
-      label: 'fill',
-      buildElements: (pageId, page) {
-        return <CanvasElement>[
-          CanvasElement.image(pageId: pageId).copyWith(
-            x: 0,
-            y: 0,
-            width: 1,
-            height: 1,
-            allowCrossPage: true,
-            data: <String, dynamic>{
-              'src': '',
-              'aspectRatio': page.aspectWidth / page.aspectHeight,
-              'originalAspectRatio': page.aspectWidth / page.aspectHeight,
-              'aspectPreset': '${page.aspectWidth}:${page.aspectHeight}',
-              'templateSlot': 'fill',
-            },
-          ),
-        ];
-      },
-    ),
-    _TemplateOption(
-      id: 'page_3_4_two_images_3_2_vertical',
+  static const List<String> _portraitAspects = <String>['4:5', '3:4'];
+  static const List<String> _landscapeAspects = <String>[
+    '4:3',
+    '5:4',
+    '3:2',
+    '16:9',
+  ];
+  static const List<String> _wideAspects = <String>['3:2', '16:9'];
+
+  static const List<TemplateOption> _allTemplates = <TemplateOption>[
+    // --- Universal layouts, valid on every page aspect. ---
+    TemplateOption(id: 'page_fill', label: 'fill', isContainFill: true),
+    TemplateOption(
+      id: 'grid_rows_2',
       label: 'stackedImages',
-      pageAspectWidth: 3,
-      pageAspectHeight: 4,
-      buildElements: (pageId, page) {
-        CanvasElement buildSlot({
-          required String slot,
-          required double x,
-          required double y,
-        }) {
-          return CanvasElement.image(pageId: pageId).copyWith(
-            x: x,
-            y: y,
-            width: 1,
-            height: 0.5,
-            allowCrossPage: true,
-            data: <String, dynamic>{
-              'src': '',
-              'aspectRatio': 3 / 2,
-              'originalAspectRatio': 3 / 2,
-              'aspectPreset': '3:2',
-              'templateSlot': slot,
-            },
-          );
-        }
+      rowWeights: <double>[1, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0),
+        TemplateSlot(column: 0, row: 1),
+      ],
+    ),
+    TemplateOption(
+      id: 'grid_columns_2',
+      label: 'sideBySideImages',
+      columnWeights: <double>[1, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0),
+        TemplateSlot(column: 1, row: 0),
+      ],
+    ),
+    TemplateOption(
+      id: 'grid_2x2',
+      label: 'grid2x2',
+      columnWeights: <double>[1, 1],
+      rowWeights: <double>[1, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0),
+        TemplateSlot(column: 1, row: 0),
+        TemplateSlot(column: 0, row: 1),
+        TemplateSlot(column: 1, row: 1),
+      ],
+    ),
+    TemplateOption(
+      id: 'grid_rows_3',
+      label: 'stackedImages3',
+      rowWeights: <double>[1, 1, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0),
+        TemplateSlot(column: 0, row: 1),
+        TemplateSlot(column: 0, row: 2),
+      ],
+    ),
+    TemplateOption(
+      id: 'grid_columns_3',
+      label: 'sideBySideImages3',
+      columnWeights: <double>[1, 1, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0),
+        TemplateSlot(column: 1, row: 0),
+        TemplateSlot(column: 2, row: 0),
+      ],
+    ),
+    TemplateOption(
+      id: 'hero_top_two_bottom',
+      label: 'heroTopTwoBottom',
+      columnWeights: <double>[1, 1],
+      rowWeights: <double>[2, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0, columnSpan: 2),
+        TemplateSlot(column: 0, row: 1),
+        TemplateSlot(column: 1, row: 1),
+      ],
+    ),
+    TemplateOption(
+      id: 'hero_bottom_two_top',
+      label: 'heroBottomTwoTop',
+      columnWeights: <double>[1, 1],
+      rowWeights: <double>[1, 2],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0),
+        TemplateSlot(column: 1, row: 0),
+        TemplateSlot(column: 0, row: 1, columnSpan: 2),
+      ],
+    ),
+    TemplateOption(
+      id: 'hero_left_two_right',
+      label: 'heroLeftTwoRight',
+      columnWeights: <double>[2, 1],
+      rowWeights: <double>[1, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0, rowSpan: 2),
+        TemplateSlot(column: 1, row: 0),
+        TemplateSlot(column: 1, row: 1),
+      ],
+    ),
+    TemplateOption(
+      id: 'hero_right_two_left',
+      label: 'heroRightTwoLeft',
+      columnWeights: <double>[1, 2],
+      rowWeights: <double>[1, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0),
+        TemplateSlot(column: 0, row: 1),
+        TemplateSlot(column: 1, row: 0, rowSpan: 2),
+      ],
+    ),
+    TemplateOption(
+      id: 'grid_3x3',
+      label: 'grid3x3',
+      columnWeights: <double>[1, 1, 1],
+      rowWeights: <double>[1, 1, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0),
+        TemplateSlot(column: 1, row: 0),
+        TemplateSlot(column: 2, row: 0),
+        TemplateSlot(column: 0, row: 1),
+        TemplateSlot(column: 1, row: 1),
+        TemplateSlot(column: 2, row: 1),
+        TemplateSlot(column: 0, row: 2),
+        TemplateSlot(column: 1, row: 2),
+        TemplateSlot(column: 2, row: 2),
+      ],
+    ),
+    // The empty bottom track is deliberate — it leaves a caption band in the
+    // page background colour.
+    TemplateOption(
+      id: 'caption_bottom',
+      label: 'captionBottom',
+      rowWeights: <double>[4, 1],
+      slots: <TemplateSlot>[TemplateSlot(column: 0, row: 0)],
+    ),
 
-        return <CanvasElement>[
-          buildSlot(slot: 'top', x: 0, y: 0),
-          buildSlot(slot: 'bottom', x: 0, y: 0.5),
-        ];
-      },
+    // --- Aspect-specific layouts, whose cells only stay usable on the page
+    // shapes they are offered for. ---
+    TemplateOption(
+      id: 'wide_strip_4',
+      label: 'wideStrip4',
+      pageAspects: _wideAspects,
+      columnWeights: <double>[1, 1, 1, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0),
+        TemplateSlot(column: 1, row: 0),
+        TemplateSlot(column: 2, row: 0),
+        TemplateSlot(column: 3, row: 0),
+      ],
+    ),
+    TemplateOption(
+      id: 'wide_hero_side_3',
+      label: 'wideHeroSide3',
+      pageAspects: _landscapeAspects,
+      columnWeights: <double>[2, 1],
+      rowWeights: <double>[1, 1, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0, rowSpan: 3),
+        TemplateSlot(column: 1, row: 0),
+        TemplateSlot(column: 1, row: 1),
+        TemplateSlot(column: 1, row: 2),
+      ],
+    ),
+    TemplateOption(
+      id: 'portrait_hero_strip_3',
+      label: 'portraitHeroStrip3',
+      pageAspects: _portraitAspects,
+      columnWeights: <double>[1, 1, 1],
+      rowWeights: <double>[3, 1],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0, columnSpan: 3),
+        TemplateSlot(column: 0, row: 1),
+        TemplateSlot(column: 1, row: 1),
+        TemplateSlot(column: 2, row: 1),
+      ],
+    ),
+    TemplateOption(
+      id: 'portrait_split_1_2',
+      label: 'portraitSplit12',
+      pageAspects: _portraitAspects,
+      rowWeights: <double>[1, 2],
+      slots: <TemplateSlot>[
+        TemplateSlot(column: 0, row: 0),
+        TemplateSlot(column: 0, row: 1),
+      ],
     ),
   ];
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
     final templates = _allTemplates
-        .where(
-          (template) =>
-              (template.pageAspectWidth == null &&
-                  template.pageAspectHeight == null) ||
-              (template.pageAspectWidth == page.aspectWidth &&
-                  template.pageAspectHeight == page.aspectHeight),
-        )
+        .where((template) => template.matchesPage(page))
         .toList();
 
     if (templates.isEmpty) {
       return const SizedBox.expand();
     }
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (var i = 0; i < templates.length; i++) ...[
-              _TemplateCard(
-                option: templates[i],
-                page: page,
-                onTap: () => onApplyTemplate(templates[i]),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+          child: Row(
+            children: [
+              _TemplateMarginToggle(
+                label: strings.t('templateMargin'),
+                enabled: marginEnabled,
+                onTap: () => onMarginEnabledChanged(!marginEnabled),
               ),
-              if (i != templates.length - 1) const SizedBox(width: 12),
+              if (marginEnabled) ...[
+                const SizedBox(width: 10),
+                for (final size in kTemplateMarginSizes) ...[
+                  _TemplateMarginSizeChip(
+                    label: strings.t('templateMarginSize_$size'),
+                    selected: marginSize == size,
+                    onTap: () => onMarginSizeChanged(size),
+                  ),
+                  if (size != kTemplateMarginSizes.last)
+                    const SizedBox(width: 6),
+                ],
+              ],
             ],
-          ],
+          ),
         ),
-      ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var i = 0; i < templates.length; i++) ...[
+                  _TemplateCard(
+                    option: templates[i],
+                    page: page,
+                    marginRatio: marginRatio,
+                    selected: templates[i].matchesLayout(page, marginRatio),
+                    onTap: () => onApplyTemplate(templates[i]),
+                  ),
+                  if (i != templates.length - 1) const SizedBox(width: 12),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -11384,23 +11630,6 @@ class _ImageAspectOption {
   }
 }
 
-class _TemplateOption {
-  const _TemplateOption({
-    required this.id,
-    required this.label,
-    this.pageAspectWidth,
-    this.pageAspectHeight,
-    required this.buildElements,
-  });
-
-  final String id;
-  final String label;
-  final double? pageAspectWidth;
-  final double? pageAspectHeight;
-  final List<CanvasElement> Function(String pageId, ProjectPage page)
-  buildElements;
-}
-
 class _PageAspectOption {
   const _PageAspectOption({
     required this.label,
@@ -11413,15 +11642,107 @@ class _PageAspectOption {
   final double height;
 }
 
+class _TemplateMarginToggle extends StatelessWidget {
+  const _TemplateMarginToggle({
+    required this.label,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return _PressableScale(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeInOut,
+        height: 32,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: enabled ? const Color(0xFF1F1F1F) : Colors.white,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              enabled
+                  ? Icons.check_box_rounded
+                  : Icons.check_box_outline_blank_rounded,
+              size: 16,
+              color: enabled ? Colors.white : const Color(0xFF8A8A8A),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: enabled ? Colors.white : const Color(0xFF1F1F1F),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TemplateMarginSizeChip extends StatelessWidget {
+  const _TemplateMarginSizeChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return _PressableScale(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeInOut,
+        height: 32,
+        width: 34,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFFDCDCDC) : Colors.white,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            color: selected ? const Color(0xFF1F1F1F) : const Color(0xFF8A8A8A),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _TemplateCard extends StatelessWidget {
   const _TemplateCard({
     required this.option,
     required this.page,
+    required this.marginRatio,
+    required this.selected,
     required this.onTap,
   });
 
-  final _TemplateOption option;
+  final TemplateOption option;
   final ProjectPage page;
+  final double marginRatio;
+  final bool selected;
   final VoidCallback onTap;
 
   @override
@@ -11438,21 +11759,28 @@ class _TemplateCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(16),
+          border: selected
+              ? Border.all(color: kPrimaryAccentColor, width: 2)
+              : null,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Align(
               alignment: Alignment.topRight,
-              child: _TemplatePreview(option: option, page: page),
+              child: _TemplatePreview(
+                option: option,
+                page: page,
+                marginRatio: marginRatio,
+              ),
             ),
             const Spacer(),
             Text(
               strings.t(option.label),
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: Color(0xFF1F1F1F),
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                color: const Color(0xFF1F1F1F),
               ),
             ),
           ],
@@ -11462,19 +11790,24 @@ class _TemplateCard extends StatelessWidget {
   }
 }
 
+/// Draws the template's slots straight from its grid spec, so a new template
+/// needs no preview code of its own and the margin toggle is reflected live.
 class _TemplatePreview extends StatelessWidget {
-  const _TemplatePreview({required this.option, required this.page});
+  const _TemplatePreview({
+    required this.option,
+    required this.page,
+    required this.marginRatio,
+  });
 
-  final _TemplateOption option;
+  final TemplateOption option;
   final ProjectPage page;
+  final double marginRatio;
 
   @override
   Widget build(BuildContext context) {
-    final previewAspectWidth = option.pageAspectWidth ?? page.aspectWidth;
-    final previewAspectHeight = option.pageAspectHeight ?? page.aspectHeight;
     const outerWidth = 42.0;
     const outerHeight = 32.0;
-    final previewAspectRatio = previewAspectWidth / previewAspectHeight;
+    final previewAspectRatio = page.aspectWidth / page.aspectHeight;
 
     double innerWidth = outerWidth - 10;
     double innerHeight = innerWidth / previewAspectRatio;
@@ -11483,6 +11816,8 @@ class _TemplatePreview extends StatelessWidget {
       innerHeight = outerHeight - 8;
       innerWidth = innerHeight * previewAspectRatio;
     }
+
+    final rects = option.resolveRects(page, marginRatio);
 
     return Container(
       width: outerWidth,
@@ -11495,41 +11830,29 @@ class _TemplatePreview extends StatelessWidget {
         child: SizedBox(
           width: innerWidth,
           height: innerHeight,
-          child: switch (option.id) {
-            'page_fill' => Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFFD8D8D8),
-                borderRadius: BorderRadius.circular(2),
-              ),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(2),
             ),
-            'page_3_4_two_images_3_2_vertical' => Column(
-              children: [
-                Expanded(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFD8D8D8),
-                      borderRadius: BorderRadius.circular(2),
+            child: Stack(
+              children: <Widget>[
+                for (final rect in rects)
+                  Positioned(
+                    left: rect.x * innerWidth,
+                    top: rect.y * innerHeight,
+                    width: rect.width * innerWidth,
+                    height: rect.height * innerHeight,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFD8D8D8),
+                        borderRadius: BorderRadius.circular(1.5),
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 3),
-                Expanded(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFD8D8D8),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
               ],
             ),
-            _ => Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFFD8D8D8),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          },
+          ),
         ),
       ),
     );

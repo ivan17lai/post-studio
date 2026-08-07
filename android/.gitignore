@@ -12,3 +12,9 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# ...except the shared development key. It is committed deliberately: signing
+# every machine's build with the same key is what lets those builds replace each
+# other on a device. It signs development and test builds only, never a release
+# — a Play upload key goes in key.properties above, which stays ignored.
+!keystore/dev.jks
