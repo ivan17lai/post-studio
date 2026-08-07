@@ -5852,12 +5852,34 @@ class _BlankPageState extends State<BlankPage> {
             (shouldUseSinglePagePeek ? _singlePagePeekViewportFraction : 1.0)) -
         (singlePageGap * 2);
     final previewCanvasWidth = _previewPageWidth(context);
-    const fixedCanvasHeightRatio = 4 / 3;
-    final singleCanvasHeight = singleCanvasWidth * fixedCanvasHeightRatio;
-    final previewCanvasHeight = previewCanvasWidth * fixedCanvasHeightRatio;
-    final canvasHeight = _displayMode == PageDisplayMode.single
-        ? singleCanvasHeight
-        : previewCanvasHeight;
+
+    // How tall the canvas actually needs to be: the tallest page it can show,
+    // at the width the current mode draws pages, plus room for the selection
+    // handles that sit just outside the page edge.
+    //
+    // This used to be a fixed 4:3 box, which is taller than any 4:5 page needs.
+    // The fit-to-height scale below measured against that box rather than
+    // against the page, so the canvas shrank while there was still room for the
+    // page itself — most visibly the moment the bottom panel grew to make space
+    // for the image controls.
+    double tallestPageHeight(double pageWidth) {
+      var tallest = 0.0;
+      for (final page in pages) {
+        final height = pageWidth * (page.aspectHeight / page.aspectWidth);
+        if (height > tallest) {
+          tallest = height;
+        }
+      }
+      return tallest;
+    }
+
+    final canvasHeight =
+        (_displayMode == PageDisplayMode.single
+            ? tallestPageHeight(
+                singleCanvasWidth - (_canvasControlChromePadding * 2),
+              )
+            : tallestPageHeight(previewCanvasWidth)) +
+        (_canvasControlChromePadding * 2);
     // The canvas is only ever shrunk to fit the height the bottom panel leaves
     // it (maxFittingScale below). Selecting a photo used to shrink it a further
     // 0.7 on top of that, which is what made the page jump smaller the moment
