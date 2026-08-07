@@ -4964,12 +4964,14 @@ class _BlankPageState extends State<BlankPage> {
     );
 
     try {
+      // Every page is a potential *source* of cross-page content, even one the
+      // user did not tick for export: the element bleeding onto this page is
+      // owned by its neighbour. Only the target is drawn from the selection.
       for (
-        var sourceListIndex = 0;
-        sourceListIndex < pageIndexes.length;
-        sourceListIndex++
+        var sourceOriginalIndex = 0;
+        sourceOriginalIndex < _project.pages.length;
+        sourceOriginalIndex++
       ) {
-        final sourceOriginalIndex = pageIndexes[sourceListIndex];
         final sourcePage = _project.pages[sourceOriginalIndex];
         for (final element in sourcePage.elements) {
           if (!isVisibleOnPage(
@@ -5128,11 +5130,10 @@ class _BlankPageState extends State<BlankPage> {
     final usedImagePaths = <String>{};
 
     for (
-      var sourceListIndex = 0;
-      sourceListIndex < pageIndexes.length;
-      sourceListIndex++
+      var sourceOriginalIndex = 0;
+      sourceOriginalIndex < _project.pages.length;
+      sourceOriginalIndex++
     ) {
-      final sourceOriginalIndex = pageIndexes[sourceListIndex];
       final sourcePage = _project.pages[sourceOriginalIndex];
       for (final element in sourcePage.elements) {
         if (element.type != 'image') {
@@ -5158,7 +5159,17 @@ class _BlankPageState extends State<BlankPage> {
       }
     }
 
-    final pagePayloads = pageIndexes
+    // Ship every page, in original order, not just the selected ones. Two
+    // reasons: a neighbour that was not ticked still owns content that bleeds
+    // onto this page, and the native Android renderer derives its cross-page
+    // offset from the position in this list. When the list was the selection,
+    // that position stopped matching the real page number as soon as the user
+    // ticked a subset or turned on reverse order, and cross-page content
+    // landed on the wrong side or vanished.
+    final allPageIndexes = <int>[
+      for (var i = 0; i < _project.pages.length; i++) i,
+    ];
+    final pagePayloads = allPageIndexes
         .map(
           (pageIndex) => <String, dynamic>{
             'aspectWidth': _project.pages[pageIndex].aspectWidth,
@@ -5228,7 +5239,9 @@ class _BlankPageState extends State<BlankPage> {
 
     final payload = <String, dynamic>{
       'exportWidth': exportWidth,
-      'targetPageIndex': targetListIndex,
+      // Indexes into 'pages' above, which is now every page in original order,
+      // so this is the target's real page number.
+      'targetPageIndex': targetOriginalIndex,
       'hdrMode': hdrMode.payloadValue,
       'images': <String, Uint8List>{
         for (final path in usedImagePaths) path: _exportImageBytesCache[path]!,
@@ -5867,9 +5880,6 @@ class _BlankPageState extends State<BlankPage> {
     final currentPage = pages[_currentPageIndex];
     final strings = AppStrings.of(context);
     final screenWidth = MediaQuery.of(context).size.width;
-    final shouldCompactCanvas =
-        currentPage.aspectHeight > currentPage.aspectWidth &&
-        _hasTwoOptionRows(_selectedBottomTab);
     final shouldUseSinglePagePeek = _shouldUseSinglePagePeek();
     final singlePageGap = shouldUseSinglePagePeek ? _singlePagePeekGap : 0.0;
     final singleCanvasWidth =
@@ -5883,11 +5893,11 @@ class _BlankPageState extends State<BlankPage> {
     final canvasHeight = _displayMode == PageDisplayMode.single
         ? singleCanvasHeight
         : previewCanvasHeight;
-    final canvasScale = shouldUseSinglePagePeek
-        ? 1.0
-        : shouldCompactCanvas
-        ? 0.7
-        : 1.0;
+    // The canvas is only ever shrunk to fit the height the bottom panel leaves
+    // it (maxFittingScale below). Selecting a photo used to shrink it a further
+    // 0.7 on top of that, which is what made the page jump smaller the moment
+    // an image tab opened.
+    const canvasScale = 1.0;
     const bottomTabRowHeight = 30.0;
     const bottomTabPanelGap = 10.0;
     final bottomSafePadding = MediaQuery.of(context).padding.bottom;
@@ -7097,6 +7107,7 @@ class _CanvasViewport extends StatelessWidget {
                               pageWidth: constraints.maxWidth,
                               pageHeight: constraints.maxHeight,
                               hdrViewEnabled: hdrViewEnabled,
+                              onTapElement: onTapElement,
                               side: _GhostSide.before,
                             ),
                             for (final element in page.elements) ...[
@@ -7176,6 +7187,7 @@ class _CanvasViewport extends StatelessWidget {
                               pageWidth: constraints.maxWidth,
                               pageHeight: constraints.maxHeight,
                               hdrViewEnabled: hdrViewEnabled,
+                              onTapElement: onTapElement,
                               side: _GhostSide.after,
                             ),
                             _SnapGuideOverlay(
@@ -7248,6 +7260,7 @@ class _CrossPageGhostLayer extends StatelessWidget {
     required this.pageHeight,
     required this.hdrViewEnabled,
     required this.side,
+    required this.onTapElement,
   });
 
   final List<ProjectPage> pages;
@@ -7257,6 +7270,15 @@ class _CrossPageGhostLayer extends StatelessWidget {
   final bool hdrViewEnabled;
   final _GhostSide side;
 
+  /// Selects the element the tap landed on. Tapping the half of a photo that
+  /// bleeds in from a neighbouring page used to do nothing at all, because the
+  /// whole layer was wrapped in an IgnorePointer -- the only way to reach the
+  /// element was to find the page that owns it. Selecting it here switches to
+  /// preview mode (see _elementCrossesPageBoundary), where it is fully
+  /// editable. Dragging and resizing stay disabled: those deltas are measured
+  /// against the owning page, not this one.
+  final ValueChanged<String> onTapElement;
+
   bool _isOnThisSide(int sourceIndex) {
     return side == _GhostSide.before
         ? sourceIndex < targetPageIndex
@@ -7265,68 +7287,62 @@ class _CrossPageGhostLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: ClipRect(
-        child: Stack(
-          clipBehavior: Clip.hardEdge,
-          children: [
-            for (
-              var sourceIndex = 0;
-              sourceIndex < pages.length;
-              sourceIndex++
-            )
-              if (_isOnThisSide(sourceIndex))
-                for (final element in pages[sourceIndex].elements)
-                  if (_shouldPaintCrossPageElement(
-                    element: element,
-                    sourcePage: pages[sourceIndex],
-                    sourcePageIndex: sourceIndex,
-                    targetPageIndex: targetPageIndex,
-                  )) ...[
-                    if (element.type == 'image')
-                      _ImageElementWidget(
-                        element: element,
-                        isSelected: false,
-                        isDeleteArmed: false,
-                        isCropMode: false,
-                        pageWidth: pageWidth,
-                        pageHeight: pageHeight,
-                        pageOffsetX:
-                            (sourceIndex - targetPageIndex) * pageWidth,
-                        hdrViewEnabled: hdrViewEnabled,
-                        onTap: () {},
-                        onDoubleTap: () {},
-                        onMove: (_, _, _) {},
-                        onResize: (_, _) {},
-                        onCropMove: (_, _, _) {},
-                        onCropScale: (_, _) {},
-                        onCropBoundsChanged: (_, _, _, _, _, _, _, _) {},
-                        onDelete: () {},
-                        onConfirmDelete: () {},
-                        onCancelDelete: () {},
-                      ),
-                    // Text is page-bound by default, but the exporters paint it
-                    // cross-page when it is not, so the screen has to as well.
-                    if (element.type == 'text')
-                      _TextElementWidget(
-                        element: element,
-                        isSelected: false,
-                        isDeleteArmed: false,
-                        pageWidth: pageWidth,
-                        pageHeight: pageHeight,
-                        pageOffsetX:
-                            (sourceIndex - targetPageIndex) * pageWidth,
-                        pageOffsetY: 0,
-                        onTap: () {},
-                        onDoubleTap: () {},
-                        onMove: (_, _, _) {},
-                        onDelete: () {},
-                        onConfirmDelete: () {},
-                        onCancelDelete: () {},
-                      ),
-                  ],
-          ],
-        ),
+    // ClipRect clips hit testing as well as painting, so a ghost is only
+    // reachable over the part of it that actually lands on this page.
+    return ClipRect(
+      child: Stack(
+        clipBehavior: Clip.hardEdge,
+        children: [
+          for (var sourceIndex = 0; sourceIndex < pages.length; sourceIndex++)
+            if (_isOnThisSide(sourceIndex))
+              for (final element in pages[sourceIndex].elements)
+                if (_shouldPaintCrossPageElement(
+                  element: element,
+                  sourcePage: pages[sourceIndex],
+                  sourcePageIndex: sourceIndex,
+                  targetPageIndex: targetPageIndex,
+                )) ...[
+                  if (element.type == 'image')
+                    _ImageElementWidget(
+                      element: element,
+                      isSelected: false,
+                      isDeleteArmed: false,
+                      isCropMode: false,
+                      pageWidth: pageWidth,
+                      pageHeight: pageHeight,
+                      pageOffsetX: (sourceIndex - targetPageIndex) * pageWidth,
+                      hdrViewEnabled: hdrViewEnabled,
+                      onTap: () => onTapElement(element.id),
+                      onDoubleTap: () {},
+                      onMove: (_, _, _) {},
+                      onResize: (_, _) {},
+                      onCropMove: (_, _, _) {},
+                      onCropScale: (_, _) {},
+                      onCropBoundsChanged: (_, _, _, _, _, _, _, _) {},
+                      onDelete: () {},
+                      onConfirmDelete: () {},
+                      onCancelDelete: () {},
+                    ),
+                  // Text is page-bound by default, but the exporters paint it
+                  // cross-page when it is not, so the screen has to as well.
+                  if (element.type == 'text')
+                    _TextElementWidget(
+                      element: element,
+                      isSelected: false,
+                      isDeleteArmed: false,
+                      pageWidth: pageWidth,
+                      pageHeight: pageHeight,
+                      pageOffsetX: (sourceIndex - targetPageIndex) * pageWidth,
+                      pageOffsetY: 0,
+                      onTap: () => onTapElement(element.id),
+                      onDoubleTap: () {},
+                      onMove: (_, _, _) {},
+                      onDelete: () {},
+                      onConfirmDelete: () {},
+                      onCancelDelete: () {},
+                    ),
+                ],
+        ],
       ),
     );
   }
