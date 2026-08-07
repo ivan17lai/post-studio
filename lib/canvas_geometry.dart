@@ -160,6 +160,45 @@ bool isVisibleOnPage({
   ).overlapsPage;
 }
 
+/// [isVisibleOnPage] for callers holding plain maps instead of model objects.
+///
+/// The isolate renderer is handed its pages as JSON-shaped maps, so it cannot
+/// use the object form. Keeping the two in step matters: when the map-based
+/// payload builder and the object-based renderer disagreed about which
+/// elements were visible, images were filtered out of the payload and then
+/// silently missing from the exported page.
+bool isPayloadVisibleOnPage({
+  required Map<String, dynamic> element,
+  required double sourceAspectWidth,
+  required double sourceAspectHeight,
+  required int sourcePageIndex,
+  required int targetPageIndex,
+}) {
+  if (sourcePageIndex == targetPageIndex) {
+    return true;
+  }
+  if (!(element['allowCrossPage'] as bool? ??
+      defaultAllowCrossPage(element['type'] as String? ?? 'image'))) {
+    return false;
+  }
+
+  final width = (element['width'] as num?)?.toDouble() ?? 0;
+  return CanvasRect(
+    left:
+        (sourcePageIndex - targetPageIndex) +
+        ((element['x'] as num?)?.toDouble() ?? 0),
+    top: (element['y'] as num?)?.toDouble() ?? 0,
+    width: width,
+    height: imageHeightRatio(
+      width: width,
+      aspectRatio: (element['aspectRatio'] as num?)?.toDouble(),
+      fallbackHeight: (element['height'] as num?)?.toDouble() ?? 0,
+      pageAspectWidth: sourceAspectWidth,
+      pageAspectHeight: sourceAspectHeight,
+    ),
+  ).overlapsPage;
+}
+
 /// Range [element] may be dragged along x, in fractions of page width.
 ///
 /// Deliberately independent of the editor's display mode. The old code clamped

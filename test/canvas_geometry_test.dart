@@ -272,6 +272,91 @@ void main() {
     });
   });
 
+  group('screen and export paths agree', () {
+    /// The payload shape the export builder ships to the isolate renderer.
+    Map<String, dynamic> payloadOf(CanvasElement element) {
+      return <String, dynamic>{
+        'type': element.type,
+        'x': element.x,
+        'y': element.y,
+        'width': element.width,
+        'height': element.height,
+        'allowCrossPage': element.allowCrossPage,
+        'aspectRatio': (element.data['aspectRatio'] as num?)?.toDouble(),
+      };
+    }
+
+    test('the object and map forms return the same visibility', () {
+      // The two forms feed different halves of the export: the map form picks
+      // which image bytes to ship, the object form decides what to draw. When
+      // they disagreed, cross-page images vanished from the exported page.
+      final page = _page();
+      final cases = <CanvasElement>[
+        for (final x in <double>[-0.95, -0.5, -0.01, 0, 0.5, 0.99, 1.0, 1.5])
+          for (final width in <double>[0.2, 0.5, 1.0, 1.8])
+            for (final aspectRatio in <double?>[null, 0.5, 1.0, 1.78])
+              for (final allowCrossPage in <bool>[true, false])
+                _image(
+                  x: x,
+                  y: 0.1,
+                  width: width,
+                  aspectRatio: aspectRatio,
+                  allowCrossPage: allowCrossPage,
+                ),
+      ];
+
+      for (final element in cases) {
+        for (var sourceIndex = 0; sourceIndex < 3; sourceIndex++) {
+          for (var targetIndex = 0; targetIndex < 3; targetIndex++) {
+            expect(
+              isPayloadVisibleOnPage(
+                element: payloadOf(element),
+                sourceAspectWidth: page.aspectWidth,
+                sourceAspectHeight: page.aspectHeight,
+                sourcePageIndex: sourceIndex,
+                targetPageIndex: targetIndex,
+              ),
+              isVisibleOnPage(
+                element: element,
+                sourcePage: page,
+                sourcePageIndex: sourceIndex,
+                targetPageIndex: targetIndex,
+              ),
+              reason:
+                  'x=${element.x} w=${element.width} '
+                  'ar=${element.data['aspectRatio']} '
+                  'cross=${element.allowCrossPage} '
+                  '$sourceIndex->$targetIndex',
+            );
+          }
+        }
+      }
+    });
+
+    test('ratio-space height matches the pixel maths the widgets use', () {
+      // The element widgets size themselves in pixels as widthPx / aspectRatio.
+      // elementHeightRatio works in fractions of page height. Both have to
+      // describe the same box or the on-screen hit box drifts from the
+      // visibility test that decides whether to draw it at all.
+      const pageWidthPx = 320.0;
+      final page = _page();
+      final pageHeightPx =
+          pageWidthPx * (page.aspectHeight / page.aspectWidth);
+
+      for (final aspectRatio in <double>[0.5, 0.8, 1.0, 1.78]) {
+        for (final width in <double>[0.25, 0.5, 1.0]) {
+          final element = _image(width: width, aspectRatio: aspectRatio);
+          final widthPx = width * pageWidthPx;
+          expect(
+            elementHeightRatio(element, page) * pageHeightPx,
+            closeTo(widthPx / aspectRatio, 1e-9),
+            reason: 'ar=$aspectRatio w=$width',
+          );
+        }
+      }
+    });
+  });
+
   group('allowedXRange', () {
     test('a cross-page element in the middle may hang off either side', () {
       final range = allowedXRange(

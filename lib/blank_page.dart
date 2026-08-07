@@ -472,39 +472,6 @@ void _compositeClippedImage({
   img.compositeImage(canvas, visibleImage, dstX: clippedLeft, dstY: clippedTop);
 }
 
-/// [isVisibleOnPage] for the isolate renderer, which receives plain maps rather
-/// than [CanvasElement]s. Must stay in step with the object-based path: when it
-/// did not, the payload builder dropped images this renderer wanted to draw.
-bool _isPayloadElementVisibleOnPage({
-  required Map<String, dynamic> element,
-  required double sourceAspectWidth,
-  required double sourceAspectHeight,
-  required int sourcePageIndex,
-  required int targetPageIndex,
-}) {
-  if (sourcePageIndex == targetPageIndex) {
-    return true;
-  }
-  if (!(element['allowCrossPage'] as bool? ?? true)) {
-    return false;
-  }
-
-  final width = (element['width'] as num?)?.toDouble() ?? 0;
-  final rect = CanvasRect(
-    left: (sourcePageIndex - targetPageIndex) + ((element['x'] as num?)?.toDouble() ?? 0),
-    top: (element['y'] as num?)?.toDouble() ?? 0,
-    width: width,
-    height: imageHeightRatio(
-      width: width,
-      aspectRatio: (element['aspectRatio'] as num?)?.toDouble(),
-      fallbackHeight: (element['height'] as num?)?.toDouble() ?? 0,
-      pageAspectWidth: sourceAspectWidth,
-      pageAspectHeight: sourceAspectHeight,
-    ),
-  );
-  return rect.overlapsPage;
-}
-
 Uint8List _renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
   const defaultWidth = 2400;
   const maxWidth = 6000;
@@ -566,7 +533,7 @@ Uint8List _renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
         continue;
       }
 
-      if (!_isPayloadElementVisibleOnPage(
+      if (!isPayloadVisibleOnPage(
         element: element,
         sourceAspectWidth: sourceAspectWidth,
         sourceAspectHeight: sourceAspectHeight,
