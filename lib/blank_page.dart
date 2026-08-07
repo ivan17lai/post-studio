@@ -4120,14 +4120,11 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final page = _project.pages[pageIndex];
-    final elementIndex = page.elements.indexWhere(
-      (item) => item.id == elementId,
-    );
-    if (elementIndex == -1) {
+    final element = _findElementById(elementId);
+    if (element == null) {
       return;
     }
 
-    final element = page.elements[elementIndex];
     final imageAspectRatio =
         (element.data['originalAspectRatio'] as num?)?.toDouble() ??
         (element.data['aspectRatio'] as num?)?.toDouble() ??
@@ -4175,17 +4172,13 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final page = _project.pages[pageIndex];
-    final element = page.elements.firstWhere(
-      (item) => item.id == elementId,
-      orElse: () => CanvasElement.image(pageId: pageId),
-    );
-    if (element.id != elementId) {
+    final element = _findElementById(elementId);
+    if (element == null) {
       return;
     }
 
     final range = touchedPageRange(
       element: element,
-      anchorPageIndex: pageIndex,
       pageCount: _project.pages.length,
     );
     final spanWidth = (range.last - range.first + 1).toDouble();
@@ -4282,7 +4275,10 @@ class _BlankPageState extends State<BlankPage> {
     ProjectPage page,
     TemplateOption option,
   ) async {
-    final photoCount = page.elements.where(_elementHoldsPhoto).length;
+    final photoCount = elementsVisibleOnPage(
+      _project,
+      pageIndex,
+    ).where(_elementHoldsPhoto).length;
     final slotCount = option.slots.length;
     final droppedCount = photoCount - slotCount;
     if (droppedCount <= 0) {
@@ -4385,7 +4381,8 @@ class _BlankPageState extends State<BlankPage> {
 
     _storeUndoSnapshot();
 
-    final existingImages = currentPage.elements
+    final pageElements = elementsAnchoredToPage(_project, _currentPageIndex);
+    final existingImages = pageElements
         .where(
           (e) =>
               e.type == 'image' &&
@@ -4393,13 +4390,13 @@ class _BlankPageState extends State<BlankPage> {
               (e.data['src'] as String).isNotEmpty,
         )
         .toList();
-    final existingTexts = currentPage.elements
+    final existingTexts = pageElements
         .where((e) => e.type == 'text')
         .toList();
 
     final marginRatio = AppSettingsController.instance.templateMarginRatio;
     final templateElements = option.buildElements(
-      currentPage.id,
+      _currentPageIndex,
       currentPage,
       marginRatio,
     );
@@ -4464,14 +4461,14 @@ class _BlankPageState extends State<BlankPage> {
 
     updatedElements.addAll(existingTexts);
 
-    final updatedPage = currentPage.copyWith(elements: updatedElements);
+    final replacedIds = pageElements.map((element) => element.id).toSet();
+    final nextElements = <CanvasElement>[
+      for (final element in _project.elements)
+        if (!replacedIds.contains(element.id)) element,
+      ...updatedElements,
+    ];
 
-    final updatedPages = List<ProjectPage>.from(_project.pages);
-    updatedPages[_currentPageIndex] = updatedPage;
-
-    await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
-    );
+    await _saveProject(_project.copyWith(elements: nextElements));
 
     if (!mounted) {
       return;
@@ -4487,26 +4484,12 @@ class _BlankPageState extends State<BlankPage> {
     _syncBottomTab();
   }
 
-  Future<void> _deleteElement({
-    required String pageId,
-    required String elementId,
-  }) async {
-    final pageIndex = _project.pages.indexWhere((page) => page.id == pageId);
-    if (pageIndex == -1) {
-      return;
-    }
+  Future<void> _deleteElement({required String elementId}) async {
+    final updatedElements = _project.elements
+        .where((element) => element.id != elementId)
+        .toList();
 
-    final page = _project.pages[pageIndex];
-    final updatedPages = List<ProjectPage>.from(_project.pages);
-    updatedPages[pageIndex] = page.copyWith(
-      elements: page.elements
-          .where((element) => element.id != elementId)
-          .toList(),
-    );
-
-    await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
-    );
+    await _saveProject(_project.copyWith(elements: updatedElements));
 
     if (!mounted) {
       return;
@@ -4725,7 +4708,7 @@ class _BlankPageState extends State<BlankPage> {
     const maxWidth = 6000;
     var exportWidth = defaultWidth;
 
-    for (final element in page.elements) {
+    for (final element in _project.elements) {
       if (element.type != 'image') {
         continue;
       }
@@ -4756,7 +4739,7 @@ class _BlankPageState extends State<BlankPage> {
     final canvas = img.Image(width: exportWidth, height: exportHeight);
     img.fill(canvas, color: img.ColorRgb8(255, 255, 255));
 
-    for (final element in page.elements) {
+    for (final element in _project.elements) {
       if (element.type != 'image') {
         continue;
       }
@@ -4836,7 +4819,7 @@ class _BlankPageState extends State<BlankPage> {
     final strings = AppStrings.of(context);
     final imagePaths = <String>{};
     for (final page in _project.pages) {
-      for (final element in page.elements) {
+      for (final element in _project.elements) {
         if (element.type != 'image') {
           continue;
         }
@@ -4906,7 +4889,9 @@ class _BlankPageState extends State<BlankPage> {
   }) {
     final pageIndex = _project.pages.indexWhere((item) => item.id == page.id);
     if (pageIndex != -1 &&
-        page.elements.any((element) => element.type == 'text')) {
+        elementsVisibleOnPage(_project, pageIndex).any(
+          (element) => element.type == 'text',
+        )) {
       return _renderProjectPageInSetBytesWithFlutter(
         exportWidth: exportWidth,
         pageIndexes: <int>[pageIndex],
@@ -4968,7 +4953,7 @@ class _BlankPageState extends State<BlankPage> {
 
   bool _pageIndexesContainText(List<int> pageIndexes) {
     for (final pageIndex in pageIndexes) {
-      if (_project.pages[pageIndex].elements.any(
+      if (elementsVisibleOnPage(_project, pageIndex).any(
         (element) => element.type == 'text',
       )) {
         return true;
@@ -5505,7 +5490,10 @@ class _BlankPageState extends State<BlankPage> {
     // Only surface the Ultra HDR export option when the project actually has
     // HDR content; an all-SDR project gains nothing from a gain map.
     final projectHasHdr = _project.pages.any(
-      (page) => page.elements.any(_elementHasHdrContent),
+      (page) => elementsVisibleOnPage(
+        _project,
+        _project.pages.indexOf(page),
+      ).any(_elementHasHdrContent),
     );
     var reverseOrder = true;
     var qualityMode = ExportQualityMode.igStandard1080;
