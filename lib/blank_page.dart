@@ -15,6 +15,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app_settings.dart';
 import 'app_strings.dart';
+import 'canvas_geometry.dart';
 import 'hdr/hdr_image_view.dart';
 import 'hdr/lossless_passthrough.dart';
 import 'hdr/ultra_hdr.dart';
@@ -125,36 +126,28 @@ double _clampCropImageOffset(double value, double min, double max) {
   return value.clamp(min, max).toDouble();
 }
 
-String _textContentFromData(Map<String, dynamic> data) {
-  final text = data['text'] as String?;
-  if (text == null || text.trim().isEmpty) {
-    return 'Text';
-  }
-  return text;
-}
+String _textContentFromData(Map<String, dynamic> data) =>
+    textContentFromData(data);
 
-double _textFontSizeRatioFromData(Map<String, dynamic> data) {
-  final value = (data['fontSizeRatio'] as num?)?.toDouble() ?? 0.075;
-  return value.clamp(0.025, 0.16).toDouble();
-}
+double _textFontSizeRatioFromData(Map<String, dynamic> data) =>
+    textFontSizeRatioFromData(data);
 
 Color _textColorFromData(Map<String, dynamic> data) {
   return Color((data['colorValue'] as num?)?.toInt() ?? 0xFF111111);
 }
 
-int _textLineCount(String text) {
-  return text.split('\n').length.clamp(1, 8);
-}
+int _textLineCount(String text) => textLineCount(text);
 
 double _textRenderedHeightRatio({
   required CanvasElement element,
   required ProjectPage page,
 }) {
-  final fontSizeRatio = _textFontSizeRatioFromData(element.data);
-  final lineCount = _textLineCount(_textContentFromData(element.data));
-  final height =
-      fontSizeRatio * (page.aspectWidth / page.aspectHeight) * 1.24 * lineCount;
-  return height.clamp(0.04, 0.9).toDouble();
+  return textHeightRatio(
+    fontSizeRatio: _textFontSizeRatioFromData(element.data),
+    lineCount: _textLineCount(_textContentFromData(element.data)),
+    pageAspectWidth: page.aspectWidth,
+    pageAspectHeight: page.aspectHeight,
+  );
 }
 
 SliderThemeData _lightControlSliderTheme(BuildContext context) {
@@ -479,6 +472,39 @@ void _compositeClippedImage({
   img.compositeImage(canvas, visibleImage, dstX: clippedLeft, dstY: clippedTop);
 }
 
+/// [isVisibleOnPage] for the isolate renderer, which receives plain maps rather
+/// than [CanvasElement]s. Must stay in step with the object-based path: when it
+/// did not, the payload builder dropped images this renderer wanted to draw.
+bool _isPayloadElementVisibleOnPage({
+  required Map<String, dynamic> element,
+  required double sourceAspectWidth,
+  required double sourceAspectHeight,
+  required int sourcePageIndex,
+  required int targetPageIndex,
+}) {
+  if (sourcePageIndex == targetPageIndex) {
+    return true;
+  }
+  if (!(element['allowCrossPage'] as bool? ?? true)) {
+    return false;
+  }
+
+  final width = (element['width'] as num?)?.toDouble() ?? 0;
+  final rect = CanvasRect(
+    left: (sourcePageIndex - targetPageIndex) + ((element['x'] as num?)?.toDouble() ?? 0),
+    top: (element['y'] as num?)?.toDouble() ?? 0,
+    width: width,
+    height: imageHeightRatio(
+      width: width,
+      aspectRatio: (element['aspectRatio'] as num?)?.toDouble(),
+      fallbackHeight: (element['height'] as num?)?.toDouble() ?? 0,
+      pageAspectWidth: sourceAspectWidth,
+      pageAspectHeight: sourceAspectHeight,
+    ),
+  );
+  return rect.overlapsPage;
+}
+
 Uint8List _renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
   const defaultWidth = 2400;
   const maxWidth = 6000;
@@ -530,6 +556,8 @@ Uint8List _renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
     final sourcePage = pages[sourcePageIndex];
     final sourceOriginalIndex =
         (sourcePage['originalIndex'] as num?)?.toInt() ?? sourcePageIndex;
+    final sourceAspectWidth = (sourcePage['aspectWidth'] as num).toDouble();
+    final sourceAspectHeight = (sourcePage['aspectHeight'] as num).toDouble();
     final elements = (sourcePage['elements'] as List<dynamic>)
         .cast<Map<String, dynamic>>();
 
@@ -538,8 +566,13 @@ Uint8List _renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
         continue;
       }
 
-      final allowCrossPage = element['allowCrossPage'] as bool? ?? true;
-      if (!allowCrossPage && sourcePageIndex != targetPageIndex) {
+      if (!_isPayloadElementVisibleOnPage(
+        element: element,
+        sourceAspectWidth: sourceAspectWidth,
+        sourceAspectHeight: sourceAspectHeight,
+        sourcePageIndex: sourceOriginalIndex,
+        targetPageIndex: targetOriginalIndex,
+      )) {
         continue;
       }
 
@@ -605,25 +638,25 @@ int _previewImageCacheExtent(
       : 512;
 }
 
+/// Whether an element owned by another page bleeds onto [targetPageIndex].
+///
+/// Own-page elements are painted by a separate pass, so they are excluded here
+/// even though [isVisibleOnPage] considers them visible.
 bool _shouldPaintCrossPageElement({
   required CanvasElement element,
+  required ProjectPage sourcePage,
   required int sourcePageIndex,
   required int targetPageIndex,
 }) {
-  if (sourcePageIndex == targetPageIndex || !element.allowCrossPage) {
+  if (sourcePageIndex == targetPageIndex) {
     return false;
   }
-
-  final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
-  final elementHeight = aspectRatio != null && aspectRatio > 0
-      ? element.width / aspectRatio
-      : element.height;
-  final left = (sourcePageIndex - targetPageIndex) + element.x;
-  final right = left + element.width;
-  final top = element.y;
-  final bottom = top + elementHeight;
-
-  return right > 0 && left < 1 && bottom > 0 && top < 1;
+  return isVisibleOnPage(
+    element: element,
+    sourcePage: sourcePage,
+    sourcePageIndex: sourcePageIndex,
+    targetPageIndex: targetPageIndex,
+  );
 }
 
 bool _shouldBuildPreviewPage({
@@ -1040,15 +1073,7 @@ class _BlankPageState extends State<BlankPage> {
     ProjectPage page, {
     double? width,
   }) {
-    if (element.type == 'text') {
-      return _textRenderedHeightRatio(element: element, page: page);
-    }
-    final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
-    final nextWidth = width ?? element.width;
-    if (aspectRatio != null && aspectRatio > 0) {
-      return nextWidth * (page.aspectWidth / page.aspectHeight) / aspectRatio;
-    }
-    return element.height;
+    return elementHeightRatio(element, page, width: width);
   }
 
   double _sourceAspectRatioForElement(CanvasElement element) {
@@ -3480,23 +3505,11 @@ class _BlankPageState extends State<BlankPage> {
     required CanvasElement element,
     required double aspectRatio,
   }) {
-    if (_displayMode != PageDisplayMode.single) {
-      return 2.2;
-    }
-
-    final maxWidthByRight = (1 - element.x).clamp(0.08, 1.0).toDouble();
-    final maxHeightByBottom = (1 - element.y).clamp(0.0, 1.0).toDouble();
-    final maxWidthByBottom =
-        (maxHeightByBottom *
-                aspectRatio *
-                (page.aspectHeight / page.aspectWidth))
-            .clamp(0.08, 1.0)
-            .toDouble();
-    final maxWidth = maxWidthByRight < maxWidthByBottom
-        ? maxWidthByRight
-        : maxWidthByBottom;
-
-    return maxWidth.clamp(0.08, 1.0).toDouble();
+    return maxElementWidth(
+      element: element,
+      page: page,
+      aspectRatio: aspectRatio,
+    );
   }
 
   _SnapResult _snapElementSize({
@@ -4972,19 +4985,13 @@ class _BlankPageState extends State<BlankPage> {
         final sourceOriginalIndex = pageIndexes[sourceListIndex];
         final sourcePage = _project.pages[sourceOriginalIndex];
         for (final element in sourcePage.elements) {
-          if (sourceListIndex != targetListIndex) {
-            if (!element.allowCrossPage) {
-              continue;
-            }
-            final elementHeight = _elementRenderedHeight(element, sourcePage);
-            final left =
-                (sourceOriginalIndex - targetOriginalIndex) + element.x;
-            final right = left + element.width;
-            final top = element.y;
-            final bottom = top + elementHeight;
-            if (right <= 0 || left >= 1 || bottom <= 0 || top >= 1) {
-              continue;
-            }
+          if (!isVisibleOnPage(
+            element: element,
+            sourcePage: sourcePage,
+            sourcePageIndex: sourceOriginalIndex,
+            targetPageIndex: targetOriginalIndex,
+          )) {
+            continue;
           }
 
           final targetX =
@@ -5145,22 +5152,13 @@ class _BlankPageState extends State<BlankPage> {
           continue;
         }
 
-        if (sourceListIndex != targetListIndex) {
-          if (!element.allowCrossPage) {
-            continue;
-          }
-
-          final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
-          final elementHeight = aspectRatio != null && aspectRatio > 0
-              ? element.width / aspectRatio
-              : element.height;
-          final left = (sourceOriginalIndex - targetOriginalIndex) + element.x;
-          final right = left + element.width;
-          final top = element.y;
-          final bottom = top + elementHeight;
-          if (right <= 0 || left >= 1 || bottom <= 0 || top >= 1) {
-            continue;
-          }
+        if (!isVisibleOnPage(
+          element: element,
+          sourcePage: sourcePage,
+          sourcePageIndex: sourceOriginalIndex,
+          targetPageIndex: targetOriginalIndex,
+        )) {
+          continue;
         }
 
         final src =
@@ -7097,6 +7095,7 @@ class _CanvasViewport extends StatelessWidget {
                                         if (element.type == 'image' &&
                                             _shouldPaintCrossPageElement(
                                               element: element,
+                                              sourcePage: pages[sourceIndex],
                                               sourcePageIndex: sourceIndex,
                                               targetPageIndex: pageIndex,
                                             ))
@@ -7368,6 +7367,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
                                       if (element.type == 'image' &&
                                           _shouldPaintCrossPageElement(
                                             element: element,
+                                            sourcePage: pages[sourceIndex],
                                             sourcePageIndex: sourceIndex,
                                             targetPageIndex: i,
                                           ))

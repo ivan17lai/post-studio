@@ -1,3 +1,4 @@
+import '../canvas_geometry.dart';
 import '../photo_adjustments.dart';
 import '../project_record.dart';
 
@@ -129,13 +130,14 @@ LosslessExportDecision evaluateLosslessExport({
     if (otherIndex == pageIndex) {
       continue;
     }
-    for (final other in project.pages[otherIndex].elements) {
-      if (!other.allowCrossPage) {
-        continue;
-      }
-      final left = (otherIndex - pageIndex) + other.x;
-      final right = left + other.width;
-      if (right > positionTolerance && left < 1.0 - positionTolerance) {
+    final otherPage = project.pages[otherIndex];
+    for (final other in otherPage.elements) {
+      if (isVisibleOnPage(
+        element: other,
+        sourcePage: otherPage,
+        sourcePageIndex: otherIndex,
+        targetPageIndex: pageIndex,
+      )) {
         return const LosslessExportDecision.ineligible('crossPageOverlap');
       }
     }
