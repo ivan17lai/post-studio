@@ -778,6 +778,15 @@ class _BlankPageState extends State<BlankPage> {
   static const String _tabLayers = 'layers';
   static const double _singlePagePeekViewportFraction = 0.78;
   static const double _singlePagePeekGap = 8.0;
+
+  /// Width of one page in the preview strip, as a fraction of the screen.
+  ///
+  /// Layout, the scroll-to-page jump and the scroll-position-to-page-index
+  /// readback all have to agree on this, or the strip settles between pages.
+  static const double _previewPageWidthFraction = 0.78;
+
+  double _previewPageWidth(BuildContext context) =>
+      MediaQuery.of(context).size.width * _previewPageWidthFraction;
   int _currentPageIndex = 0;
   late ProjectRecord _project;
   bool _showPageBorder = false;
@@ -968,7 +977,7 @@ class _BlankPageState extends State<BlankPage> {
 
   double _pageControllerViewportFractionForState() {
     if (_displayMode != PageDisplayMode.single) {
-      return 0.78;
+      return _previewPageWidthFraction;
     }
     return _shouldUseSinglePagePeek() ? _singlePagePeekViewportFraction : 1.0;
   }
@@ -2935,13 +2944,18 @@ class _BlankPageState extends State<BlankPage> {
       }
     }
 
+    // Selecting an element that straddles a page boundary switches to preview
+    // so the whole thing is visible. This has to go through _changeDisplayMode:
+    // assigning _displayMode directly left the page controller built for the
+    // old mode's viewport fraction and never scrolled the preview strip into
+    // position, so the canvas ended up offset from the element just selected.
+    if (selectedElement != null &&
+        _elementCrossesPageBoundary(selectedElement) &&
+        _displayMode != PageDisplayMode.preview) {
+      _changeDisplayMode(PageDisplayMode.preview);
+    }
+
     setState(() {
-      if (selectedElement != null &&
-          _elementCrossesPageBoundary(selectedElement) &&
-          _displayMode != PageDisplayMode.preview) {
-        _displayMode = PageDisplayMode.preview;
-        _showPageBorder = true;
-      }
       _selectedElementId = elementId;
       if (_deleteArmedElementId != elementId) {
         _deleteArmedElementId = null;
@@ -4543,9 +4557,7 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final screenWidth = MediaQuery.of(context).size.width;
-    final pageWidth = screenWidth * 0.78;
-    _previewScrollController.jumpTo(pageWidth * pageIndex);
+    _previewScrollController.jumpTo(_previewPageWidth(context) * pageIndex);
   }
 
   void _goToPage(int pageIndex) {
@@ -4585,11 +4597,10 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final screenWidth = MediaQuery.of(context).size.width;
-    final pageWidth = screenWidth * 0.78;
-    final pageIndex = (_previewScrollController.offset / pageWidth)
-        .round()
-        .clamp(0, _project.pages.length - 1);
+    final pageIndex =
+        (_previewScrollController.offset / _previewPageWidth(context))
+            .round()
+            .clamp(0, _project.pages.length - 1);
 
     if (pageIndex != _currentPageIndex) {
       setState(() {
@@ -5898,7 +5909,7 @@ class _BlankPageState extends State<BlankPage> {
         (screenWidth *
             (shouldUseSinglePagePeek ? _singlePagePeekViewportFraction : 1.0)) -
         (singlePageGap * 2);
-    final previewCanvasWidth = screenWidth * 0.78;
+    final previewCanvasWidth = _previewPageWidth(context);
     const fixedCanvasHeightRatio = 4 / 3;
     final singleCanvasHeight = singleCanvasWidth * fixedCanvasHeightRatio;
     final previewCanvasHeight = previewCanvasWidth * fixedCanvasHeightRatio;
@@ -6414,6 +6425,30 @@ class _BlankPageState extends State<BlankPage> {
                                                     _updateImageCropScale(
                                                       elementId: elementId,
                                                       scale: scale,
+                                                      persist: persist,
+                                                    );
+                                                  },
+                                              onCropBoundsChanged:
+                                                  (
+                                                    elementId,
+                                                    x,
+                                                    y,
+                                                    w,
+                                                    h,
+                                                    cx,
+                                                    cy,
+                                                    cs,
+                                                    persist,
+                                                  ) {
+                                                    _updateImageCropBounds(
+                                                      elementId: elementId,
+                                                      x: x,
+                                                      y: y,
+                                                      width: w,
+                                                      height: h,
+                                                      cropOffsetX: cx,
+                                                      cropOffsetY: cy,
+                                                      cropScale: cs,
                                                       persist: persist,
                                                     );
                                                   },
@@ -7089,50 +7124,13 @@ class _CanvasViewport extends StatelessWidget {
                         return Stack(
                           clipBehavior: Clip.none,
                           children: [
-                            IgnorePointer(
-                              child: ClipRect(
-                                child: Stack(
-                                  clipBehavior: Clip.hardEdge,
-                                  children: [
-                                    for (
-                                      var sourceIndex = 0;
-                                      sourceIndex < pages.length;
-                                      sourceIndex++
-                                    )
-                                      for (final element
-                                          in pages[sourceIndex].elements)
-                                        if (element.type == 'image' &&
-                                            _shouldPaintCrossPageElement(
-                                              element: element,
-                                              sourcePage: pages[sourceIndex],
-                                              sourcePageIndex: sourceIndex,
-                                              targetPageIndex: pageIndex,
-                                            ))
-                                          _PreviewImageElementWidget(
-                                            element: element,
-                                            isSelected: false,
-                                            isDeleteArmed: false,
-                                            isCropMode: false,
-                                            pageWidth: constraints.maxWidth,
-                                            pageHeight: constraints.maxHeight,
-                                            pageOffsetX:
-                                                (sourceIndex - pageIndex) *
-                                                constraints.maxWidth,
-                                            pageOffsetY: 0,
-                                            hdrViewEnabled: hdrViewEnabled,
-                                            onTap: () {},
-                                            onDoubleTap: () {},
-                                            onMove: (_, _, _) {},
-                                            onResize: (_, _) {},
-                                            onCropMove: (_, _, _) {},
-                                            onCropScale: (_, _) {},
-                                            onDelete: () {},
-                                            onConfirmDelete: () {},
-                                            onCancelDelete: () {},
-                                          ),
-                                  ],
-                                ),
-                              ),
+                            _CrossPageGhostLayer(
+                              pages: pages,
+                              targetPageIndex: pageIndex,
+                              pageWidth: constraints.maxWidth,
+                              pageHeight: constraints.maxHeight,
+                              hdrViewEnabled: hdrViewEnabled,
+                              side: _GhostSide.before,
                             ),
                             for (final element in page.elements) ...[
                               if (element.type == 'image')
@@ -7143,8 +7141,8 @@ class _CanvasViewport extends StatelessWidget {
                                   isDeleteArmed:
                                       deleteArmedElementId == element.id,
                                   isCropMode: croppingElementId == element.id,
-                                  canvasWidth: constraints.maxWidth,
-                                  canvasHeight: constraints.maxHeight,
+                                  pageWidth: constraints.maxWidth,
+                                  pageHeight: constraints.maxHeight,
                                   hdrViewEnabled: hdrViewEnabled,
                                   onTap: () => onTapElement(element.id),
                                   onDoubleTap: () =>
@@ -7205,6 +7203,14 @@ class _CanvasViewport extends StatelessWidget {
                                       onCancelDeleteElement(element.id),
                                 ),
                             ],
+                            _CrossPageGhostLayer(
+                              pages: pages,
+                              targetPageIndex: pageIndex,
+                              pageWidth: constraints.maxWidth,
+                              pageHeight: constraints.maxHeight,
+                              hdrViewEnabled: hdrViewEnabled,
+                              side: _GhostSide.after,
+                            ),
                             _SnapGuideOverlay(
                               guides: snapGuides,
                               pageIndex: pageIndex,
@@ -7257,6 +7263,108 @@ class _CanvasViewport extends StatelessWidget {
   }
 }
 
+/// Which side of the target page a ghost layer draws.
+enum _GhostSide { before, after }
+
+/// Non-interactive copies of elements owned by other pages, clipped to this
+/// page's bounds.
+///
+/// Split in two so cross-page stacking matches the exporters, which paint in
+/// (page index, element index) order: content from earlier pages goes under
+/// this page's own elements, content from later pages goes over them. A single
+/// ghost layer, as before, always put both underneath.
+class _CrossPageGhostLayer extends StatelessWidget {
+  const _CrossPageGhostLayer({
+    required this.pages,
+    required this.targetPageIndex,
+    required this.pageWidth,
+    required this.pageHeight,
+    required this.hdrViewEnabled,
+    required this.side,
+  });
+
+  final List<ProjectPage> pages;
+  final int targetPageIndex;
+  final double pageWidth;
+  final double pageHeight;
+  final bool hdrViewEnabled;
+  final _GhostSide side;
+
+  bool _isOnThisSide(int sourceIndex) {
+    return side == _GhostSide.before
+        ? sourceIndex < targetPageIndex
+        : sourceIndex > targetPageIndex;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: ClipRect(
+        child: Stack(
+          clipBehavior: Clip.hardEdge,
+          children: [
+            for (
+              var sourceIndex = 0;
+              sourceIndex < pages.length;
+              sourceIndex++
+            )
+              if (_isOnThisSide(sourceIndex))
+                for (final element in pages[sourceIndex].elements)
+                  if (_shouldPaintCrossPageElement(
+                    element: element,
+                    sourcePage: pages[sourceIndex],
+                    sourcePageIndex: sourceIndex,
+                    targetPageIndex: targetPageIndex,
+                  )) ...[
+                    if (element.type == 'image')
+                      _ImageElementWidget(
+                        element: element,
+                        isSelected: false,
+                        isDeleteArmed: false,
+                        isCropMode: false,
+                        pageWidth: pageWidth,
+                        pageHeight: pageHeight,
+                        pageOffsetX:
+                            (sourceIndex - targetPageIndex) * pageWidth,
+                        hdrViewEnabled: hdrViewEnabled,
+                        onTap: () {},
+                        onDoubleTap: () {},
+                        onMove: (_, _, _) {},
+                        onResize: (_, _) {},
+                        onCropMove: (_, _, _) {},
+                        onCropScale: (_, _) {},
+                        onCropBoundsChanged: (_, _, _, _, _, _, _, _) {},
+                        onDelete: () {},
+                        onConfirmDelete: () {},
+                        onCancelDelete: () {},
+                      ),
+                    // Text is page-bound by default, but the exporters paint it
+                    // cross-page when it is not, so the screen has to as well.
+                    if (element.type == 'text')
+                      _TextElementWidget(
+                        element: element,
+                        isSelected: false,
+                        isDeleteArmed: false,
+                        pageWidth: pageWidth,
+                        pageHeight: pageHeight,
+                        pageOffsetX:
+                            (sourceIndex - targetPageIndex) * pageWidth,
+                        pageOffsetY: 0,
+                        onTap: () {},
+                        onDoubleTap: () {},
+                        onMove: (_, _, _) {},
+                        onDelete: () {},
+                        onConfirmDelete: () {},
+                        onCancelDelete: () {},
+                      ),
+                  ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PreviewCanvasStrip extends StatelessWidget {
   const _PreviewCanvasStrip({
     required this.pages,
@@ -7278,6 +7386,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
     required this.onResizeElement,
     required this.onCropMove,
     required this.onCropScale,
+    required this.onCropBoundsChanged,
     required this.onDeleteElement,
     required this.onConfirmDeleteElement,
     required this.onCancelDeleteElement,
@@ -7316,6 +7425,18 @@ class _PreviewCanvasStrip extends StatelessWidget {
   final void Function(String elementId, double x, double y, bool persist)
   onCropMove;
   final void Function(String elementId, double scale, bool persist) onCropScale;
+  final void Function(
+    String elementId,
+    double x,
+    double y,
+    double width,
+    double height,
+    double cropOffsetX,
+    double cropOffsetY,
+    double cropScale,
+    bool persist,
+  )
+  onCropBoundsChanged;
   final void Function(String pageId, String elementId) onDeleteElement;
   final void Function(String pageId, String elementId) onConfirmDeleteElement;
   final ValueChanged<String> onCancelDeleteElement;
@@ -7359,55 +7480,10 @@ class _PreviewCanvasStrip extends StatelessWidget {
                               )
                             : null,
                       ),
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          return IgnorePointer(
-                            child: ClipRect(
-                              child: Stack(
-                                clipBehavior: Clip.hardEdge,
-                                children: [
-                                  for (
-                                    var sourceIndex = 0;
-                                    sourceIndex < pages.length;
-                                    sourceIndex++
-                                  )
-                                    for (final element
-                                        in pages[sourceIndex].elements)
-                                      if (element.type == 'image' &&
-                                          _shouldPaintCrossPageElement(
-                                            element: element,
-                                            sourcePage: pages[sourceIndex],
-                                            sourcePageIndex: sourceIndex,
-                                            targetPageIndex: i,
-                                          ))
-                                        _PreviewImageElementWidget(
-                                          element: element,
-                                          isSelected: false,
-                                          isDeleteArmed: false,
-                                          isCropMode: false,
-                                          pageWidth: constraints.maxWidth,
-                                          pageHeight: constraints.maxHeight,
-                                          pageOffsetX:
-                                              (sourceIndex - i) *
-                                              constraints.maxWidth,
-                                          pageOffsetY: 0,
-                                          hdrViewEnabled: hdrViewEnabled,
-                                          onTap: () {},
-                                          onDoubleTap: () {},
-                                          onMove: (_, _, _) {},
-                                          onResize: (_, _) {},
-                                          onCropMove: (_, _, _) {},
-                                          onCropScale: (_, _) {},
-                                          onDelete: () {},
-                                          onConfirmDelete: () {},
-                                          onCancelDelete: () {},
-                                        ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
+                      // Background only. Every element, cross-page included, is
+                      // painted once by the strip-wide pass below; this page
+                      // used to draw a clipped copy of the same cross-page
+                      // content underneath it, so it rendered twice.
                     ),
                   ),
                 ),
@@ -7420,7 +7496,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
             ))
               for (final element in pages[i].elements) ...[
                 if (element.type == 'image')
-                  _PreviewImageElementWidget(
+                  _ImageElementWidget(
                     key: ValueKey('preview_${element.id}'),
                     element: element,
                     isSelected: selectedElementId == element.id,
@@ -7451,6 +7527,19 @@ class _PreviewCanvasStrip extends StatelessWidget {
                     },
                     onCropScale: (scale, persist) {
                       onCropScale(element.id, scale, persist);
+                    },
+                    onCropBoundsChanged: (x, y, w, h, cx, cy, cs, persist) {
+                      onCropBoundsChanged(
+                        element.id,
+                        x,
+                        y,
+                        w,
+                        h,
+                        cx,
+                        cy,
+                        cs,
+                        persist,
+                      );
                     },
                     onDelete: () => onDeleteElement(pages[i].id, element.id),
                     onConfirmDelete: () =>
@@ -7815,6 +7904,14 @@ class _ImagePathPreviewDialog extends StatelessWidget {
   }
 }
 
+/// One image element on the canvas.
+///
+/// Used by both display modes. Single mode positions it against the page it
+/// belongs to ([pageOffsetX]/[pageOffsetY] left at zero); the preview strip
+/// offsets it to wherever that page sits in the strip. Preview mode used to
+/// have its own near-identical copy of this widget, which drifted -- the copy
+/// never gained the crop edge handles, so cropping behaved differently in each
+/// mode.
 class _ImageElementWidget extends StatefulWidget {
   const _ImageElementWidget({
     super.key,
@@ -7822,8 +7919,10 @@ class _ImageElementWidget extends StatefulWidget {
     required this.isSelected,
     required this.isDeleteArmed,
     required this.isCropMode,
-    required this.canvasWidth,
-    required this.canvasHeight,
+    required this.pageWidth,
+    required this.pageHeight,
+    this.pageOffsetX = 0,
+    this.pageOffsetY = 0,
     required this.hdrViewEnabled,
     required this.onTap,
     required this.onDoubleTap,
@@ -7841,8 +7940,10 @@ class _ImageElementWidget extends StatefulWidget {
   final bool isSelected;
   final bool isDeleteArmed;
   final bool isCropMode;
-  final double canvasWidth;
-  final double canvasHeight;
+  final double pageWidth;
+  final double pageHeight;
+  final double pageOffsetX;
+  final double pageOffsetY;
   final bool hdrViewEnabled;
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
@@ -7906,8 +8007,8 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
     final startX = _edgeDragStartElement.x;
     final startY = _edgeDragStartElement.y;
 
-    final dx = totalDx / widget.canvasWidth;
-    final dy = totalDy / widget.canvasHeight;
+    final dx = totalDx / widget.pageWidth;
+    final dy = totalDy / widget.pageHeight;
 
     double newX = startX;
     double newY = startY;
@@ -7951,8 +8052,8 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
     }
 
     final newAspectRatio = newWidth / newHeight;
-    final frameWidth = newWidth * widget.canvasWidth;
-    final frameHeight = newHeight * widget.canvasHeight;
+    final frameWidth = newWidth * widget.pageWidth;
+    final frameHeight = newHeight * widget.pageHeight;
     final frameAspectRatio = frameWidth / frameHeight;
 
     final sourceAspectRatio =
@@ -7964,8 +8065,8 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
         ? frameAspectRatio
         : sourceAspectRatio;
 
-    final oldFrameWidth = startWidth * widget.canvasWidth;
-    final oldFrameHeight = startHeight * widget.canvasHeight;
+    final oldFrameWidth = startWidth * widget.pageWidth;
+    final oldFrameHeight = startHeight * widget.pageHeight;
     final oldFrameAspectRatio = oldFrameWidth / oldFrameHeight;
 
     double oldBaseImageWidth;
@@ -7996,9 +8097,9 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
         (oldCropOffsetY * oldFrameHeight);
 
     final newVisualLeft =
-        currentVisualLeft - (newX - startX) * widget.canvasWidth;
+        currentVisualLeft - (newX - startX) * widget.pageWidth;
     final newVisualTop =
-        currentVisualTop - (newY - startY) * widget.canvasHeight;
+        currentVisualTop - (newY - startY) * widget.pageHeight;
 
     final newCropOffsetX =
         (newVisualLeft - (frameWidth - currentImageWidth) / 2) / frameWidth;
@@ -8072,403 +8173,6 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
       ),
     );
   }
-
-  @override
-  Widget build(BuildContext context) {
-    final aspectRatio = (widget.element.data['aspectRatio'] as num?)
-        ?.toDouble();
-    final left = widget.element.x * widget.canvasWidth;
-    final top = widget.element.y * widget.canvasHeight;
-    final width = widget.element.width * widget.canvasWidth;
-    final height = aspectRatio != null && aspectRatio > 0
-        ? width / aspectRatio
-        : widget.element.height * widget.canvasHeight;
-    final src = widget.element.data['src'] as String? ?? '';
-    const handleHitSize = 52.0;
-    const handleVisualSize = 30.0;
-    const handleVisualOffset = 10.0;
-    final selectionColor = widget.isDeleteArmed
-        ? kDeleteConfirmColor
-        : _selectionChromeColor;
-
-    return Positioned(
-      left: left,
-      top: top,
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onTap: widget.onTap,
-        onDoubleTap: widget.isDeleteArmed
-            ? widget.onCancelDelete
-            : widget.isCropMode
-            ? null
-            : widget.onDoubleTap,
-        onLongPress: () {
-          if (_isResizing || widget.isCropMode) {
-            return;
-          }
-          widget.onTap();
-          widget.onDelete();
-        },
-        onPanStart: (_) {
-          if (_isResizing) {
-            return;
-          }
-          if (widget.isDeleteArmed) {
-            widget.onCancelDelete();
-            return;
-          }
-          if (widget.isCropMode) {
-            _currentCropOffsetX = _cropOffsetXFromData(widget.element.data);
-            _currentCropOffsetY = _cropOffsetYFromData(widget.element.data);
-            return;
-          }
-          _currentX = widget.element.x;
-          _currentY = widget.element.y;
-          if (!widget.isSelected) {
-            widget.onTap();
-          }
-        },
-        onPanUpdate: (details) {
-          if (_isResizing) {
-            return;
-          }
-          if (widget.isCropMode) {
-            _currentCropOffsetX += details.delta.dx / width;
-            _currentCropOffsetY += details.delta.dy / height;
-            widget.onCropMove(_currentCropOffsetX, _currentCropOffsetY, false);
-            return;
-          }
-          _currentX += details.delta.dx / widget.canvasWidth;
-          _currentY += details.delta.dy / widget.canvasHeight;
-          widget.onMove(_currentX, _currentY, false);
-        },
-        onPanEnd: (_) {
-          if (_isResizing) {
-            return;
-          }
-          if (widget.isCropMode) {
-            widget.onCropMove(_currentCropOffsetX, _currentCropOffsetY, true);
-            return;
-          }
-          widget.onMove(_currentX, _currentY, true);
-        },
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Container(
-              width: width,
-              height: height,
-              decoration: BoxDecoration(
-                color: src.isEmpty
-                    ? const Color(0xFFF6F6F6)
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(
-                  ((widget.element.data['borderRadiusRatio'] as num?)
-                              ?.toDouble() ??
-                          0.0) *
-                      (width < height ? width : height),
-                ),
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: src.isEmpty
-                  ? const Center(
-                      child: Icon(
-                        Icons.image_outlined,
-                        color: Color(0xFF8A8A8A),
-                        size: 24,
-                      ),
-                    )
-                  : ((widget.element.data['isUltraHdr'] == true ||
-                            _hdrBrightnessFromData(widget.element.data) >
-                                1.0) &&
-                        !widget.isCropMode &&
-                        !kIsWeb &&
-                        defaultTargetPlatform == TargetPlatform.android &&
-                        AppSettingsController.instance.hdrEnabled)
-                  ? HdrImageView(
-                      // Key by path + crop only: adjust/brightness/view
-                      // changes flow over the live channel, so the platform
-                      // view is not recreated (which used to flicker).
-                      key: ValueKey(
-                        'hdr_${src}_'
-                        '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
-                        '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
-                        '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
-                      ),
-                      path: src,
-                      sourceAspectRatio:
-                          (widget.element.data['originalAspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (widget.element.data['aspectRatio'] as num?)
-                              ?.toDouble() ??
-                          0.0,
-                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                      cropScale: _cropScaleFromData(widget.element.data),
-                      hdrBrightness: _hdrBrightnessFromData(
-                        widget.element.data,
-                      ),
-                      colorMatrix:
-                          _photoAdjustmentsFromData(
-                            widget.element.data,
-                          ).hasMatrix
-                          ? _photoAdjustmentsFromData(
-                              widget.element.data,
-                            ).toColorMatrix()
-                          : null,
-                      highlights: _photoAdjustmentsFromData(
-                        widget.element.data,
-                      ).highlights,
-                      shadows: _photoAdjustmentsFromData(
-                        widget.element.data,
-                      ).shadows,
-                      hdrView: widget.hdrViewEnabled,
-                    )
-                  : _maybeColorFiltered(
-                      widget.element.data,
-                      _CroppedImageFile(
-                        path: src,
-                        frameWidth: width,
-                        frameHeight: height,
-                        sourceAspectRatio:
-                            (widget.element.data['originalAspectRatio'] as num?)
-                                ?.toDouble() ??
-                            (widget.element.data['aspectRatio'] as num?)
-                                ?.toDouble() ??
-                            (width / height),
-                        cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                        cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                        cropScale: _cropScaleFromData(widget.element.data),
-                        cacheWidth: _previewImageCacheExtent(
-                          context,
-                          width,
-                          height,
-                        ),
-                      ),
-                    ),
-            ),
-            if (widget.element.data['isUltraHdr'] == true)
-              const Positioned(left: 6, top: 6, child: _HdrBadge()),
-            _DeleteConfirmOverlay(
-              visible: widget.isDeleteArmed,
-              onConfirm: widget.onConfirmDelete,
-            ),
-            Positioned(
-              left: -2,
-              top: -2,
-              child: IgnorePointer(
-                child: AnimatedOpacity(
-                  opacity: widget.isSelected ? 1 : 0,
-                  duration: const Duration(milliseconds: 120),
-                  curve: Curves.easeInOut,
-                  child: Container(
-                    width: width + 4,
-                    height: height + 4,
-                    decoration: BoxDecoration(
-                      border: Border.all(color: selectionColor, width: 4),
-                      borderRadius: BorderRadius.circular(
-                        (() {
-                          final rRatio =
-                              (widget.element.data['borderRadiusRatio'] as num?)
-                                  ?.toDouble() ??
-                              0.0;
-                          final rVal =
-                              rRatio * (width < height ? width : height);
-                          return rVal > 0 ? rVal + 2 : 0.0;
-                        })(),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              right: 0,
-              bottom: 0,
-              child: IgnorePointer(
-                ignoring: !widget.isSelected || widget.isDeleteArmed,
-                child: AnimatedOpacity(
-                  opacity: widget.isSelected && !widget.isDeleteArmed ? 1 : 0,
-                  duration: const Duration(milliseconds: 120),
-                  curve: Curves.easeInOut,
-                  child: AnimatedScale(
-                    scale: widget.isSelected ? 1 : 0.82,
-                    duration: const Duration(milliseconds: 120),
-                    curve: Curves.easeInOut,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onPanStart: (details) {
-                        _isResizing = true;
-                        if (widget.isCropMode) {
-                          _resizeStartCropScale = _cropScaleFromData(
-                            widget.element.data,
-                          );
-                          _currentCropScale = _resizeStartCropScale;
-                        } else {
-                          _resizeStartWidth = widget.element.width;
-                          _currentWidth = widget.element.width;
-                        }
-                        _resizeStartGlobalPosition = details.globalPosition;
-                      },
-                      onPanUpdate: (details) {
-                        final totalDx =
-                            details.globalPosition.dx -
-                            _resizeStartGlobalPosition.dx;
-                        final totalDy =
-                            details.globalPosition.dy -
-                            _resizeStartGlobalPosition.dy;
-                        final aspectRatio =
-                            (widget.element.data['aspectRatio'] as num?)
-                                ?.toDouble() ??
-                            (widget.element.width / widget.element.height);
-                        if (widget.isCropMode) {
-                          final scaleDelta =
-                              (totalDx / width) + (totalDy / height);
-                          _currentCropScale =
-                              _resizeStartCropScale + (scaleDelta * 0.8);
-                          widget.onCropScale(_currentCropScale, false);
-                          return;
-                        }
-                        final scaleDelta =
-                            (totalDx / widget.canvasWidth) +
-                            ((totalDy / widget.canvasHeight) * aspectRatio);
-                        _currentWidth = _resizeStartWidth + (scaleDelta * 0.5);
-                        widget.onResize(_currentWidth, false);
-                      },
-                      onPanEnd: (_) {
-                        _isResizing = false;
-                        if (widget.isCropMode) {
-                          widget.onCropScale(_currentCropScale, true);
-                          return;
-                        }
-                        widget.onResize(_currentWidth, true);
-                      },
-                      onPanCancel: () {
-                        _isResizing = false;
-                      },
-                      child: SizedBox(
-                        width: handleHitSize,
-                        height: handleHitSize,
-                        child: Align(
-                          alignment: Alignment.bottomRight,
-                          child: Transform.translate(
-                            offset: const Offset(
-                              handleVisualOffset,
-                              handleVisualOffset,
-                            ),
-                            child: Container(
-                              width: handleVisualSize,
-                              height: handleVisualSize,
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: _selectionChromeColor,
-                                  width: 2,
-                                ),
-                              ),
-                              child: const Icon(
-                                Icons.open_in_full_rounded,
-                                size: 15,
-                                color: _selectionChromeColor,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            if (widget.isCropMode) ...[
-              Positioned(
-                top: -12,
-                left: width / 2 - 24,
-                child: _buildEdgeHandle(width: 48, height: 24, edge: 'top'),
-              ),
-              Positioned(
-                bottom: -12,
-                left: width / 2 - 24,
-                child: _buildEdgeHandle(width: 48, height: 24, edge: 'bottom'),
-              ),
-              Positioned(
-                left: -12,
-                top: height / 2 - 24,
-                child: _buildEdgeHandle(width: 24, height: 48, edge: 'left'),
-              ),
-              Positioned(
-                right: -12,
-                top: height / 2 - 24,
-                child: _buildEdgeHandle(width: 24, height: 48, edge: 'right'),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PreviewImageElementWidget extends StatefulWidget {
-  const _PreviewImageElementWidget({
-    super.key,
-    required this.element,
-    required this.isSelected,
-    required this.isDeleteArmed,
-    required this.isCropMode,
-    required this.pageWidth,
-    required this.pageHeight,
-    required this.pageOffsetX,
-    required this.pageOffsetY,
-    required this.hdrViewEnabled,
-    required this.onTap,
-    required this.onDoubleTap,
-    required this.onMove,
-    required this.onResize,
-    required this.onCropMove,
-    required this.onCropScale,
-    required this.onDelete,
-    required this.onConfirmDelete,
-    required this.onCancelDelete,
-  });
-
-  final CanvasElement element;
-  final bool isSelected;
-  final bool isDeleteArmed;
-  final bool isCropMode;
-  final double pageWidth;
-  final double pageHeight;
-  final double pageOffsetX;
-  final double pageOffsetY;
-  final bool hdrViewEnabled;
-  final VoidCallback onTap;
-  final VoidCallback onDoubleTap;
-  final void Function(double x, double y, bool persist) onMove;
-  final void Function(double width, bool persist) onResize;
-  final void Function(double x, double y, bool persist) onCropMove;
-  final void Function(double scale, bool persist) onCropScale;
-  final VoidCallback onDelete;
-  final VoidCallback onConfirmDelete;
-  final VoidCallback onCancelDelete;
-
-  @override
-  State<_PreviewImageElementWidget> createState() =>
-      _PreviewImageElementWidgetState();
-}
-
-class _PreviewImageElementWidgetState
-    extends State<_PreviewImageElementWidget> {
-  late double _currentX;
-  late double _currentY;
-  late double _currentWidth;
-  late double _currentCropOffsetX;
-  late double _currentCropOffsetY;
-  late double _currentCropScale;
-  late double _resizeStartCropScale;
-  bool _isResizing = false;
-  late double _resizeStartWidth;
-  late Offset _resizeStartGlobalPosition;
 
   @override
   Widget build(BuildContext context) {
@@ -8778,6 +8482,28 @@ class _PreviewImageElementWidgetState
                 ),
               ),
             ),
+            if (widget.isCropMode) ...[
+              Positioned(
+                top: -12,
+                left: width / 2 - 24,
+                child: _buildEdgeHandle(width: 48, height: 24, edge: 'top'),
+              ),
+              Positioned(
+                bottom: -12,
+                left: width / 2 - 24,
+                child: _buildEdgeHandle(width: 48, height: 24, edge: 'bottom'),
+              ),
+              Positioned(
+                left: -12,
+                top: height / 2 - 24,
+                child: _buildEdgeHandle(width: 24, height: 48, edge: 'left'),
+              ),
+              Positioned(
+                right: -12,
+                top: height / 2 - 24,
+                child: _buildEdgeHandle(width: 24, height: 48, edge: 'right'),
+              ),
+            ],
           ],
         ),
       ),
