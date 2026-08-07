@@ -898,6 +898,32 @@ class _BlankPageState extends State<BlankPage> {
     return tab == _tabElements;
   }
 
+  /// Drops the selection when the user swipes the canvas itself.
+  ///
+  /// Dragging a photo does not reach here: the element's own pan recognizer
+  /// wins the gesture arena, so the scrollable never starts and no
+  /// notification is sent. That is the whole distinction — a swipe that moves
+  /// the canvas clears the selection, a swipe that moves a photo does not.
+  ///
+  /// [ScrollStartNotification.dragDetails] is what separates a finger from a
+  /// programmatic scroll: `animateToPage` after adding a page also starts a
+  /// scroll, and that must not deselect the element it just added.
+  void _clearSelectionOnUserScroll(ScrollNotification notification) {
+    if (notification is! ScrollStartNotification ||
+        notification.dragDetails == null ||
+        _selectedElementId == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedElementId = null;
+      _croppingElementId = null;
+      _deleteArmedElementId = null;
+      _activeSnapGuides = const <_SnapGuide>[];
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncBottomTab());
+  }
+
   bool _shouldUseSinglePagePeek({int? pageIndex, String? selectedTab}) {
     if (_displayMode != PageDisplayMode.single || _project.pages.isEmpty) {
       return false;
@@ -6121,6 +6147,9 @@ class _BlankPageState extends State<BlankPage> {
                                           ScrollNotification
                                         >(
                                           onNotification: (notification) {
+                                            _clearSelectionOnUserScroll(
+                                              notification,
+                                            );
                                             if (notification
                                                     is ScrollStartNotification ||
                                                 notification
@@ -6143,9 +6172,12 @@ class _BlankPageState extends State<BlankPage> {
                                           child: PageView.builder(
                                             controller: _pageController,
                                             padEnds: shouldUseSinglePagePeek,
-                                            physics: _selectedElementId == null
-                                                ? const PageScrollPhysics()
-                                                : const NeverScrollableScrollPhysics(),
+                                            // Always scrollable. Locking it
+                                            // while something was selected meant
+                                            // the only way off a page was to
+                                            // deselect first; now the swipe
+                                            // itself does that.
+                                            physics: const PageScrollPhysics(),
                                             itemCount: pages.length,
                                             onPageChanged: (index) {
                                               setState(() {
@@ -6301,6 +6333,9 @@ class _BlankPageState extends State<BlankPage> {
                                           ScrollNotification
                                         >(
                                           onNotification: (notification) {
+                                            _clearSelectionOnUserScroll(
+                                              notification,
+                                            );
                                             _syncPreviewPageIndex();
                                             return false;
                                           },
@@ -6308,9 +6343,8 @@ class _BlankPageState extends State<BlankPage> {
                                             controller:
                                                 _previewScrollController,
                                             scrollDirection: Axis.horizontal,
-                                            physics: _selectedElementId == null
-                                                ? const BouncingScrollPhysics()
-                                                : const NeverScrollableScrollPhysics(),
+                                            physics:
+                                                const BouncingScrollPhysics(),
                                             child: _PreviewCanvasStrip(
                                               pages: pages,
                                               elements: _project.elements,
