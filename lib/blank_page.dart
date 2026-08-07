@@ -754,7 +754,6 @@ class _BlankPageState extends State<BlankPage> {
   late final PageController _bottomTabPageController;
   final ScrollController _previewScrollController = ScrollController();
   final ImagePicker _imagePicker = ImagePicker();
-  final GlobalKey _exportRepaintKey = GlobalKey();
   final Map<String, Uint8List> _exportImageBytesCache = <String, Uint8List>{};
   final Map<String, Color> _customPageColorDrafts = <String, Color>{};
   List<_SnapGuide> _activeSnapGuides = const <_SnapGuide>[];
@@ -4618,86 +4617,6 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
-  Future<Directory> _resolveExportDirectory() async => Directory.systemTemp;
-
-  Future<void> _exportCurrentPageAsJpg() async {
-    final strings = AppStrings.of(context);
-    if (_isExporting) {
-      return;
-    }
-
-    FocusScope.of(context).unfocus();
-    setState(() {
-      _isExporting = true;
-    });
-
-    try {
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-
-      final boundary =
-          _exportRepaintKey.currentContext?.findRenderObject()
-              as RenderRepaintBoundary?;
-      if (boundary == null) {
-        throw Exception(strings.t('exportCanvasNotFound'));
-      }
-
-      final uiImage = await boundary.toImage(pixelRatio: 6);
-      final byteData = await uiImage.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) {
-        throw Exception(strings.t('canvasConvertFailed'));
-      }
-
-      final pngBytes = byteData.buffer.asUint8List();
-      final decodedImage = img.decodeImage(pngBytes);
-      if (decodedImage == null) {
-        throw Exception(strings.t('imageDecodeFailed'));
-      }
-
-      final jpgBytes = Uint8List.fromList(
-        img.encodeJpg(decodedImage, quality: 100),
-      );
-
-      final exportDirectory = await _resolveExportDirectory();
-      await exportDirectory.create(recursive: true);
-
-      final safeProjectName = _project.name
-          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
-          .trim();
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final file = File(
-        '${exportDirectory.path}${Platform.pathSeparator}${safeProjectName.isEmpty ? 'project' : safeProjectName}_page${_currentPageIndex + 1}_$timestamp.jpg',
-      );
-
-      await file.writeAsBytes(jpgBytes, flush: true);
-
-      if (!mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            strings.t('exportedJpg', args: <String, String>{'path': file.path}),
-          ),
-        ),
-      );
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.t('exportFailedTryAgain'))),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isExporting = false;
-        });
-      }
-    }
-  }
-
   String _buildGalleryExportName(int pageIndex) {
     final safeProjectName = _project.name
         .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
@@ -6138,9 +6057,19 @@ class _BlankPageState extends State<BlankPage> {
                           (constraints.maxHeight - (canvasVerticalGap * 2))
                               .clamp(0.0, double.infinity)
                               .toDouble();
-                      final maxFittingScale = canvasHeight <= 0
+                      // The scrollable takes the whole height it is offered,
+                      // never just the page's own. A page is shorter than the
+                      // area around it, and the leftover strip above and below
+                      // used to be dead: a swipe starting there hit nothing, so
+                      // the page would not turn. The page is still centred
+                      // inside, so nothing moves visually.
+                      final canvasViewportHeight =
+                          canvasHeight > availableCanvasHeight
+                          ? canvasHeight
+                          : availableCanvasHeight;
+                      final maxFittingScale = canvasViewportHeight <= 0
                           ? canvasScale
-                          : (availableCanvasHeight / canvasHeight)
+                          : (availableCanvasHeight / canvasViewportHeight)
                                 .clamp(0.05, 1.0)
                                 .toDouble();
                       final fittedCanvasScale = canvasScale > maxFittingScale
@@ -6152,14 +6081,11 @@ class _BlankPageState extends State<BlankPage> {
                           vertical: canvasVerticalGap,
                         ),
                         child: Center(
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 240),
-                            curve: Curves.easeInOut,
-                            height: canvasHeight * fittedCanvasScale,
-                            alignment: Alignment.center,
+                          child: SizedBox(
+                            height: canvasViewportHeight * fittedCanvasScale,
                             child: OverflowBox(
                               minHeight: 0,
-                              maxHeight: canvasHeight,
+                              maxHeight: canvasViewportHeight,
                               alignment: Alignment.center,
                               child: AnimatedScale(
                                 duration: const Duration(milliseconds: 240),
@@ -6167,7 +6093,7 @@ class _BlankPageState extends State<BlankPage> {
                                 scale: fittedCanvasScale,
                                 alignment: Alignment.center,
                                 child: SizedBox(
-                                  height: canvasHeight,
+                                  height: canvasViewportHeight,
                                   child: _displayMode == PageDisplayMode.single
                                       ? NotificationListener<
                                           ScrollNotification
@@ -6230,11 +6156,7 @@ class _BlankPageState extends State<BlankPage> {
                                                   viewportWidth:
                                                       singleCanvasWidth,
                                                   viewportHeight:
-                                                      singleCanvasHeight,
-                                                  repaintKey:
-                                                      index == _currentPageIndex
-                                                      ? _exportRepaintKey
-                                                      : null,
+                                                      canvasViewportHeight,
                                                   showBorder: _showPageBorder,
                                                   showPageDivider:
                                                       _showSinglePageDivider,
@@ -6374,10 +6296,7 @@ class _BlankPageState extends State<BlankPage> {
                                                   _currentPageIndex,
                                               viewportWidth: previewCanvasWidth,
                                               viewportHeight:
-                                                  previewCanvasHeight,
-                                              exportPageId: currentPage.id,
-                                              exportRepaintKey:
-                                                  _exportRepaintKey,
+                                                  canvasViewportHeight,
                                               showBorder: _showPageBorder,
                                               hdrViewEnabled: _hdrViewEnabled,
                                               selectedElementId:
@@ -7097,7 +7016,6 @@ class _CanvasViewport extends StatelessWidget {
     required this.page,
     required this.viewportWidth,
     required this.viewportHeight,
-    required this.repaintKey,
     required this.showBorder,
     required this.showPageDivider,
     required this.hdrViewEnabled,
@@ -7132,7 +7050,6 @@ class _CanvasViewport extends StatelessWidget {
   final ProjectPage page;
   final double viewportWidth;
   final double viewportHeight;
-  final GlobalKey? repaintKey;
   final bool showBorder;
   final bool showPageDivider;
   // Kept as an interface for re-enabling the HDR/SDR preview switch later; the
@@ -7189,16 +7106,23 @@ class _CanvasViewport extends StatelessWidget {
                 behavior: HitTestBehavior.translucent,
                 onTap: onTapCanvas,
                 child: RepaintBoundary(
-                  key: repaintKey,
                   child: Container(
                     width: pageWidth,
                     height: pageHeight,
                     decoration: BoxDecoration(
                       color: _pageBackgroundColorFromExtras(page.extras),
-                      border: showBorder
-                          ? Border.all(color: const Color(0xFF8F8F8F), width: 1)
-                          : null,
                     ),
+                    // Foreground, not decoration: a full-bleed photo covers the
+                    // page edge to edge, so a border painted behind it is
+                    // invisible exactly when it is most needed.
+                    foregroundDecoration: showBorder
+                        ? BoxDecoration(
+                            border: Border.all(
+                              color: const Color(0xFF8F8F8F),
+                              width: 1,
+                            ),
+                          )
+                        : null,
                     child: LayoutBuilder(
                       builder: (context, constraints) {
                         return Stack(
@@ -7337,8 +7261,6 @@ class _PreviewCanvasStrip extends StatelessWidget {
     required this.currentPageIndex,
     required this.viewportWidth,
     required this.viewportHeight,
-    required this.exportPageId,
-    required this.exportRepaintKey,
     required this.showBorder,
     required this.hdrViewEnabled,
     required this.selectedElementId,
@@ -7366,8 +7288,6 @@ class _PreviewCanvasStrip extends StatelessWidget {
   final int currentPageIndex;
   final double viewportWidth;
   final double viewportHeight;
-  final String exportPageId;
-  final GlobalKey exportRepaintKey;
   final bool showBorder;
   final bool hdrViewEnabled;
   final String? selectedElementId;
@@ -7437,7 +7357,6 @@ class _PreviewCanvasStrip extends StatelessWidget {
                   behavior: HitTestBehavior.translucent,
                   onTap: onTapCanvas,
                   child: RepaintBoundary(
-                    key: pages[i].id == exportPageId ? exportRepaintKey : null,
                     child: Container(
                       width: viewportWidth,
                       height:
@@ -7445,17 +7364,13 @@ class _PreviewCanvasStrip extends StatelessWidget {
                           (pages[i].aspectHeight / pages[i].aspectWidth),
                       decoration: BoxDecoration(
                         color: _pageBackgroundColorFromExtras(pages[i].extras),
-                        border: showBorder
-                            ? Border.all(
-                                color: const Color(0xFF8F8F8F),
-                                width: 1,
-                              )
-                            : null,
                       ),
                       // Background only. Every element, cross-page included, is
                       // painted once by the strip-wide pass below; this page
                       // used to draw a clipped copy of the same cross-page
-                      // content underneath it, so it rendered twice.
+                      // content underneath it, so it rendered twice. The border
+                      // is drawn by its own pass after the elements, for the
+                      // same reason: here it would sit under them.
                     ),
                   ),
                 ),
@@ -7532,6 +7447,37 @@ class _PreviewCanvasStrip extends StatelessWidget {
                   onCancelDelete: () => onCancelDeleteElement(element.id),
                 ),
             ],
+          // Page borders, over the elements: a full-bleed photo covers the page
+          // edge to edge, so a border drawn with the background is invisible
+          // exactly when it is most needed.
+          if (showBorder)
+            for (var i = 0; i < pages.length; i++)
+              if (_shouldBuildPreviewPage(
+                pageIndex: i,
+                currentPageIndex: currentPageIndex,
+              ))
+                Positioned(
+                  left: viewportWidth * i,
+                  top:
+                      ((viewportHeight -
+                          (viewportWidth *
+                              (pages[i].aspectHeight / pages[i].aspectWidth))) /
+                      2),
+                  child: IgnorePointer(
+                    child: Container(
+                      width: viewportWidth,
+                      height:
+                          viewportWidth *
+                          (pages[i].aspectHeight / pages[i].aspectWidth),
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: const Color(0xFF8F8F8F),
+                          width: 1,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
           for (var i = 0; i < pages.length; i++)
             if (_shouldBuildPreviewPage(
               pageIndex: i,
