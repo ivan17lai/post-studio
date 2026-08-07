@@ -414,6 +414,77 @@ double fullBleedFrameAspectRatio({
   return spanWidth * (page.aspectWidth / page.aspectHeight);
 }
 
+/// The element list after the page at [removedPageIndex] is deleted.
+///
+/// Elements filed under that page go with it. Everything anchored after it
+/// slides one page left, keeping its offset within its own page.
+///
+/// Both halves are needed because page membership is derived from `x` rather
+/// than stored: without the shift, every element past the deletion would
+/// silently re-anchor to whichever page moved into its slot.
+List<CanvasElement> elementsAfterPageRemoved({
+  required List<CanvasElement> elements,
+  required int pageCount,
+  required int removedPageIndex,
+}) {
+  return <CanvasElement>[
+    for (final element in elements)
+      if (anchorPageIndex(element, pageCount) != removedPageIndex)
+        anchorPageIndex(element, pageCount) > removedPageIndex
+            ? element.copyWith(x: element.x - 1)
+            : element,
+  ];
+}
+
+/// The element list after the pages are permuted by [order], where
+/// `order[newIndex]` is the index that page had before.
+///
+/// Each element keeps its offset relative to the page it is anchored to, so it
+/// travels with that page. Under per-page storage this was free — the element
+/// was inside the page being moved. With one flat list it has to be done by
+/// hand, and a page that lands first or last may leave a cross-page element
+/// hanging off an edge with nothing behind it, so [normalizeProject] still has
+/// the last word.
+List<CanvasElement> elementsAfterPagesReordered({
+  required List<CanvasElement> elements,
+  required int pageCount,
+  required List<int> order,
+}) {
+  final newIndexOfOld = List<int>.generate(pageCount, (i) => i);
+  for (var newIndex = 0; newIndex < order.length; newIndex++) {
+    final oldIndex = order[newIndex];
+    if (oldIndex >= 0 && oldIndex < pageCount) {
+      newIndexOfOld[oldIndex] = newIndex;
+    }
+  }
+
+  return <CanvasElement>[
+    for (final element in elements)
+      () {
+        final anchor = anchorPageIndex(element, pageCount);
+        final shift = newIndexOfOld[anchor] - anchor;
+        return shift == 0 ? element : element.copyWith(x: element.x + shift);
+      }(),
+  ];
+}
+
+/// [elementsAfterPagesReordered] for the common case of lifting one page out
+/// and dropping it somewhere else.
+List<CanvasElement> elementsAfterPageMoved({
+  required List<CanvasElement> elements,
+  required int pageCount,
+  required int oldIndex,
+  required int newIndex,
+}) {
+  final order = List<int>.generate(pageCount, (i) => i)..removeAt(oldIndex);
+  order.insert(newIndex, oldIndex);
+  return elementsAfterPagesReordered(
+    elements: elements,
+    pageCount: pageCount,
+    order: order,
+  );
+}
+
 /// Brings a freshly loaded project in line with the invariants above.
 ///
 /// `height` is a derived value that was nonetheless stored, so it went stale

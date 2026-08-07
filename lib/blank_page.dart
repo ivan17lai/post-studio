@@ -1579,11 +1579,21 @@ class _BlankPageState extends State<BlankPage> {
         ? updatedPages.length - 1
         : _currentPageIndex;
 
-    // Removing a page can leave its neighbour last, with cross-page content
+    // The page's own elements go with it, and everything anchored after it
+    // shifts left to stay on the page it was on. Then normalize, because
+    // removing a page can leave its neighbour last, with cross-page content
     // still hanging off an edge that no longer has a page behind it.
     await _saveProject(
       normalizeProject(
-        _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+        _project.copyWith(
+          pages: updatedPages,
+          pageCount: updatedPages.length,
+          elements: elementsAfterPageRemoved(
+            elements: _project.elements,
+            pageCount: _project.pages.length,
+            removedPageIndex: pageIndex,
+          ),
+        ),
       ),
     );
 
@@ -1682,11 +1692,21 @@ class _BlankPageState extends State<BlankPage> {
     final nextCurrentIndex = updatedPages.indexWhere(
       (page) => page.id == currentPageId,
     );
-    // Elements travel with their own page, but a page that lands first or last
-    // has no neighbour left to spill onto, so anything hanging off that end
-    // would render nowhere at all.
+    // Elements have to be moved along with their page by hand now that they no
+    // longer live inside it. A page that lands first or last also has no
+    // neighbour left to spill onto, so anything hanging off that end would
+    // render nowhere at all — normalize pulls it back.
     final updatedProject = normalizeProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      _project.copyWith(
+        pages: updatedPages,
+        pageCount: updatedPages.length,
+        elements: elementsAfterPageMoved(
+          elements: _project.elements,
+          pageCount: _project.pages.length,
+          oldIndex: oldIndex,
+          newIndex: targetIndex,
+        ),
+      ),
     );
 
     setState(() {
@@ -1999,11 +2019,20 @@ class _BlankPageState extends State<BlankPage> {
     final nextCurrentIndex = updatedPages.indexWhere(
       (page) => page.id == currentPageId,
     );
-    // Elements travel with their own page, but a page that lands first or last
-    // has no neighbour left to spill onto, so anything hanging off that end
-    // would render nowhere at all.
+    // Elements have to be moved along with their page by hand now that they no
+    // longer live inside it. A page that lands first or last also has no
+    // neighbour left to spill onto, so anything hanging off that end would
+    // render nowhere at all — normalize pulls it back.
     final updatedProject = normalizeProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      _project.copyWith(
+        pages: updatedPages,
+        pageCount: updatedPages.length,
+        elements: elementsAfterPagesReordered(
+          elements: _project.elements,
+          pageCount: _project.pages.length,
+          order: order,
+        ),
+      ),
     );
 
     _storeUndoSnapshot();

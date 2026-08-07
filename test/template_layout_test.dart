@@ -9,7 +9,6 @@ ProjectPage _page(double aspectWidth, double aspectHeight) {
     type: 'page',
     aspectWidth: aspectWidth,
     aspectHeight: aspectHeight,
-    elements: const <CanvasElement>[],
     extras: const <String, dynamic>{},
   );
 }
@@ -269,46 +268,39 @@ void main() {
   });
 
   group('matchesLayout', () {
-    ProjectPage pageWith(List<CanvasElement> elements) {
-      return ProjectPage(
-        id: 'page-1',
-        title: 'Page 1',
-        type: 'page',
-        aspectWidth: 3,
-        aspectHeight: 4,
-        elements: elements,
-        extras: const <String, dynamic>{},
-      );
-    }
+    // Templates lay out one page; these cases put it first in the
+    // document, so page-local and document-space x coincide.
+    final page = _page(3, 4);
+    bool matches(
+      TemplateOption option,
+      List<CanvasElement> elements,
+      double marginRatio,
+    ) => option.matchesLayout(page, elements, 0, marginRatio);
 
     test('a freshly applied template matches its own layout', () {
       for (final marginRatio in <double>[0, 0.05]) {
-        final laidOut = pageWith(
-          _twoRows.buildElements('page-1', _page(3, 4), marginRatio),
-        );
-        expect(_twoRows.matchesLayout(laidOut, marginRatio), isTrue);
+        final laidOut = _twoRows.buildElements(0, page, marginRatio);
+        expect(matches(_twoRows, laidOut, marginRatio), isTrue);
       }
     });
 
     test('a different template does not match', () {
-      final laidOut = pageWith(
-        _twoRows.buildElements('page-1', _page(3, 4), 0),
-      );
-      expect(_twoColumns.matchesLayout(laidOut, 0), isFalse);
-      expect(_heroTopTwoBottom.matchesLayout(laidOut, 0), isFalse);
+      final laidOut = _twoRows.buildElements(0, page, 0);
+      expect(matches(_twoColumns, laidOut, 0), isFalse);
+      expect(matches(_heroTopTwoBottom, laidOut, 0), isFalse);
     });
 
     test('moving a slot stops it matching', () {
-      final elements = _twoRows.buildElements('page-1', _page(3, 4), 0);
+      final elements = _twoRows.buildElements(0, page, 0);
       final moved = <CanvasElement>[
         elements.first.copyWith(x: elements.first.x + 0.05),
         elements.last,
       ];
-      expect(_twoRows.matchesLayout(pageWith(moved), 0), isFalse);
+      expect(matches(_twoRows, moved, 0), isFalse);
     });
 
     test('resizing a slot stops it matching', () {
-      final elements = _twoRows.buildElements('page-1', _page(3, 4), 0);
+      final elements = _twoRows.buildElements(0, page, 0);
       final resized = <CanvasElement>[
         elements.first.copyWith(
           width: 0.6,
@@ -316,38 +308,36 @@ void main() {
         ),
         elements.last,
       ];
-      expect(_twoRows.matchesLayout(pageWith(resized), 0), isFalse);
+      expect(matches(_twoRows, resized, 0), isFalse);
     });
 
     test('removing a slot stops it matching', () {
-      final elements = _twoRows.buildElements('page-1', _page(3, 4), 0);
+      final elements = _twoRows.buildElements(0, page, 0);
       expect(
-        _twoRows.matchesLayout(pageWith(<CanvasElement>[elements.first]), 0),
+        matches(_twoRows, <CanvasElement>[elements.first], 0),
         isFalse,
       );
     });
 
     test('reordering layers still matches', () {
-      final elements = _twoRows.buildElements('page-1', _page(3, 4), 0);
+      final elements = _twoRows.buildElements(0, page, 0);
       final reordered = elements.reversed.toList();
-      expect(_twoRows.matchesLayout(pageWith(reordered), 0), isTrue);
+      expect(matches(_twoRows, reordered, 0), isTrue);
     });
 
     test('text elements are ignored', () {
-      final elements = _twoRows.buildElements('page-1', _page(3, 4), 0);
+      final elements = _twoRows.buildElements(0, page, 0);
       final withText = <CanvasElement>[
         ...elements,
-        CanvasElement.text(pageId: 'page-1'),
+        CanvasElement.text(),
       ];
-      expect(_twoRows.matchesLayout(pageWith(withText), 0), isTrue);
+      expect(matches(_twoRows, withText, 0), isTrue);
     });
 
     test('changing the margin stops the old layout matching', () {
-      final laidOut = pageWith(
-        _twoRows.buildElements('page-1', _page(3, 4), 0),
-      );
-      expect(_twoRows.matchesLayout(laidOut, 0), isTrue);
-      expect(_twoRows.matchesLayout(laidOut, 0.05), isFalse);
+      final laidOut = _twoRows.buildElements(0, page, 0);
+      expect(matches(_twoRows, laidOut, 0), isTrue);
+      expect(matches(_twoRows, laidOut, 0.05), isFalse);
     });
 
     group('contain fill', () {
@@ -358,8 +348,8 @@ void main() {
       );
 
       test('matches while the slot is still empty', () {
-        final laidOut = pageWith(fill.buildElements('page-1', _page(3, 4), 0));
-        expect(fill.matchesLayout(laidOut, 0), isTrue);
+        final laidOut = fill.buildElements(0, page, 0);
+        expect(matches(fill, laidOut, 0), isTrue);
       });
 
       test('matches a photo letterboxed to its own ratio', () {
@@ -370,7 +360,7 @@ void main() {
           marginRatio: 0,
         );
         final placed = fill
-            .buildElements('page-1', _page(3, 4), 0)
+            .buildElements(0, page, 0)
             .single
             .copyWith(
               x: fitted.x,
@@ -384,14 +374,12 @@ void main() {
                 'templateSlot': 'fill',
               },
             );
-        expect(fill.matchesLayout(pageWith(<CanvasElement>[placed]), 0), isTrue);
+        expect(matches(fill, <CanvasElement>[placed], 0), isTrue);
       });
 
       test('does not match a two-slot layout', () {
-        final laidOut = pageWith(
-          _twoRows.buildElements('page-1', _page(3, 4), 0),
-        );
-        expect(fill.matchesLayout(laidOut, 0), isFalse);
+        final laidOut = _twoRows.buildElements(0, page, 0);
+        expect(matches(fill, laidOut, 0), isFalse);
       });
     });
   });
@@ -399,7 +387,7 @@ void main() {
   group('buildElements', () {
     test('slots carry the frame ratio the layout computed', () {
       final page = _page(3, 4);
-      final elements = _twoRows.buildElements('page-1', page, 0);
+      final elements = _twoRows.buildElements(0, page, 0);
 
       expect(elements, hasLength(2));
       for (final element in elements) {
@@ -418,7 +406,7 @@ void main() {
         label: 'fill',
         isContainFill: true,
       );
-      final elements = fill.buildElements('page-1', _page(4, 5), 0.05);
+      final elements = fill.buildElements(0, _page(4, 5), 0.05);
 
       expect(elements, hasLength(1));
       expect(elements.single.data['templateSlot'], 'fill');
