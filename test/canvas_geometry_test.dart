@@ -364,8 +364,10 @@ void main() {
         pageIndex: 1,
         pageCount: 3,
       );
-      expect(range.min, -kCrossPageOverhang);
-      expect(range.max, 1 + kCrossPageOverhang);
+      // Left: far enough to sit flush on the previous page without leaving it.
+      // Right: flush on the next page, and page 2 ends the document at x = 1.5.
+      expect(range.min, closeTo(-0.5, 1e-9));
+      expect(range.max, closeTo(1.0, 1e-9));
     });
 
     test('a page-bound element is held inside its own page', () {
@@ -408,7 +410,7 @@ void main() {
         pageCount: 3,
       );
       expect(range.min, 0);
-      expect(range.max, 1 + kCrossPageOverhang);
+      expect(range.max, closeTo(1.0, 1e-9));
     });
 
     test('the last page has nothing to spill onto to its right', () {
@@ -417,8 +419,45 @@ void main() {
         pageIndex: 2,
         pageCount: 3,
       );
-      expect(range.min, -kCrossPageOverhang);
+      expect(range.min, closeTo(-0.5, 1e-9));
       expect(range.max, closeTo(0.5, 1e-9));
+    });
+
+    test('the span may not run off the end of the document', () {
+      // Regression guard for the fixed-overhang model this replaced: it let an
+      // element on page 0 of a two-page project reach x = 1.95, putting its
+      // right edge at 2.45 -- half a page past the end, rendering nowhere.
+      // At width 1.8 the document bound is the one that binds.
+      const width = 1.8;
+      final range = allowedXRange(
+        _image(width: width),
+        pageIndex: 0,
+        pageCount: 2,
+      );
+      expect(range.max, closeTo(0.2, 1e-9));
+      expect(range.max + width, closeTo(2.0, 1e-9));
+    });
+
+    test('a full-document spread is pinned to the only place it fits', () {
+      // Two pages wide, filed under page 1: it has to start at page 0.
+      final range = allowedXRange(
+        _image(width: 2.0),
+        pageIndex: 1,
+        pageCount: 2,
+      );
+      expect(range.min, closeTo(-1.0, 1e-9));
+      expect(range.max, closeTo(-1.0, 1e-9));
+    });
+
+    test('an element may not be stranded off its own page', () {
+      final range = allowedXRange(
+        _image(width: 0.4),
+        pageIndex: 3,
+        pageCount: 9,
+      );
+      // Bounded by its own page, not by how much document lies either side.
+      expect(range.min, closeTo(-0.4, 1e-9));
+      expect(range.max, closeTo(1.0, 1e-9));
     });
 
     test('a lone page confines even a cross-page element', () {
@@ -441,14 +480,15 @@ void main() {
   });
 
   group('maxElementWidth', () {
-    test('a cross-page element may grow past its page', () {
+    test('a cross-page element may grow to cover the whole document', () {
       expect(
         maxElementWidth(
           element: _image(x: 0.2, y: 0.2),
           page: _page(),
           aspectRatio: 1.0,
+          pageCount: 3,
         ),
-        kMaxCrossPageElementWidth,
+        3.0,
       );
     });
 
@@ -458,6 +498,7 @@ void main() {
           element: _image(x: 0.3, y: 0, allowCrossPage: false),
           page: _page(),
           aspectRatio: 1.0,
+          pageCount: 3,
         ),
         closeTo(0.7, 1e-9),
       );
@@ -471,6 +512,7 @@ void main() {
           element: _image(x: 0, y: 0.6, allowCrossPage: false),
           page: _page(),
           aspectRatio: 1.0,
+          pageCount: 3,
         ),
         closeTo(0.5, 1e-9),
       );
@@ -482,9 +524,100 @@ void main() {
           element: _image(x: 0.99, y: 0.99, allowCrossPage: false),
           page: _page(),
           aspectRatio: 1.0,
+          pageCount: 3,
         ),
         kMinElementWidth,
       );
+    });
+  });
+
+  group('touchedPageRange', () {
+    ({int first, int last}) rangeOf(
+      CanvasElement element, {
+      int pageIndex = 0,
+      int pageCount = 3,
+    }) {
+      return touchedPageRange(
+        element: element,
+        pageIndex: pageIndex,
+        pageCount: pageCount,
+      );
+    }
+
+    test('an element inside its page touches only that page', () {
+      final range = rangeOf(_image(x: 0.1, width: 0.5), pageIndex: 1);
+      expect(range.first, 1);
+      expect(range.last, 1);
+    });
+
+    test('the slightest overlap counts as touching', () {
+      // Covers page 1 and clips 5% into page 2.
+      final range = rangeOf(_image(x: 0.05, width: 1.0), pageIndex: 1);
+      expect(range.first, 1);
+      expect(range.last, 2);
+    });
+
+    test('a span landing exactly on a boundary does not touch beyond it', () {
+      final range = rangeOf(_image(x: 0, width: 1.0), pageIndex: 1);
+      expect(range.first, 1);
+      expect(range.last, 1);
+    });
+
+    test('a spread reaching backwards starts at the earlier page', () {
+      final range = rangeOf(_image(x: -0.6, width: 1.2), pageIndex: 2);
+      expect(range.first, 1);
+      expect(range.last, 2);
+    });
+
+    test('three pages wide touches three pages', () {
+      final range = rangeOf(_image(x: 0, width: 3.0), pageIndex: 0);
+      expect(range.first, 0);
+      expect(range.last, 2);
+    });
+
+    test('never reports a page outside the document', () {
+      final range = rangeOf(_image(x: -5, width: 20), pageIndex: 1);
+      expect(range.first, 0);
+      expect(range.last, 2);
+    });
+  });
+
+  group('fullBleedFrameAspectRatio', () {
+    test('yields a frame exactly one page tall', () {
+      final page = _page();
+      for (final spanWidth in <double>[1, 2, 3]) {
+        final aspectRatio = fullBleedFrameAspectRatio(
+          spanWidth: spanWidth,
+          page: page,
+        );
+        // The whole point: at this aspect, that width is exactly 1.0 tall.
+        expect(
+          imageHeightRatio(
+            width: spanWidth,
+            aspectRatio: aspectRatio,
+            fallbackHeight: 0,
+            pageAspectWidth: page.aspectWidth,
+            pageAspectHeight: page.aspectHeight,
+          ),
+          closeTo(1.0, 1e-9),
+          reason: 'span=$spanWidth',
+        );
+      }
+    });
+
+    test('a two-page spread on a 4:5 page is 1.6:1', () {
+      expect(
+        fullBleedFrameAspectRatio(spanWidth: 2, page: _page()),
+        closeTo(1.6, 1e-9),
+      );
+    });
+
+    test('the resulting spread is a position allowedXRange permits', () {
+      // The snap sets x so the span starts on the leftmost touched page; that
+      // has to be inside the range, or the next edit would yank it back.
+      final spread = _image(x: -1, width: 2.0);
+      final range = allowedXRange(spread, pageIndex: 1, pageCount: 2);
+      expect(range.clamp(spread.x), closeTo(-1.0, 1e-9));
     });
   });
 

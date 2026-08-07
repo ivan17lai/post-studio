@@ -2983,7 +2983,34 @@ class _BlankPageState extends State<BlankPage> {
       unawaited(_showTextEditor(elementId));
       return;
     }
+
+    // A photo already straddling a seam snaps flush across the pages it
+    // touches; one sitting on a single page falls back to fitting that page.
+    if (element != null && _elementTouchesMultiplePages(element)) {
+      unawaited(
+        _fillElementAcrossTouchedPages(pageId: pageId, elementId: elementId),
+      );
+      return;
+    }
     unawaited(_fitElementToCanvas(pageId: pageId, elementId: elementId));
+  }
+
+  bool _elementTouchesMultiplePages(CanvasElement element) {
+    if (!element.allowCrossPage) {
+      return false;
+    }
+    final pageIndex = _project.pages.indexWhere(
+      (page) => page.id == element.pageId,
+    );
+    if (pageIndex == -1) {
+      return false;
+    }
+    final range = touchedPageRange(
+      element: element,
+      pageIndex: pageIndex,
+      pageCount: _project.pages.length,
+    );
+    return range.last > range.first;
   }
 
   CanvasElement? _findElementById(String elementId, {String? type}) {
@@ -3505,6 +3532,7 @@ class _BlankPageState extends State<BlankPage> {
       element: element,
       page: page,
       aspectRatio: aspectRatio,
+      pageCount: _project.pages.length,
     );
   }
 
@@ -3727,7 +3755,7 @@ class _BlankPageState extends State<BlankPage> {
     CanvasElement image,
   ) {
     const min = kMinElementWidth;
-    var max = image.allowCrossPage ? kMaxCrossPageElementWidth : 1.0;
+    var max = image.allowCrossPage ? _project.pages.length.toDouble() : 1.0;
     final pageIndex = _project.pages.indexWhere(
       (page) => page.id == image.pageId,
     );
@@ -4205,6 +4233,69 @@ class _BlankPageState extends State<BlankPage> {
       ),
       persist: true,
     );
+  }
+
+  /// Snaps a cross-page photo flush across every page it currently touches:
+  /// full page height, aligned to the leftmost touched page, spanning through
+  /// the rightmost. The frame aspect changes to match that span, so the photo
+  /// is cropped to fill rather than stretched.
+  Future<void> _fillElementAcrossTouchedPages({
+    required String pageId,
+    required String elementId,
+  }) async {
+    final pageIndex = _project.pages.indexWhere((page) => page.id == pageId);
+    if (pageIndex == -1) {
+      return;
+    }
+
+    final page = _project.pages[pageIndex];
+    final element = page.elements.firstWhere(
+      (item) => item.id == elementId,
+      orElse: () => CanvasElement.image(pageId: pageId),
+    );
+    if (element.id != elementId) {
+      return;
+    }
+
+    final range = touchedPageRange(
+      element: element,
+      pageIndex: pageIndex,
+      pageCount: _project.pages.length,
+    );
+    final spanWidth = (range.last - range.first + 1).toDouble();
+
+    _storeUndoSnapshot();
+    var updatedElement = element.copyWith(
+      x: (range.first - pageIndex).toDouble(),
+      y: 0,
+      width: spanWidth,
+      height: 1,
+      data: <String, dynamic>{
+        ...element.data,
+        'aspectRatio': fullBleedFrameAspectRatio(
+          spanWidth: spanWidth,
+          page: page,
+        ),
+        'aspectPreset': 'crossPageFill',
+      },
+    );
+
+    // Same convention as _updateSelectedImageAspect: keep whatever pan the
+    // user had set, but re-clamp it against the frame's new shape.
+    final clampedCrop = _clampedCropOffsetForElement(
+      updatedElement,
+      x: _cropOffsetXFromData(updatedElement.data),
+      y: _cropOffsetYFromData(updatedElement.data),
+    );
+    updatedElement = updatedElement.copyWith(
+      data: <String, dynamic>{
+        ...updatedElement.data,
+        'cropOffsetX': clampedCrop.x,
+        'cropOffsetY': clampedCrop.y,
+      },
+    );
+
+    await _replaceElement(updatedElement, persist: true);
   }
 
   Future<void> _updateSelectedImageAspect(_ImageAspectOption option) async {

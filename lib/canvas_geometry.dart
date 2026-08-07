@@ -13,18 +13,12 @@
 ///     on which display mode the editor happens to be in.
 library;
 
-import 'project_record.dart';
+import 'dart:math' as math;
 
-/// Widest an element may get, as a fraction of its own page's width.
-const double kMaxCrossPageElementWidth = 2.2;
+import 'project_record.dart';
 
 /// Narrowest an element may get, as a fraction of its own page's width.
 const double kMinElementWidth = 0.08;
-
-/// How far past its own page a cross-page element may be dragged, as a
-/// fraction of page width. 0.95 keeps a sliver anchored on the owning page so
-/// the element stays reachable after a page reorder.
-const double kCrossPageOverhang = 0.95;
 
 /// Element box in the coordinate space of one target page, where `0` is that
 /// page's left/top edge and `1` its right/bottom edge. Values outside `0..1`
@@ -206,10 +200,18 @@ bool isPayloadVisibleOnPage({
 /// cross-page layout built in preview was silently flattened the moment it was
 /// touched in single mode.
 ///
-/// [pageIndex] and [pageCount] locate the owning page in the document. An
-/// element may only spill onto a page that exists: past the first or last page
-/// there is nothing to receive it, so the overflow would render nowhere and be
-/// dropped from the export.
+/// [pageIndex] and [pageCount] locate the owning page in the document, which
+/// is what bounds a cross-page element. Working in document space -- where the
+/// element occupies `[pageIndex + x, pageIndex + x + width]` and the document
+/// occupies `[0, pageCount]` -- gives two bounds:
+///
+///   * the span must stay inside the document. Past either end there is no
+///     page to receive the overflow, so it renders nowhere and is dropped from
+///     the export. A fixed per-page overhang could not express this: it let an
+///     element on page 0 of a two-page project reach x = 1.95, whose right
+///     edge sits beyond the end of the document.
+///   * the span must still overlap the page that owns it, so an element cannot
+///     be stranded pages away from where it is filed.
 CanvasXRange allowedXRange(
   CanvasElement element, {
   required int pageIndex,
@@ -217,17 +219,13 @@ CanvasXRange allowedXRange(
   double? width,
 }) {
   final resolvedWidth = width ?? element.width;
-  final pageBoundMax = (1 - resolvedWidth).clamp(0.0, 1.0).toDouble();
   if (!element.allowCrossPage) {
-    return CanvasXRange(0, pageBoundMax);
+    return CanvasXRange(0, (1 - resolvedWidth).clamp(0.0, 1.0).toDouble());
   }
 
-  final hasPageBefore = pageIndex > 0;
-  final hasPageAfter = pageIndex < pageCount - 1;
-  return CanvasXRange(
-    hasPageBefore ? -kCrossPageOverhang : 0,
-    hasPageAfter ? 1 + kCrossPageOverhang : pageBoundMax,
-  );
+  final min = math.max(-resolvedWidth, -pageIndex.toDouble());
+  final max = math.min(1.0, (pageCount - pageIndex) - resolvedWidth);
+  return CanvasXRange(min, max < min ? min : max);
 }
 
 /// Range [element] may be dragged along y, in fractions of page height.
@@ -251,9 +249,12 @@ double maxElementWidth({
   required CanvasElement element,
   required ProjectPage page,
   required double aspectRatio,
+  required int pageCount,
 }) {
   if (element.allowCrossPage) {
-    return kMaxCrossPageElementWidth;
+    // A spread may cover the whole document but no more; allowedXRange then
+    // pins where it has to start.
+    return pageCount.toDouble();
   }
 
   final maxWidthByRight = (1 - element.x)
@@ -315,6 +316,43 @@ double textFontSizeRatioFromData(Map<String, dynamic> data) {
 
 int textLineCount(String text) {
   return text.split('\n').length.clamp(1, 8);
+}
+
+/// The run of pages [element] currently overlaps, as document page indices.
+///
+/// Any overlap counts, however slight: an element covering its own page and
+/// clipping 5% into the next touches both. That is what makes "drag it roughly
+/// across the seam, then snap it flush" work.
+({int first, int last}) touchedPageRange({
+  required CanvasElement element,
+  required int pageIndex,
+  required int pageCount,
+}) {
+  // Nudge both edges inward so a span that lands exactly on a page boundary is
+  // not counted as touching the page beyond it.
+  const epsilon = 1e-9;
+  final left = pageIndex + element.x;
+  final right = left + element.width;
+
+  final first = (left + epsilon).floor().clamp(0, pageCount - 1);
+  final last = ((right - epsilon).ceil() - 1).clamp(first, pageCount - 1);
+  return (first: first, last: last);
+}
+
+/// Frame aspect ratio that makes [element] exactly [spanWidth] pages wide and
+/// one page tall on [page].
+///
+/// Solves [imageHeightRatio] for the aspect that yields a height of 1. The
+/// photo inside is cropped to the frame rather than stretched, so its own
+/// proportions survive.
+double fullBleedFrameAspectRatio({
+  required double spanWidth,
+  required ProjectPage page,
+}) {
+  if (page.aspectHeight <= 0) {
+    return spanWidth;
+  }
+  return spanWidth * (page.aspectWidth / page.aspectHeight);
 }
 
 /// Brings a freshly loaded project in line with the invariants above.
