@@ -1635,8 +1635,12 @@ class _BlankPageState extends State<BlankPage> {
         ? updatedPages.length - 1
         : _currentPageIndex;
 
+    // Removing a page can leave its neighbour last, with cross-page content
+    // still hanging off an edge that no longer has a page behind it.
     await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      normalizeProject(
+        _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      ),
     );
 
     if (!mounted) {
@@ -1734,9 +1738,11 @@ class _BlankPageState extends State<BlankPage> {
     final nextCurrentIndex = updatedPages.indexWhere(
       (page) => page.id == currentPageId,
     );
-    final updatedProject = _project.copyWith(
-      pages: updatedPages,
-      pageCount: updatedPages.length,
+    // Elements travel with their own page, but a page that lands first or last
+    // has no neighbour left to spill onto, so anything hanging off that end
+    // would render nowhere at all.
+    final updatedProject = normalizeProject(
+      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
     );
 
     setState(() {
@@ -2028,9 +2034,11 @@ class _BlankPageState extends State<BlankPage> {
     final nextCurrentIndex = updatedPages.indexWhere(
       (page) => page.id == currentPageId,
     );
-    final updatedProject = _project.copyWith(
-      pages: updatedPages,
-      pageCount: updatedPages.length,
+    // Elements travel with their own page, but a page that lands first or last
+    // has no neighbour left to spill onto, so anything hanging off that end
+    // would render nowhere at all.
+    final updatedProject = normalizeProject(
+      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
     );
 
     _storeUndoSnapshot();
@@ -3160,7 +3168,11 @@ class _BlankPageState extends State<BlankPage> {
 
     final page = _project.pages[pageIndex];
     final element = page.elements.firstWhere((item) => item.id == elementId);
-    final xRange = allowedXRange(element);
+    final xRange = allowedXRange(
+      element,
+      pageIndex: pageIndex,
+      pageCount: _project.pages.length,
+    );
     final yRange = allowedYRange(element, page);
     final rawX = xRange.clamp(x);
     final rawY = yRange.clamp(y);
@@ -3478,7 +3490,12 @@ class _BlankPageState extends State<BlankPage> {
     final updatedElement = element.copyWith(
       width: snappedWidth,
       height: nextHeight,
-      x: allowedXRange(element, width: snappedWidth).clamp(element.x),
+      x: allowedXRange(
+        element,
+        pageIndex: pageIndex,
+        pageCount: _project.pages.length,
+        width: snappedWidth,
+      ).clamp(element.x),
       y: element.y.clamp(0.0, maxY),
       data: <String, dynamic>{...element.data, 'aspectRatio': aspectRatio},
     );
@@ -3786,14 +3803,18 @@ class _BlankPageState extends State<BlankPage> {
     CanvasElement element, {
     required ({double width, double height}) pagePixelSize,
   }) {
-    final xRange = allowedXRange(element);
+    final pageIndex = _project.pages.indexWhere(
+      (page) => page.id == element.pageId,
+    );
+    final xRange = allowedXRange(
+      element,
+      pageIndex: pageIndex == -1 ? _currentPageIndex : pageIndex,
+      pageCount: _project.pages.length,
+    );
     final minX = xRange.min;
     var maxX = xRange.max;
     const minY = 0.0;
     var maxY = (1 - element.height).clamp(0.0, 1.0).toDouble();
-    final pageIndex = _project.pages.indexWhere(
-      (page) => page.id == element.pageId,
-    );
     if (pageIndex != -1) {
       maxY = allowedYRange(element, _project.pages[pageIndex]).max;
     }
@@ -4084,7 +4105,11 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final page = _project.pages[pageIndex];
-    final rawX = allowedXRange(selectedImage).clamp(selectedImage.x + dx);
+    final rawX = allowedXRange(
+      selectedImage,
+      pageIndex: pageIndex,
+      pageCount: _project.pages.length,
+    ).clamp(selectedImage.x + dx);
     final rawY = allowedYRange(selectedImage, page).clamp(selectedImage.y + dy);
 
     if (rawX == selectedImage.x && rawY == selectedImage.y) {
@@ -4122,7 +4147,11 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final page = _project.pages[pageIndex];
-    final rawX = allowedXRange(selectedText).clamp(selectedText.x + dx);
+    final rawX = allowedXRange(
+      selectedText,
+      pageIndex: pageIndex,
+      pageCount: _project.pages.length,
+    ).clamp(selectedText.x + dx);
     final rawY = allowedYRange(selectedText, page).clamp(selectedText.y + dy);
 
     if (rawX == selectedText.x && rawY == selectedText.y) {

@@ -273,14 +273,22 @@ void main() {
   });
 
   group('allowedXRange', () {
-    test('a cross-page element may hang off either side', () {
-      final range = allowedXRange(_image(width: 0.5));
+    test('a cross-page element in the middle may hang off either side', () {
+      final range = allowedXRange(
+        _image(width: 0.5),
+        pageIndex: 1,
+        pageCount: 3,
+      );
       expect(range.min, -kCrossPageOverhang);
       expect(range.max, 1 + kCrossPageOverhang);
     });
 
     test('a page-bound element is held inside its own page', () {
-      final range = allowedXRange(_image(width: 0.3, allowCrossPage: false));
+      final range = allowedXRange(
+        _image(width: 0.3, allowCrossPage: false),
+        pageIndex: 1,
+        pageCount: 3,
+      );
       expect(range.min, 0);
       expect(range.max, closeTo(0.7, 1e-9));
       expect(range.clamp(-0.4), 0);
@@ -288,17 +296,54 @@ void main() {
     });
 
     test('an oversized page-bound element collapses to x = 0', () {
-      final range = allowedXRange(_image(width: 1.8, allowCrossPage: false));
+      final range = allowedXRange(
+        _image(width: 1.8, allowCrossPage: false),
+        pageIndex: 1,
+        pageCount: 3,
+      );
       expect(range.min, 0);
       expect(range.max, 0);
     });
 
-    test('the range depends on the element alone', () {
+    test('the range depends on the element, not the display mode', () {
       // Regression guard: the old code picked the range from the editor's
       // display mode, so a cross-page layout built in preview was flattened
       // the moment it was touched in single mode.
       final crossPage = _image(x: -0.4, width: 1.5);
-      expect(allowedXRange(crossPage).clamp(crossPage.x), -0.4);
+      expect(
+        allowedXRange(crossPage, pageIndex: 1, pageCount: 3).clamp(crossPage.x),
+        -0.4,
+      );
+    });
+
+    test('the first page has nothing to spill onto to its left', () {
+      final range = allowedXRange(
+        _image(width: 0.5),
+        pageIndex: 0,
+        pageCount: 3,
+      );
+      expect(range.min, 0);
+      expect(range.max, 1 + kCrossPageOverhang);
+    });
+
+    test('the last page has nothing to spill onto to its right', () {
+      final range = allowedXRange(
+        _image(width: 0.5),
+        pageIndex: 2,
+        pageCount: 3,
+      );
+      expect(range.min, -kCrossPageOverhang);
+      expect(range.max, closeTo(0.5, 1e-9));
+    });
+
+    test('a lone page confines even a cross-page element', () {
+      final range = allowedXRange(
+        _image(width: 0.5),
+        pageIndex: 0,
+        pageCount: 1,
+      );
+      expect(range.min, 0);
+      expect(range.max, closeTo(0.5, 1e-9));
     });
   });
 
@@ -410,6 +455,60 @@ void main() {
       );
     }
 
+    /// [elementsPerPage] spread over that many pages, sharing one page shape.
+    ProjectRecord multiPageProject(List<List<CanvasElement>> elementsPerPage) {
+      return ProjectRecord(
+        id: 'proj',
+        name: 'proj',
+        createdAt: DateTime(2026),
+        pageCount: elementsPerPage.length,
+        pages: elementsPerPage.indexed
+            .map(
+              (entry) => _page().copyWith(
+                id: 'p${entry.$1}',
+                elements: entry.$2,
+              ),
+            )
+            .toList(),
+        extras: const <String, dynamic>{},
+      );
+    }
+
+    test('keeps a spill that still has a page to land on', () {
+      final spilling = _image(x: 0.6, width: 0.8, aspectRatio: 1.0);
+      final normalized = multiPageProject(<List<CanvasElement>>[
+        <CanvasElement>[spilling],
+        const <CanvasElement>[],
+      ]);
+      expect(
+        normalizeProject(normalized).pages.first.elements.single.x,
+        closeTo(0.6, 1e-9),
+      );
+    });
+
+    test('reclaims a spill off the end of the document', () {
+      // Same element, but now its page is the last one: the overflow has no
+      // page behind it, so it would render nowhere and be lost on export.
+      final spilling = _image(x: 0.6, width: 0.8, aspectRatio: 1.0);
+      final normalized = multiPageProject(<List<CanvasElement>>[
+        const <CanvasElement>[],
+        <CanvasElement>[spilling],
+      ]);
+      expect(
+        normalizeProject(normalized).pages.last.elements.single.x,
+        closeTo(0.2, 1e-9),
+      );
+    });
+
+    test('reclaims a spill off the front of the document', () {
+      final spilling = _image(x: -0.3, width: 0.8, aspectRatio: 1.0);
+      final normalized = multiPageProject(<List<CanvasElement>>[
+        <CanvasElement>[spilling],
+        const <CanvasElement>[],
+      ]);
+      expect(normalizeProject(normalized).pages.first.elements.single.x, 0);
+    });
+
     test('recomputes a height left stale by a page aspect change', () {
       // Stored height of 0.5 was correct on a square page; on 4:5 it is 0.4.
       final stale = _image(width: 0.5, height: 0.5, aspectRatio: 1.0);
@@ -423,10 +522,16 @@ void main() {
       expect(normalized.pages.single.elements.single.x, 0);
     });
 
-    test('leaves a cross-page element where it is', () {
+    test('leaves a cross-page element with neighbours on both sides', () {
       final spilling = _image(x: -0.4, width: 1.5, aspectRatio: 1.0);
-      final normalized = normalizeProject(projectOf(<CanvasElement>[spilling]));
-      expect(normalized.pages.single.elements.single.x, -0.4);
+      final normalized = normalizeProject(
+        multiPageProject(<List<CanvasElement>>[
+          const <CanvasElement>[],
+          <CanvasElement>[spilling],
+          const <CanvasElement>[],
+        ]),
+      );
+      expect(normalized.pages[1].elements.single.x, -0.4);
     });
 
     test('clamps y when the recomputed height no longer fits', () {

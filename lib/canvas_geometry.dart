@@ -166,12 +166,29 @@ bool isVisibleOnPage({
 /// to the page in single mode and to `-0.95..1.95` in preview mode, so a
 /// cross-page layout built in preview was silently flattened the moment it was
 /// touched in single mode.
-CanvasXRange allowedXRange(CanvasElement element, {double? width}) {
-  if (element.allowCrossPage) {
-    return const CanvasXRange(-kCrossPageOverhang, 1 + kCrossPageOverhang);
-  }
+///
+/// [pageIndex] and [pageCount] locate the owning page in the document. An
+/// element may only spill onto a page that exists: past the first or last page
+/// there is nothing to receive it, so the overflow would render nowhere and be
+/// dropped from the export.
+CanvasXRange allowedXRange(
+  CanvasElement element, {
+  required int pageIndex,
+  required int pageCount,
+  double? width,
+}) {
   final resolvedWidth = width ?? element.width;
-  return CanvasXRange(0, (1 - resolvedWidth).clamp(0.0, 1.0).toDouble());
+  final pageBoundMax = (1 - resolvedWidth).clamp(0.0, 1.0).toDouble();
+  if (!element.allowCrossPage) {
+    return CanvasXRange(0, pageBoundMax);
+  }
+
+  final hasPageBefore = pageIndex > 0;
+  final hasPageAfter = pageIndex < pageCount - 1;
+  return CanvasXRange(
+    hasPageBefore ? -kCrossPageOverhang : 0,
+    hasPageAfter ? 1 + kCrossPageOverhang : pageBoundMax,
+  );
 }
 
 /// Range [element] may be dragged along y, in fractions of page height.
@@ -274,12 +291,19 @@ int textLineCount(String text) {
 ProjectRecord normalizeProject(ProjectRecord project) {
   var projectChanged = false;
 
-  final pages = project.pages.map((page) {
+  final pageCount = project.pages.length;
+
+  final pages = project.pages.indexed.map((entry) {
+    final (pageIndex, page) = entry;
     var pageChanged = false;
 
     final elements = page.elements.map((element) {
       final height = elementHeightRatio(element, page);
-      final x = allowedXRange(element).clamp(element.x);
+      final x = allowedXRange(
+        element,
+        pageIndex: pageIndex,
+        pageCount: pageCount,
+      ).clamp(element.x);
       final y = allowedYRange(element, page).clamp(element.y);
 
       if ((height - element.height).abs() < 1e-9 &&
