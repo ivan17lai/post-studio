@@ -2562,6 +2562,21 @@ class _BlankPageState extends State<BlankPage> {
       _showPageBorder = mode == PageDisplayMode.preview;
       _showSinglePageDivider = false;
       _pageController = _buildPageController();
+
+      // Going into single mode drops the selection.
+      //
+      // Preview shows the whole document at once, so a selected element is
+      // always in view. Single mode shows one page, and an element selected
+      // across the seam is half off-screen with its handles split over two
+      // pages — you end up dragging something you can only partly see. The
+      // other direction keeps the selection: everything selectable in single
+      // mode is still visible, and still whole, in preview.
+      if (mode == PageDisplayMode.single) {
+        _selectedElementId = null;
+        _croppingElementId = null;
+        _deleteArmedElementId = null;
+        _activeSnapGuides = const <_SnapGuide>[];
+      }
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2571,6 +2586,7 @@ class _BlankPageState extends State<BlankPage> {
       } else if (_displayMode == PageDisplayMode.preview) {
         _jumpPreviewToPage(currentPageIndex);
       }
+      _syncBottomTab();
       // Not this frame: the canvas cross-fades between modes, so the outgoing
       // tree — and the controller it is still driving — stays mounted until
       // the fade ends. Disposing here would tear it out mid-animation.
