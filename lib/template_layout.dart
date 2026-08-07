@@ -155,8 +155,16 @@ class TemplateOption {
   /// highlight clears on its own — no bookkeeping to keep in step with every
   /// path that can edit an element, and undo, page changes and reopening a
   /// project all stay correct for free.
-  bool matchesLayout(ProjectPage page, double marginRatio) {
-    final images = page.elements
+  /// [pageElements] are the elements anchored to [page]. Templates lay out one
+  /// page, so they work in page-local coordinates; element `x` is in document
+  /// space, and [pageIndex] is what converts between the two.
+  bool matchesLayout(
+    ProjectPage page,
+    List<CanvasElement> pageElements,
+    int pageIndex,
+    double marginRatio,
+  ) {
+    final images = pageElements
         .where((element) => element.type == 'image')
         .toList();
 
@@ -178,7 +186,7 @@ class TemplateOption {
                   1.0,
               marginRatio: marginRatio,
             );
-      return _matches(image, expected);
+      return _matches(image, expected, pageIndex);
     }
 
     final rects = resolveRects(page, marginRatio);
@@ -190,7 +198,9 @@ class TemplateOption {
     // change to the layout.
     final unmatched = List<CanvasElement>.from(images);
     for (final rect in rects) {
-      final index = unmatched.indexWhere((image) => _matches(image, rect));
+      final index = unmatched.indexWhere(
+        (image) => _matches(image, rect, pageIndex),
+      );
       if (index == -1) {
         return false;
       }
@@ -199,12 +209,12 @@ class TemplateOption {
     return true;
   }
 
-  static bool _matches(CanvasElement element, TemplateRect rect) {
+  static bool _matches(CanvasElement element, TemplateRect rect, int pageIndex) {
     // Rendered height follows from the frame ratio rather than from `height`,
     // so the ratio is what has to agree.
     final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
     return aspectRatio != null &&
-        _closeEnough(element.x, rect.x) &&
+        _closeEnough(element.x - pageIndex, rect.x) &&
         _closeEnough(element.y, rect.y) &&
         _closeEnough(element.width, rect.width) &&
         _closeEnough(aspectRatio, rect.aspectRatio);
@@ -214,16 +224,18 @@ class TemplateOption {
   /// can introduce, tight enough that a deliberate nudge never passes.
   static bool _closeEnough(double a, double b) => (a - b).abs() < 0.001;
 
+  /// Slots for the page at [pageIndex], with their page-local x shifted into
+  /// the document space element positions are stored in.
   List<CanvasElement> buildElements(
-    String pageId,
+    int pageIndex,
     ProjectPage page,
     double marginRatio,
   ) {
     final rects = resolveRects(page, marginRatio);
     return <CanvasElement>[
       for (var i = 0; i < rects.length; i++)
-        CanvasElement.image(pageId: pageId).copyWith(
-          x: rects[i].x,
+        CanvasElement.image().copyWith(
+          x: pageIndex + rects[i].x,
           y: rects[i].y,
           width: rects[i].width,
           height: rects[i].height,

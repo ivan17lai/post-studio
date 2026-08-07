@@ -109,38 +109,54 @@ double textHeightRatio({
   return height.clamp(0.04, 0.9).toDouble();
 }
 
-/// Where [element] lands when painted onto the page at [targetPageIndex].
+/// Page [element] is filed under: the one its left edge starts on.
 ///
-/// Cross-page position is expressed relative to the owning page, so the page
-/// index delta is what carries an element onto its neighbours.
+/// Derived, never stored. A stored owner went stale the moment the element was
+/// dragged or the pages reordered, and forced an element spanning a seam to
+/// pick one page to belong to.
+int anchorPageIndex(CanvasElement element, int pageCount) {
+  if (pageCount <= 0) {
+    return 0;
+  }
+  return element.x.floor().clamp(0, pageCount - 1);
+}
+
+/// The page [element] should take its shape from.
+///
+/// Height is a fraction of page height, so it needs a page to be a fraction
+/// *of*; the anchor page is that reference.
+ProjectPage anchorPage(CanvasElement element, ProjectRecord project) {
+  return project.pages[anchorPageIndex(element, project.pages.length)];
+}
+
+/// Where [element] lands when painted onto the page at [targetPageIndex].
 CanvasRect elementRectOnPage({
   required CanvasElement element,
-  required ProjectPage sourcePage,
-  required int sourcePageIndex,
+  required ProjectPage anchorPage,
   required int targetPageIndex,
   double? width,
 }) {
   final resolvedWidth = width ?? element.width;
   return CanvasRect(
-    left: (sourcePageIndex - targetPageIndex) + element.x,
+    left: element.x - targetPageIndex,
     top: element.y,
     width: resolvedWidth,
-    height: elementHeightRatio(element, sourcePage, width: resolvedWidth),
+    height: elementHeightRatio(element, anchorPage, width: resolvedWidth),
   );
 }
 
 /// Whether [element] should be painted onto the page at [targetPageIndex].
 ///
-/// An element always paints on its own page, even when it overflows: the
-/// overflow is the whole point of cross-page layout, and clipping it here
-/// would make the screen disagree with the export.
+/// An element always paints on the page it is anchored to, even when it
+/// overflows: the overflow is the whole point of cross-page layout, and
+/// clipping it here would make the screen disagree with the export.
 bool isVisibleOnPage({
   required CanvasElement element,
-  required ProjectPage sourcePage,
-  required int sourcePageIndex,
+  required ProjectPage anchorPage,
+  required int anchorPageIndex,
   required int targetPageIndex,
 }) {
-  if (sourcePageIndex == targetPageIndex) {
+  if (anchorPageIndex == targetPageIndex) {
     return true;
   }
   if (!element.allowCrossPage) {
@@ -148,27 +164,60 @@ bool isVisibleOnPage({
   }
   return elementRectOnPage(
     element: element,
-    sourcePage: sourcePage,
-    sourcePageIndex: sourcePageIndex,
+    anchorPage: anchorPage,
     targetPageIndex: targetPageIndex,
   ).overlapsPage;
 }
 
+/// Every element that shows on the page at [pageIndex], back to front.
+///
+/// One flat pass in z-order. Each renderer used to walk pages then elements,
+/// which fixed cross-page stacking at (page index, element index) and made a
+/// photo from an earlier page permanently sit under the next page's content.
+List<CanvasElement> elementsVisibleOnPage(
+  ProjectRecord project,
+  int pageIndex,
+) {
+  final pageCount = project.pages.length;
+  return <CanvasElement>[
+    for (final element in project.elements)
+      if (isVisibleOnPage(
+        element: element,
+        anchorPage: anchorPage(element, project),
+        anchorPageIndex: anchorPageIndex(element, pageCount),
+        targetPageIndex: pageIndex,
+      ))
+        element,
+  ];
+}
+
+/// Elements filed under the page at [pageIndex], back to front.
+List<CanvasElement> elementsAnchoredToPage(
+  ProjectRecord project,
+  int pageIndex,
+) {
+  final pageCount = project.pages.length;
+  return <CanvasElement>[
+    for (final element in project.elements)
+      if (anchorPageIndex(element, pageCount) == pageIndex) element,
+  ];
+}
+
 /// [isVisibleOnPage] for callers holding plain maps instead of model objects.
 ///
-/// The isolate renderer is handed its pages as JSON-shaped maps, so it cannot
+/// The isolate renderer is handed its payload as JSON-shaped maps, so it cannot
 /// use the object form. Keeping the two in step matters: when the map-based
 /// payload builder and the object-based renderer disagreed about which
 /// elements were visible, images were filtered out of the payload and then
 /// silently missing from the exported page.
 bool isPayloadVisibleOnPage({
   required Map<String, dynamic> element,
-  required double sourceAspectWidth,
-  required double sourceAspectHeight,
-  required int sourcePageIndex,
+  required double anchorAspectWidth,
+  required double anchorAspectHeight,
+  required int anchorPageIndex,
   required int targetPageIndex,
 }) {
-  if (sourcePageIndex == targetPageIndex) {
+  if (anchorPageIndex == targetPageIndex) {
     return true;
   }
   if (!(element['allowCrossPage'] as bool? ??
@@ -178,17 +227,15 @@ bool isPayloadVisibleOnPage({
 
   final width = (element['width'] as num?)?.toDouble() ?? 0;
   return CanvasRect(
-    left:
-        (sourcePageIndex - targetPageIndex) +
-        ((element['x'] as num?)?.toDouble() ?? 0),
+    left: ((element['x'] as num?)?.toDouble() ?? 0) - targetPageIndex,
     top: (element['y'] as num?)?.toDouble() ?? 0,
     width: width,
     height: imageHeightRatio(
       width: width,
       aspectRatio: (element['aspectRatio'] as num?)?.toDouble(),
       fallbackHeight: (element['height'] as num?)?.toDouble() ?? 0,
-      pageAspectWidth: sourceAspectWidth,
-      pageAspectHeight: sourceAspectHeight,
+      pageAspectWidth: anchorAspectWidth,
+      pageAspectHeight: anchorAspectHeight,
     ),
   ).overlapsPage;
 }
@@ -200,32 +247,30 @@ bool isPayloadVisibleOnPage({
 /// cross-page layout built in preview was silently flattened the moment it was
 /// touched in single mode.
 ///
-/// [pageIndex] and [pageCount] locate the owning page in the document, which
-/// is what bounds a cross-page element. Working in document space -- where the
-/// element occupies `[pageIndex + x, pageIndex + x + width]` and the document
-/// occupies `[0, pageCount]` -- gives two bounds:
+/// A cross-page element may go anywhere in the document: `[0, pageCount]` is
+/// the whole canvas, and its span must simply stay inside it. Past either end
+/// there is no page to receive the overflow, so it renders nowhere and is
+/// dropped from the export.
 ///
-///   * the span must stay inside the document. Past either end there is no
-///     page to receive the overflow, so it renders nowhere and is dropped from
-///     the export. A fixed per-page overhang could not express this: it let an
-///     element on page 0 of a two-page project reach x = 1.95, whose right
-///     edge sits beyond the end of the document.
-///   * the span must still overlap the page that owns it, so an element cannot
-///     be stranded pages away from where it is filed.
+/// There is no longer a "must stay near the page that owns it" bound. Ownership
+/// is derived from where the element starts, so it follows the element instead
+/// of tethering it -- one of the things storing elements per page forced.
+///
+/// A page-bound element is confined to the page it is currently filed under.
 CanvasXRange allowedXRange(
   CanvasElement element, {
-  required int pageIndex,
+  required int anchorPageIndex,
   required int pageCount,
   double? width,
 }) {
   final resolvedWidth = width ?? element.width;
+
   if (!element.allowCrossPage) {
-    return CanvasXRange(0, (1 - resolvedWidth).clamp(0.0, 1.0).toDouble());
+    final min = anchorPageIndex.toDouble();
+    return CanvasXRange(min, math.max(min, min + 1 - resolvedWidth));
   }
 
-  final min = math.max(-resolvedWidth, -pageIndex.toDouble());
-  final max = math.min(1.0, (pageCount - pageIndex) - resolvedWidth);
-  return CanvasXRange(min, max < min ? min : max);
+  return CanvasXRange(0, math.max(0.0, pageCount - resolvedWidth));
 }
 
 /// Range [element] may be dragged along y, in fractions of page height.
@@ -249,6 +294,7 @@ double maxElementWidth({
   required CanvasElement element,
   required ProjectPage page,
   required double aspectRatio,
+  required int anchorPageIndex,
   required int pageCount,
 }) {
   if (element.allowCrossPage) {
@@ -257,7 +303,8 @@ double maxElementWidth({
     return pageCount.toDouble();
   }
 
-  final maxWidthByRight = (1 - element.x)
+  final pageLocalX = element.x - anchorPageIndex;
+  final maxWidthByRight = (1 - pageLocalX)
       .clamp(kMinElementWidth, 1.0)
       .toDouble();
   final maxHeightByBottom = (1 - element.y).clamp(0.0, 1.0).toDouble();
@@ -325,13 +372,12 @@ int textLineCount(String text) {
 /// across the seam, then snap it flush" work.
 ({int first, int last}) touchedPageRange({
   required CanvasElement element,
-  required int pageIndex,
   required int pageCount,
 }) {
   // Nudge both edges inward so a span that lands exactly on a page boundary is
   // not counted as touching the page beyond it.
   const epsilon = 1e-9;
-  final left = pageIndex + element.x;
+  final left = element.x;
   final right = left + element.width;
 
   final first = (left + epsilon).floor().clamp(0, pageCount - 1);
@@ -366,39 +412,34 @@ double fullBleedFrameAspectRatio({
 ///
 /// Returns the same instance when nothing needed repair.
 ProjectRecord normalizeProject(ProjectRecord project) {
-  var projectChanged = false;
+  if (project.pages.isEmpty) {
+    return project;
+  }
 
+  var changed = false;
   final pageCount = project.pages.length;
 
-  final pages = project.pages.indexed.map((entry) {
-    final (pageIndex, page) = entry;
-    var pageChanged = false;
+  final elements = project.elements.map((element) {
+    final anchorIndex = anchorPageIndex(element, pageCount);
+    final page = project.pages[anchorIndex];
 
-    final elements = page.elements.map((element) {
-      final height = elementHeightRatio(element, page);
-      final x = allowedXRange(
-        element,
-        pageIndex: pageIndex,
-        pageCount: pageCount,
-      ).clamp(element.x);
-      final y = allowedYRange(element, page).clamp(element.y);
+    final height = elementHeightRatio(element, page);
+    final x = allowedXRange(
+      element,
+      anchorPageIndex: anchorIndex,
+      pageCount: pageCount,
+    ).clamp(element.x);
+    final y = allowedYRange(element, page).clamp(element.y);
 
-      if ((height - element.height).abs() < 1e-9 &&
-          x == element.x &&
-          y == element.y) {
-        return element;
-      }
-
-      pageChanged = true;
-      return element.copyWith(height: height, x: x, y: y);
-    }).toList();
-
-    if (!pageChanged) {
-      return page;
+    if ((height - element.height).abs() < 1e-9 &&
+        x == element.x &&
+        y == element.y) {
+      return element;
     }
-    projectChanged = true;
-    return page.copyWith(elements: elements);
+
+    changed = true;
+    return element.copyWith(height: height, x: x, y: y);
   }).toList();
 
-  return projectChanged ? project.copyWith(pages: pages) : project;
+  return changed ? project.copyWith(elements: elements) : project;
 }

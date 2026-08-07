@@ -295,6 +295,7 @@ class _MainPageState extends State<MainPage> {
       pages: <ProjectPage>[
         ProjectPage.initial().copyWith(aspectWidth: 3, aspectHeight: 4),
       ],
+      elements: const <CanvasElement>[],
       extras: const <String, dynamic>{},
     );
 
@@ -446,6 +447,9 @@ class _MainPageState extends State<MainPage> {
       }
 
       final List<ProjectPage> projectPages = [];
+      // Elements live on the project now. Appending page by page keeps them in
+      // page order, which is the stacking the old per-page storage produced.
+      final List<CanvasElement> projectElements = [];
       for (var pageIdx = 0; pageIdx < pagesList.length; pageIdx++) {
         final pageData = pagesList[pageIdx] as Map<String, dynamic>;
         final layout = pageData['layout'] as String? ?? 'fill';
@@ -469,8 +473,7 @@ class _MainPageState extends State<MainPage> {
               CanvasElement(
                 id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_top',
                 type: 'image',
-                pageId: pageId,
-                x: 0.0,
+                x: pageIdx + 0.0,
                 y: 0.0,
                 width: 1.0,
                 height: 0.49,
@@ -493,8 +496,7 @@ class _MainPageState extends State<MainPage> {
               CanvasElement(
                 id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_bot',
                 type: 'image',
-                pageId: pageId,
-                x: 0.0,
+                x: pageIdx + 0.0,
                 y: 0.51,
                 width: 1.0,
                 height: 0.49,
@@ -537,8 +539,7 @@ class _MainPageState extends State<MainPage> {
               CanvasElement(
                 id: '${DateTime.now().microsecondsSinceEpoch}_img_${pageIdx}_fill',
                 type: 'image',
-                pageId: pageId,
-                x: xCoord,
+                x: pageIdx + xCoord,
                 y: yCoord,
                 width: wNorm,
                 height: hNorm,
@@ -562,10 +563,10 @@ class _MainPageState extends State<MainPage> {
             type: 'page',
             aspectWidth: 3,
             aspectHeight: 4,
-            elements: elements,
             extras: <String, dynamic>{'aiCaption': description},
           ),
         );
+        projectElements.addAll(elements);
       }
 
       final List<Map<String, dynamic>> importedImagesList = [];
@@ -583,6 +584,7 @@ class _MainPageState extends State<MainPage> {
         createdAt: DateTime.now(),
         pageCount: projectPages.length,
         pages: projectPages,
+        elements: projectElements,
         extras: {'importedImages': importedImagesList},
       );
 

@@ -1,5 +1,19 @@
 import 'app_strings.dart';
 
+/// A project: an ordered run of pages, plus one flat list of the elements laid
+/// out across them.
+///
+/// Elements live here rather than on a page. They used to be stored per page,
+/// under whichever page happened to be current when they were added, which
+/// made ownership arbitrary as soon as an element spanned a seam: the layers
+/// panel only listed a page's own elements, so a photo covering two pages was
+/// invisible on one of them, and painting order was fixed at
+/// (page index, element index), which meant a cross-page photo could never sit
+/// above the next page's content.
+///
+/// The per-page split never bought anything at render time either: every
+/// renderer walked pages then elements and composited in exactly that order,
+/// which is this flat list with a partition drawn through it.
 class ProjectRecord {
   const ProjectRecord({
     required this.id,
@@ -7,6 +21,7 @@ class ProjectRecord {
     required this.createdAt,
     required this.pageCount,
     required this.pages,
+    required this.elements,
     required this.extras,
   });
 
@@ -15,6 +30,12 @@ class ProjectRecord {
   final DateTime createdAt;
   final int pageCount;
   final List<ProjectPage> pages;
+
+  /// Every element in the project, back to front. List order *is* z-order, and
+  /// it spans pages, so an element anchored to one page can sit above one
+  /// anchored to another.
+  final List<CanvasElement> elements;
+
   final Map<String, dynamic> extras;
 
   ProjectRecord copyWith({
@@ -23,6 +44,7 @@ class ProjectRecord {
     DateTime? createdAt,
     int? pageCount,
     List<ProjectPage>? pages,
+    List<CanvasElement>? elements,
     Map<String, dynamic>? extras,
   }) {
     return ProjectRecord(
@@ -31,6 +53,7 @@ class ProjectRecord {
       createdAt: createdAt ?? this.createdAt,
       pageCount: pageCount ?? this.pageCount,
       pages: pages ?? this.pages,
+      elements: elements ?? this.elements,
       extras: extras ?? this.extras,
     );
   }
@@ -42,6 +65,7 @@ class ProjectRecord {
       'createdAt': createdAt.toIso8601String(),
       'pageCount': pageCount,
       'pages': pages.map((page) => page.toJson()).toList(),
+      'elements': elements.map((element) => element.toJson()).toList(),
       'extras': extras,
     };
   }
@@ -52,6 +76,16 @@ class ProjectRecord {
         .toList();
 
     final pages = rawPages.map(ProjectPage.fromJson).toList();
+    final rawElements = json['elements'] as List<dynamic>?;
+
+    final elements = rawElements == null
+        ? _elementsFromPerPageFormat(rawPages)
+        : rawElements
+              .map(
+                (item) =>
+                    CanvasElement.fromJson(Map<String, dynamic>.from(item as Map)),
+              )
+              .toList();
 
     return ProjectRecord(
       id: json['id'] as String? ?? '',
@@ -61,13 +95,38 @@ class ProjectRecord {
           DateTime.now(),
       pageCount: json['pageCount'] as int? ?? pages.length,
       pages: pages.isEmpty ? <ProjectPage>[ProjectPage.initial()] : pages,
+      elements: elements,
       extras: Map<String, dynamic>.from(
         json['extras'] as Map? ?? <String, dynamic>{},
       ),
     );
   }
+
+  /// Reads a project saved before elements moved off the pages.
+  ///
+  /// Concatenating the pages' lists in page order reproduces the old painting
+  /// order exactly, so z-order survives the move unchanged. `x` was relative to
+  /// the owning page, so it shifts by that page's index to become absolute.
+  static List<CanvasElement> _elementsFromPerPageFormat(
+    List<Map<String, dynamic>> rawPages,
+  ) {
+    final elements = <CanvasElement>[];
+    for (var pageIndex = 0; pageIndex < rawPages.length; pageIndex++) {
+      final rawElements =
+          (rawPages[pageIndex]['elements'] as List<dynamic>? ?? <dynamic>[])
+              .map((item) => Map<String, dynamic>.from(item as Map))
+              .toList();
+      for (final rawElement in rawElements) {
+        final element = CanvasElement.fromJson(rawElement);
+        elements.add(element.copyWith(x: element.x + pageIndex));
+      }
+    }
+    return elements;
+  }
 }
 
+/// A page: a frame the elements are viewed and exported through. Position,
+/// shape and background only — the elements themselves live on the project.
 class ProjectPage {
   const ProjectPage({
     required this.id,
@@ -75,7 +134,6 @@ class ProjectPage {
     required this.type,
     required this.aspectWidth,
     required this.aspectHeight,
-    required this.elements,
     required this.extras,
   });
 
@@ -84,7 +142,6 @@ class ProjectPage {
   final String type;
   final double aspectWidth;
   final double aspectHeight;
-  final List<CanvasElement> elements;
   final Map<String, dynamic> extras;
 
   factory ProjectPage.initial([int index = 1]) {
@@ -97,7 +154,6 @@ class ProjectPage {
       type: 'page',
       aspectWidth: 4,
       aspectHeight: 5,
-      elements: const <CanvasElement>[],
       extras: const <String, dynamic>{},
     );
   }
@@ -108,7 +164,6 @@ class ProjectPage {
     String? type,
     double? aspectWidth,
     double? aspectHeight,
-    List<CanvasElement>? elements,
     Map<String, dynamic>? extras,
   }) {
     return ProjectPage(
@@ -117,7 +172,6 @@ class ProjectPage {
       type: type ?? this.type,
       aspectWidth: aspectWidth ?? this.aspectWidth,
       aspectHeight: aspectHeight ?? this.aspectHeight,
-      elements: elements ?? this.elements,
       extras: extras ?? this.extras,
     );
   }
@@ -129,23 +183,17 @@ class ProjectPage {
       'type': type,
       'aspectWidth': aspectWidth,
       'aspectHeight': aspectHeight,
-      'elements': elements.map((element) => element.toJson()).toList(),
       'extras': extras,
     };
   }
 
   factory ProjectPage.fromJson(Map<String, dynamic> json) {
-    final rawElements = (json['elements'] as List<dynamic>? ?? <dynamic>[])
-        .map((item) => Map<String, dynamic>.from(item as Map))
-        .toList();
-
     return ProjectPage(
       id: json['id'] as String? ?? '',
       title: json['title'] as String? ?? '',
       type: json['type'] as String? ?? 'page',
       aspectWidth: (json['aspectWidth'] as num?)?.toDouble() ?? 4,
       aspectHeight: (json['aspectHeight'] as num?)?.toDouble() ?? 5,
-      elements: rawElements.map(CanvasElement.fromJson).toList(),
       extras: Map<String, dynamic>.from(
         json['extras'] as Map? ?? <String, dynamic>{},
       ),
@@ -164,7 +212,6 @@ class CanvasElement {
   const CanvasElement({
     required this.id,
     required this.type,
-    required this.pageId,
     required this.x,
     required this.y,
     required this.width,
@@ -175,21 +222,34 @@ class CanvasElement {
 
   final String id;
   final String type;
-  final String pageId;
+
+  /// Left edge in document space, in page widths: 0 is the first page's left
+  /// edge, 1 the second page's, and so on. A value of 1.5 sits halfway across
+  /// the second page; 0.6 with width 0.8 straddles the first seam.
+  ///
+  /// This replaced a page-relative x plus a stored `pageId`. Which page an
+  /// element belongs to is now derived from where it starts, so it cannot go
+  /// stale, and an element spanning pages no longer has to pick one to be
+  /// filed under.
   final double x;
+
+  /// Top edge as a fraction of page height. Pages do not stack, so this stays
+  /// page-relative.
   final double y;
+
+  /// Width in page widths: 1.0 is exactly one page across.
   final double width;
+
   final double height;
   final bool allowCrossPage;
   final Map<String, dynamic> data;
 
-  factory CanvasElement.image({required String pageId}) {
+  factory CanvasElement.image({double x = 0.12, double y = 0.12}) {
     return CanvasElement(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       type: 'image',
-      pageId: pageId,
-      x: 0.12,
-      y: 0.12,
+      x: x,
+      y: y,
       width: 0.36,
       height: 0.36,
       allowCrossPage: true,
@@ -197,13 +257,12 @@ class CanvasElement {
     );
   }
 
-  factory CanvasElement.text({required String pageId}) {
+  factory CanvasElement.text({double x = 0.14, double y = 0.18}) {
     return CanvasElement(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       type: 'text',
-      pageId: pageId,
-      x: 0.14,
-      y: 0.18,
+      x: x,
+      y: y,
       width: 0.62,
       height: 0.08,
       allowCrossPage: false,
@@ -221,7 +280,6 @@ class CanvasElement {
   CanvasElement copyWith({
     String? id,
     String? type,
-    String? pageId,
     double? x,
     double? y,
     double? width,
@@ -232,7 +290,6 @@ class CanvasElement {
     return CanvasElement(
       id: id ?? this.id,
       type: type ?? this.type,
-      pageId: pageId ?? this.pageId,
       x: x ?? this.x,
       y: y ?? this.y,
       width: width ?? this.width,
@@ -246,7 +303,6 @@ class CanvasElement {
     return {
       'id': id,
       'type': type,
-      'pageId': pageId,
       'x': x,
       'y': y,
       'width': width,
@@ -265,7 +321,6 @@ class CanvasElement {
     return CanvasElement(
       id: json['id'] as String? ?? '',
       type: type,
-      pageId: json['pageId'] as String? ?? '',
       x: (json['x'] as num?)?.toDouble() ?? 0.12,
       y: (json['y'] as num?)?.toDouble() ?? 0.12,
       width: (json['width'] as num?)?.toDouble() ?? 0.36,
