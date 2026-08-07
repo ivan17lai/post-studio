@@ -78,42 +78,46 @@ object NativePageRenderer {
         var outputGainmapContents: Bitmap? = null
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
+        // Element x is in document space -- page widths from the document's
+        // left edge -- so placing it on the target page is one subtraction,
+        // the same for every element regardless of which page it belongs to.
+        val pageOffsetX = -targetPageIndex * exportWidth
+
         try {
-            for (sourcePageIndex in pages.indices) {
-                val sourcePage = pages[sourcePageIndex]
+            // One flat pass in the order the payload lists them, which is the
+            // project's z-order. Walking pages then their elements, as this
+            // used to, pinned every element below everything on a later page.
+            @Suppress("UNCHECKED_CAST")
+            val elements = payload["elements"] as? List<Map<String, Any>> ?: emptyList()
 
-                @Suppress("UNCHECKED_CAST")
-                val elements = sourcePage["elements"] as? List<Map<String, Any>> ?: continue
+            for (element in elements) {
+                val allowCrossPage = element["allowCrossPage"] as? Boolean ?: true
+                val anchorPageIndex = (element["anchorPageIndex"] as? Number)?.toInt() ?: 0
+                if (!allowCrossPage && anchorPageIndex != targetPageIndex) {
+                    continue
+                }
 
-                for (element in elements) {
-                    val allowCrossPage = element["allowCrossPage"] as? Boolean ?: true
-                    if (!allowCrossPage && sourcePageIndex != targetPageIndex) {
-                        continue
-                    }
-                    val pageOffsetX = (sourcePageIndex - targetPageIndex) * exportWidth
-
-                    when (element["type"] as? String) {
-                        "image" -> drawImageElement(
-                            element = element,
-                            baseCanvas = baseCanvas,
-                            paint = paint,
-                            exportWidth = exportWidth,
-                            exportHeight = exportHeight,
-                            pageOffsetX = pageOffsetX,
-                            collectHdr = collectHdr,
-                            synthesizeSdr = synthesizeSdr,
-                            gainmapOps = gainmapOps,
-                        )
-                        "text" -> drawTextElement(
-                            element = element,
-                            baseCanvas = baseCanvas,
-                            exportWidth = exportWidth,
-                            exportHeight = exportHeight,
-                            pageOffsetX = pageOffsetX,
-                            collectHdr = collectHdr,
-                            gainmapOps = gainmapOps,
-                        )
-                    }
+                when (element["type"] as? String) {
+                    "image" -> drawImageElement(
+                        element = element,
+                        baseCanvas = baseCanvas,
+                        paint = paint,
+                        exportWidth = exportWidth,
+                        exportHeight = exportHeight,
+                        pageOffsetX = pageOffsetX,
+                        collectHdr = collectHdr,
+                        synthesizeSdr = synthesizeSdr,
+                        gainmapOps = gainmapOps,
+                    )
+                    "text" -> drawTextElement(
+                        element = element,
+                        baseCanvas = baseCanvas,
+                        exportWidth = exportWidth,
+                        exportHeight = exportHeight,
+                        pageOffsetX = pageOffsetX,
+                        collectHdr = collectHdr,
+                        gainmapOps = gainmapOps,
+                    )
                 }
             }
 
