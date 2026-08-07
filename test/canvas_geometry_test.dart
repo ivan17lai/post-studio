@@ -369,5 +369,79 @@ void main() {
         CanvasElement.text(pageId: 'p1').allowCrossPage,
       );
     });
+
+    test('a legacy element with no stored flag takes the type default', () {
+      final legacyText = CanvasElement.fromJson(<String, dynamic>{
+        'id': 't1',
+        'type': 'text',
+        'pageId': 'p1',
+      });
+      expect(legacyText.allowCrossPage, isFalse);
+
+      final legacyImage = CanvasElement.fromJson(<String, dynamic>{
+        'id': 'e1',
+        'type': 'image',
+        'pageId': 'p1',
+      });
+      expect(legacyImage.allowCrossPage, isTrue);
+    });
+
+    test('an explicitly stored flag is respected either way', () {
+      final crossPageText = CanvasElement.fromJson(<String, dynamic>{
+        'id': 't1',
+        'type': 'text',
+        'pageId': 'p1',
+        'allowCrossPage': true,
+      });
+      expect(crossPageText.allowCrossPage, isTrue);
+    });
+  });
+
+  group('normalizeProject', () {
+    ProjectRecord projectOf(List<CanvasElement> elements, {ProjectPage? page}) {
+      final basePage = page ?? _page();
+      return ProjectRecord(
+        id: 'proj',
+        name: 'proj',
+        createdAt: DateTime(2026),
+        pageCount: 1,
+        pages: <ProjectPage>[basePage.copyWith(elements: elements)],
+        extras: const <String, dynamic>{},
+      );
+    }
+
+    test('recomputes a height left stale by a page aspect change', () {
+      // Stored height of 0.5 was correct on a square page; on 4:5 it is 0.4.
+      final stale = _image(width: 0.5, height: 0.5, aspectRatio: 1.0);
+      final normalized = normalizeProject(projectOf(<CanvasElement>[stale]));
+      expect(normalized.pages.single.elements.single.height, closeTo(0.4, 1e-9));
+    });
+
+    test('pulls a page-bound element back inside its page', () {
+      final escaped = _image(x: -0.4, width: 0.5, allowCrossPage: false);
+      final normalized = normalizeProject(projectOf(<CanvasElement>[escaped]));
+      expect(normalized.pages.single.elements.single.x, 0);
+    });
+
+    test('leaves a cross-page element where it is', () {
+      final spilling = _image(x: -0.4, width: 1.5, aspectRatio: 1.0);
+      final normalized = normalizeProject(projectOf(<CanvasElement>[spilling]));
+      expect(normalized.pages.single.elements.single.x, -0.4);
+    });
+
+    test('clamps y when the recomputed height no longer fits', () {
+      final tooLow = _image(y: 0.9, width: 1.0, height: 0.1, aspectRatio: 1.0);
+      final normalized = normalizeProject(projectOf(<CanvasElement>[tooLow]));
+      final element = normalized.pages.single.elements.single;
+      expect(element.height, closeTo(0.8, 1e-9));
+      expect(element.y, closeTo(0.2, 1e-9));
+    });
+
+    test('returns the same instance when nothing needs repair', () {
+      final clean = _image(x: 0.1, y: 0.1, width: 0.5, aspectRatio: 1.0)
+          .copyWith(height: 0.4);
+      final project = projectOf(<CanvasElement>[clean]);
+      expect(identical(normalizeProject(project), project), isTrue);
+    });
   });
 }

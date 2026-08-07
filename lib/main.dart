@@ -14,6 +14,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'app_strings.dart';
 import 'app_settings.dart';
 import 'blank_page.dart';
+import 'canvas_geometry.dart';
 import 'project_record.dart';
 import 'settings_page.dart';
 import 'theme_constants.dart';
@@ -101,8 +102,10 @@ class _MainPageState extends State<MainPage> {
     final projects =
         rawList
             .map(
-              (item) => ProjectRecord.fromJson(
-                jsonDecode(item) as Map<String, dynamic>,
+              (item) => normalizeProject(
+                ProjectRecord.fromJson(
+                  jsonDecode(item) as Map<String, dynamic>,
+                ),
               ),
             )
             .toList()

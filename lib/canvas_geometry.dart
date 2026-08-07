@@ -261,8 +261,43 @@ int textLineCount(String text) {
   return text.split('\n').length.clamp(1, 8);
 }
 
-/// Default for `allowCrossPage` when a stored element predates the field.
+/// Brings a freshly loaded project in line with the invariants above.
 ///
-/// Must agree with [CanvasElement.image] and [CanvasElement.text]; when it did
-/// not, every text element in an older project came back cross-page enabled.
-bool defaultAllowCrossPage(String type) => type != 'text';
+/// `height` is a derived value that was nonetheless stored, so it went stale
+/// whenever the page aspect changed underneath it, and `x` could sit outside
+/// the range its own `allowCrossPage` allows because the old editor picked that
+/// range from the display mode. Both are repaired here, once, at load, so an
+/// existing project heals itself instead of rendering differently in each of
+/// the paths that read it.
+///
+/// Returns the same instance when nothing needed repair.
+ProjectRecord normalizeProject(ProjectRecord project) {
+  var projectChanged = false;
+
+  final pages = project.pages.map((page) {
+    var pageChanged = false;
+
+    final elements = page.elements.map((element) {
+      final height = elementHeightRatio(element, page);
+      final x = allowedXRange(element).clamp(element.x);
+      final y = allowedYRange(element, page).clamp(element.y);
+
+      if ((height - element.height).abs() < 1e-9 &&
+          x == element.x &&
+          y == element.y) {
+        return element;
+      }
+
+      pageChanged = true;
+      return element.copyWith(height: height, x: x, y: y);
+    }).toList();
+
+    if (!pageChanged) {
+      return page;
+    }
+    projectChanged = true;
+    return page.copyWith(elements: elements);
+  }).toList();
+
+  return projectChanged ? project.copyWith(pages: pages) : project;
+}

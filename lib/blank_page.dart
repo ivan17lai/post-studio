@@ -2162,8 +2162,13 @@ class _BlankPageState extends State<BlankPage> {
         )
         .toList();
 
+    // Element height is derived from the page aspect, so every element on
+    // every page just went stale. normalizeProject recomputes them and pulls
+    // anything that no longer fits back into range.
     await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      normalizeProject(
+        _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      ),
     );
 
     if (mounted) {

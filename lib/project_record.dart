@@ -153,6 +153,13 @@ class ProjectPage {
   }
 }
 
+/// Default for `allowCrossPage` when a stored element predates the field.
+///
+/// Must agree with [CanvasElement.image] and [CanvasElement.text]. It did not:
+/// `fromJson` defaulted everything to `true`, so every legacy text element came
+/// back cross-page enabled even though the factory creates them page-bound.
+bool defaultAllowCrossPage(String type) => type != 'text';
+
 class CanvasElement {
   const CanvasElement({
     required this.id,
@@ -253,16 +260,18 @@ class CanvasElement {
     final data = Map<String, dynamic>.from(
       json['data'] as Map? ?? <String, dynamic>{},
     );
+    final type = json['type'] as String? ?? 'image';
 
     return CanvasElement(
       id: json['id'] as String? ?? '',
-      type: json['type'] as String? ?? 'image',
+      type: type,
       pageId: json['pageId'] as String? ?? '',
       x: (json['x'] as num?)?.toDouble() ?? 0.12,
       y: (json['y'] as num?)?.toDouble() ?? 0.12,
       width: (json['width'] as num?)?.toDouble() ?? 0.36,
       height: (json['height'] as num?)?.toDouble() ?? 0.36,
-      allowCrossPage: json['allowCrossPage'] as bool? ?? true,
+      allowCrossPage:
+          json['allowCrossPage'] as bool? ?? defaultAllowCrossPage(type),
       data: {
         'src': data['src'] ?? '',
         'aspectRatio': (data['aspectRatio'] as num?)?.toDouble() ?? 1.0,
