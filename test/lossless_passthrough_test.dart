@@ -3,7 +3,6 @@ import 'package:igapp/hdr/lossless_passthrough.dart';
 import 'package:igapp/project_record.dart';
 
 CanvasElement _fullBleedImage({
-  String pageId = 'p1',
   double x = 0,
   double y = 0,
   double width = 1,
