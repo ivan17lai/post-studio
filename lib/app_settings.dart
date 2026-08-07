@@ -17,6 +17,24 @@ const List<Color> kPrimaryAccentPalette = <Color>[
   Color(0xFFFF8F8F),
 ];
 
+const String kTemplateMarginSizeSmall = 'small';
+const String kTemplateMarginSizeMedium = 'medium';
+const String kTemplateMarginSizeLarge = 'large';
+
+/// Selectable template margin thicknesses, each expressed as a fraction of the
+/// page's shorter side.
+const Map<String, double> kTemplateMarginRatios = <String, double>{
+  kTemplateMarginSizeSmall: 0.03,
+  kTemplateMarginSizeMedium: 0.05,
+  kTemplateMarginSizeLarge: 0.08,
+};
+
+const List<String> kTemplateMarginSizes = <String>[
+  kTemplateMarginSizeSmall,
+  kTemplateMarginSizeMedium,
+  kTemplateMarginSizeLarge,
+];
+
 class AppSettingsController extends ChangeNotifier {
   AppSettingsController._();
 
@@ -37,6 +55,13 @@ class AppSettingsController extends ChangeNotifier {
   /// Global palette of user-saved page colours, shared across all projects.
   static const String _savedColorsKey = 'settings_saved_colors';
 
+  /// Whether templates lay their slots out with a margin around/between them.
+  static const String _templateMarginEnabledKey =
+      'settings_template_margin_enabled';
+
+  /// Which of [kTemplateMarginSizes] the margin toggle currently uses.
+  static const String _templateMarginSizeKey = 'settings_template_margin_size';
+
   bool _loaded = false;
   String _geminiApiKey = '';
   bool _aiSortEnabled = false;
@@ -46,6 +71,8 @@ class AppSettingsController extends ChangeNotifier {
   bool _fullScreenEnabled = false;
   bool _hdrEnabled = true;
   List<int> _savedColors = <int>[];
+  bool _templateMarginEnabled = false;
+  String _templateMarginSize = kTemplateMarginSizeMedium;
 
   bool get loaded => _loaded;
   String get geminiApiKey => _geminiApiKey;
@@ -56,6 +83,15 @@ class AppSettingsController extends ChangeNotifier {
   String get language => _language;
   bool get fullScreenEnabled => _fullScreenEnabled;
   bool get hdrEnabled => _hdrEnabled;
+  bool get templateMarginEnabled => _templateMarginEnabled;
+  String get templateMarginSize => _templateMarginSize;
+
+  /// Margin thickness as a fraction of the page's *shorter* side, so the gap
+  /// reads the same regardless of which page aspect it lands on.
+  double get templateMarginRatio => _templateMarginEnabled
+      ? (kTemplateMarginRatios[_templateMarginSize] ??
+            kTemplateMarginRatios[kTemplateMarginSizeMedium]!)
+      : 0;
 
   /// User-saved page colours, in insertion order.
   List<Color> get savedColors =>
@@ -78,6 +114,12 @@ class AppSettingsController extends ChangeNotifier {
         .map(int.tryParse)
         .whereType<int>()
         .toList();
+    _templateMarginEnabled =
+        prefs.getBool(_templateMarginEnabledKey) ?? false;
+    final storedMarginSize = prefs.getString(_templateMarginSizeKey);
+    _templateMarginSize = kTemplateMarginRatios.containsKey(storedMarginSize)
+        ? storedMarginSize!
+        : kTemplateMarginSizeMedium;
     _loaded = true;
     await _applySystemUiMode(_fullScreenEnabled);
     notifyListeners();
@@ -108,6 +150,27 @@ class AppSettingsController extends ChangeNotifier {
     }
     _savedColors = _savedColors.where((v) => v != value).toList();
     await _persistSavedColors();
+    notifyListeners();
+  }
+
+  Future<void> setTemplateMarginEnabled(bool value) async {
+    if (_templateMarginEnabled == value) {
+      return;
+    }
+    _templateMarginEnabled = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_templateMarginEnabledKey, value);
+    notifyListeners();
+  }
+
+  Future<void> setTemplateMarginSize(String value) async {
+    if (!kTemplateMarginRatios.containsKey(value) ||
+        _templateMarginSize == value) {
+      return;
+    }
+    _templateMarginSize = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_templateMarginSizeKey, value);
     notifyListeners();
   }
 

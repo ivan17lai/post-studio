@@ -1,0 +1,62 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: Build mode
+        type: choice
+        default: release
+        options:
+          - release
+          - debug
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # AGP 8.11 targets JDK 17, matching the sourceCompatibility in
+      # android/app/build.gradle.kts.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.8
+          channel: stable
+          cache: true
+
+      - run: flutter --version
+
+      - run: flutter pub get
+
+      # The release build is signed with the debug keys (see
+      # android/app/build.gradle.kts), so no keystore secret is needed. It is
+      # the better build to hand round for testing — a debug APK is much larger
+      # and runs unoptimised.
+      - name: Build APK
+        env:
+          BUILD_MODE: ${{ inputs.build_mode || 'release' }}
+        run: flutter build apk "--$BUILD_MODE"
+
+      - name: Name the artifact after the commit
+        id: meta
+        env:
+          BUILD_MODE: ${{ inputs.build_mode || 'release' }}
+        run: |
+          echo "name=post-studio-$BUILD_MODE-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.name }}
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+          retention-days: 30
