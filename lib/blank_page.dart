@@ -3155,12 +3155,10 @@ class _BlankPageState extends State<BlankPage> {
 
     final page = _project.pages[pageIndex];
     final element = page.elements.firstWhere((item) => item.id == elementId);
-    final maxX = (1 - element.width).clamp(0.0, 1.0);
-    final maxY = (1 - _elementRenderedHeight(element, page)).clamp(0.0, 1.0);
-    final rawX = _displayMode == PageDisplayMode.single
-        ? x.clamp(0.0, maxX)
-        : x.clamp(-0.95, 1.95);
-    final rawY = y.clamp(0.0, maxY);
+    final xRange = allowedXRange(element);
+    final yRange = allowedYRange(element, page);
+    final rawX = xRange.clamp(x);
+    final rawY = yRange.clamp(y);
     final snappedPosition = _snapEnabledForElement(element)
         ? _snapElementPosition(
             pageIndex: pageIndex,
@@ -3168,8 +3166,8 @@ class _BlankPageState extends State<BlankPage> {
             element: element,
             x: rawX,
             y: rawY,
-            maxX: maxX,
-            maxY: maxY,
+            xRange: xRange,
+            yRange: yRange,
           )
         : _SnapResult(x: rawX, y: rawY);
     final updatedElement = element.copyWith(
@@ -3196,8 +3194,8 @@ class _BlankPageState extends State<BlankPage> {
     required CanvasElement element,
     required double x,
     required double y,
-    required double maxX,
-    required double maxY,
+    required CanvasXRange xRange,
+    required CanvasXRange yRange,
   }) {
     const snapThreshold = 0.018;
     final snapPageEdges = _snapFlagForElement(element, 'snapPageEdges');
@@ -3423,10 +3421,8 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     return _SnapResult(
-      x: _displayMode == PageDisplayMode.single
-          ? snappedX.clamp(0.0, maxX)
-          : snappedX.clamp(-0.95, 1.95),
-      y: snappedY.clamp(0.0, maxY),
+      x: xRange.clamp(snappedX),
+      y: yRange.clamp(snappedY),
       guides: <_SnapGuide>[...xGuides, ...yGuides],
     );
   }
@@ -3473,14 +3469,11 @@ class _BlankPageState extends State<BlankPage> {
       page,
       width: snappedWidth,
     );
-    final maxX = (1 - snappedWidth).clamp(0.0, 1.0);
     final maxY = (1 - nextHeight).clamp(0.0, 1.0);
     final updatedElement = element.copyWith(
       width: snappedWidth,
       height: nextHeight,
-      x: (_displayMode == PageDisplayMode.single
-          ? element.x.clamp(0.0, maxX)
-          : element.x),
+      x: allowedXRange(element, width: snappedWidth).clamp(element.x),
       y: element.y.clamp(0.0, maxY),
       data: <String, dynamic>{...element.data, 'aspectRatio': aspectRatio},
     );
@@ -3730,8 +3723,8 @@ class _BlankPageState extends State<BlankPage> {
   ({double value, double min, double max}) _imageSizeSliderRange(
     CanvasElement image,
   ) {
-    const min = 0.08;
-    var max = _displayMode == PageDisplayMode.single ? 1.0 : 2.2;
+    const min = kMinElementWidth;
+    var max = image.allowCrossPage ? kMaxCrossPageElementWidth : 1.0;
     final pageIndex = _project.pages.indexWhere(
       (page) => page.id == image.pageId,
     );
@@ -3788,20 +3781,16 @@ class _BlankPageState extends State<BlankPage> {
     CanvasElement element, {
     required ({double width, double height}) pagePixelSize,
   }) {
-    final minX = _displayMode == PageDisplayMode.single ? 0.0 : -0.95;
-    var maxX = _displayMode == PageDisplayMode.single
-        ? (1 - element.width).clamp(0.0, 1.0).toDouble()
-        : 1.95;
+    final xRange = allowedXRange(element);
+    final minX = xRange.min;
+    var maxX = xRange.max;
     const minY = 0.0;
     var maxY = (1 - element.height).clamp(0.0, 1.0).toDouble();
     final pageIndex = _project.pages.indexWhere(
       (page) => page.id == element.pageId,
     );
     if (pageIndex != -1) {
-      final page = _project.pages[pageIndex];
-      maxY = (1 - _elementRenderedHeight(element, page))
-          .clamp(0.0, 1.0)
-          .toDouble();
+      maxY = allowedYRange(element, _project.pages[pageIndex]).max;
     }
     if (maxX <= minX) {
       maxX = minX + 0.001;
@@ -4090,15 +4079,8 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final page = _project.pages[pageIndex];
-    final maxX = (1 - selectedImage.width).clamp(0.0, 1.0);
-    final maxY = (1 - _elementRenderedHeight(selectedImage, page)).clamp(
-      0.0,
-      1.0,
-    );
-    final rawX = _displayMode == PageDisplayMode.single
-        ? (selectedImage.x + dx).clamp(0.0, maxX)
-        : (selectedImage.x + dx).clamp(-0.95, 1.95);
-    final rawY = (selectedImage.y + dy).clamp(0.0, maxY);
+    final rawX = allowedXRange(selectedImage).clamp(selectedImage.x + dx);
+    final rawY = allowedYRange(selectedImage, page).clamp(selectedImage.y + dy);
 
     if (rawX == selectedImage.x && rawY == selectedImage.y) {
       return;
@@ -4135,15 +4117,8 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     final page = _project.pages[pageIndex];
-    final maxX = (1 - selectedText.width).clamp(0.0, 1.0);
-    final maxY = (1 - _elementRenderedHeight(selectedText, page)).clamp(
-      0.0,
-      1.0,
-    );
-    final rawX = _displayMode == PageDisplayMode.single
-        ? (selectedText.x + dx).clamp(0.0, maxX)
-        : (selectedText.x + dx).clamp(-0.95, 1.95);
-    final rawY = (selectedText.y + dy).clamp(0.0, maxY);
+    final rawX = allowedXRange(selectedText).clamp(selectedText.x + dx);
+    final rawY = allowedYRange(selectedText, page).clamp(selectedText.y + dy);
 
     if (rawX == selectedText.x && rawY == selectedText.y) {
       return;
