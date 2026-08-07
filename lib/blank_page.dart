@@ -623,6 +623,45 @@ enum _SnapGuideAxis { vertical, horizontal }
 const Color _selectionChromeColor = Color(0xFFBDBDBD);
 const double _canvasControlChromePadding = 9.0;
 
+/// Cross-fade between the single-page and preview canvases.
+const Duration _displayModeSwitchDuration = Duration(milliseconds: 240);
+
+/// Clips an element's own content to the page it is being drawn on.
+///
+/// [clipRect] is in the parent Stack's coordinates while the element sits at
+/// ([left], [top]) within it; null leaves the content unclipped.
+///
+/// Only the content is clipped — the selection chrome is a sibling of whatever
+/// this wraps and stays outside, because handles sit just beyond the element's
+/// edge and an element flush against the page edge would otherwise lose them.
+Widget _clipElementContentToPage({
+  required Rect? clipRect,
+  required double left,
+  required double top,
+  required Widget child,
+}) {
+  if (clipRect == null) {
+    return child;
+  }
+  return ClipRect(
+    clipper: _RectClipper(clipRect.translate(-left, -top)),
+    child: child,
+  );
+}
+
+/// Clips to a rect given in the child's own coordinates.
+class _RectClipper extends CustomClipper<Rect> {
+  const _RectClipper(this.rect);
+
+  final Rect rect;
+
+  @override
+  Rect getClip(Size size) => rect;
+
+  @override
+  bool shouldReclip(_RectClipper oldClipper) => oldClipper.rect != rect;
+}
+
 class _SnapGuide {
   const _SnapGuide({
     required this.axis,
@@ -2532,7 +2571,13 @@ class _BlankPageState extends State<BlankPage> {
       } else if (_displayMode == PageDisplayMode.preview) {
         _jumpPreviewToPage(currentPageIndex);
       }
-      oldController.dispose();
+      // Not this frame: the canvas cross-fades between modes, so the outgoing
+      // tree — and the controller it is still driving — stays mounted until
+      // the fade ends. Disposing here would tear it out mid-animation.
+      Future<void>.delayed(
+        _displayModeSwitchDuration + const Duration(milliseconds: 40),
+        oldController.dispose,
+      );
     });
   }
 
@@ -4430,9 +4475,7 @@ class _BlankPageState extends State<BlankPage> {
               (e.data['src'] as String).isNotEmpty,
         )
         .toList();
-    final existingTexts = pageElements
-        .where((e) => e.type == 'text')
-        .toList();
+    final existingTexts = pageElements.where((e) => e.type == 'text').toList();
 
     final marginRatio = AppSettingsController.instance.templateMarginRatio;
     final templateElements = option.buildElements(
@@ -4915,9 +4958,10 @@ class _BlankPageState extends State<BlankPage> {
 
   bool _pageIndexesContainText(List<int> pageIndexes) {
     for (final pageIndex in pageIndexes) {
-      if (elementsVisibleOnPage(_project, pageIndex).any(
-        (element) => element.type == 'text',
-      )) {
+      if (elementsVisibleOnPage(
+        _project,
+        pageIndex,
+      ).any((element) => element.type == 'text')) {
         return true;
       }
     }
@@ -5187,15 +5231,12 @@ class _BlankPageState extends State<BlankPage> {
                 element.data['originalSrc'] as String? ??
                 element.data['src'] as String? ??
                 '',
-            'aspectRatio': (element.data['aspectRatio'] as num?)
-                ?.toDouble(),
+            'aspectRatio': (element.data['aspectRatio'] as num?)?.toDouble(),
             'cropOffsetX': _cropOffsetXFromData(element.data),
             'cropOffsetY': _cropOffsetYFromData(element.data),
             'cropScale': _cropScaleFromData(element.data),
             'borderRadiusRatio':
-                (element.data['borderRadiusRatio'] as num?)
-                    ?.toDouble() ??
-                0.0,
+                (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0,
             'hdrBrightness': _hdrBrightnessFromData(element.data),
             if (_photoAdjustmentsFromData(element.data).hasMatrix)
               'colorMatrix': PhotoAdjustments.roundMatrix(
@@ -5204,20 +5245,14 @@ class _BlankPageState extends State<BlankPage> {
             if (_photoAdjustmentsFromData(
               element.data,
             ).hasToneCurve) ...<String, dynamic>{
-              'highlights': _photoAdjustmentsFromData(
-                element.data,
-              ).highlights,
-              'shadows': _photoAdjustmentsFromData(
-                element.data,
-              ).shadows,
+              'highlights': _photoAdjustmentsFromData(element.data).highlights,
+              'shadows': _photoAdjustmentsFromData(element.data).shadows,
             },
             if (element.type == 'text') ...<String, dynamic>{
               'text': _textContentFromData(element.data),
               'colorValue': _textColorFromData(element.data).toARGB32(),
               'fontSizeRatio': _textFontSizeRatioFromData(element.data),
-              'maxLines': _textLineCount(
-                _textContentFromData(element.data),
-              ),
+              'maxLines': _textLineCount(_textContentFromData(element.data)),
             },
           },
         )
@@ -6142,78 +6177,253 @@ class _BlankPageState extends State<BlankPage> {
                                 alignment: Alignment.center,
                                 child: SizedBox(
                                   height: canvasViewportHeight,
-                                  child: _displayMode == PageDisplayMode.single
-                                      ? NotificationListener<
-                                          ScrollNotification
-                                        >(
-                                          onNotification: (notification) {
-                                            _clearSelectionOnUserScroll(
-                                              notification,
-                                            );
-                                            if (notification
-                                                    is ScrollStartNotification ||
-                                                notification
-                                                    is ScrollUpdateNotification) {
-                                              _setSinglePageDividerVisible(
-                                                true,
-                                              );
-                                            } else if (notification
-                                                    is ScrollEndNotification ||
-                                                (notification
-                                                        is UserScrollNotification &&
-                                                    notification.direction ==
-                                                        ScrollDirection.idle)) {
-                                              _setSinglePageDividerVisible(
-                                                false,
-                                              );
-                                            }
-                                            return false;
-                                          },
-                                          child: PageView.builder(
-                                            controller: _pageController,
-                                            padEnds: shouldUseSinglePagePeek,
-                                            // Always scrollable. Locking it
-                                            // while something was selected meant
-                                            // the only way off a page was to
-                                            // deselect first; now the swipe
-                                            // itself does that.
-                                            physics: const PageScrollPhysics(),
-                                            itemCount: pages.length,
-                                            onPageChanged: (index) {
-                                              setState(() {
-                                                _currentPageIndex = index;
-                                                _selectedElementId = null;
-                                                _croppingElementId = null;
-                                                _deleteArmedElementId = null;
-                                                _refreshPageControllerViewportIfNeeded();
-                                              });
-                                              WidgetsBinding.instance
-                                                  .addPostFrameCallback(
-                                                    (_) => _syncBottomTab(),
+                                  // Switching modes swaps one scrollable for a
+                                  // completely different one; without this it
+                                  // was a hard cut. Both trees are alive during
+                                  // the fade, which is only safe now that
+                                  // neither carries a GlobalKey -- a key in two
+                                  // places at once would throw.
+                                  child: AnimatedSwitcher(
+                                    duration: _displayModeSwitchDuration,
+                                    switchInCurve: Curves.easeOut,
+                                    switchOutCurve: Curves.easeIn,
+                                    child: KeyedSubtree(
+                                      key: ValueKey<PageDisplayMode>(
+                                        _displayMode,
+                                      ),
+                                      child:
+                                          _displayMode == PageDisplayMode.single
+                                          ? NotificationListener<
+                                              ScrollNotification
+                                            >(
+                                              onNotification: (notification) {
+                                                _clearSelectionOnUserScroll(
+                                                  notification,
+                                                );
+                                                if (notification
+                                                        is ScrollStartNotification ||
+                                                    notification
+                                                        is ScrollUpdateNotification) {
+                                                  _setSinglePageDividerVisible(
+                                                    true,
                                                   );
-                                            },
-                                            itemBuilder: (context, index) {
-                                              final page = pages[index];
-                                              return Padding(
-                                                padding: EdgeInsets.symmetric(
-                                                  horizontal: singlePageGap,
-                                                ),
-                                                child: _CanvasViewport(
-                                                  elements:
-                                                      elementsVisibleOnPage(
-                                                        _project,
-                                                        index,
-                                                      ),
-                                                  pageIndex: index,
-                                                  pageCount: pages.length,
-                                                  page: page,
+                                                } else if (notification
+                                                        is ScrollEndNotification ||
+                                                    (notification
+                                                            is UserScrollNotification &&
+                                                        notification
+                                                                .direction ==
+                                                            ScrollDirection
+                                                                .idle)) {
+                                                  _setSinglePageDividerVisible(
+                                                    false,
+                                                  );
+                                                }
+                                                return false;
+                                              },
+                                              child: PageView.builder(
+                                                controller: _pageController,
+                                                padEnds:
+                                                    shouldUseSinglePagePeek,
+                                                // Always scrollable. Locking it
+                                                // while something was selected meant
+                                                // the only way off a page was to
+                                                // deselect first; now the swipe
+                                                // itself does that.
+                                                physics:
+                                                    const PageScrollPhysics(),
+                                                itemCount: pages.length,
+                                                onPageChanged: (index) {
+                                                  setState(() {
+                                                    _currentPageIndex = index;
+                                                    _selectedElementId = null;
+                                                    _croppingElementId = null;
+                                                    _deleteArmedElementId =
+                                                        null;
+                                                    _refreshPageControllerViewportIfNeeded();
+                                                  });
+                                                  WidgetsBinding.instance
+                                                      .addPostFrameCallback(
+                                                        (_) => _syncBottomTab(),
+                                                      );
+                                                },
+                                                itemBuilder: (context, index) {
+                                                  final page = pages[index];
+                                                  return Padding(
+                                                    padding:
+                                                        EdgeInsets.symmetric(
+                                                          horizontal:
+                                                              singlePageGap,
+                                                        ),
+                                                    child: _CanvasViewport(
+                                                      elements:
+                                                          elementsVisibleOnPage(
+                                                            _project,
+                                                            index,
+                                                          ),
+                                                      pageIndex: index,
+                                                      pageCount: pages.length,
+                                                      page: page,
+                                                      viewportWidth:
+                                                          singleCanvasWidth,
+                                                      viewportHeight:
+                                                          canvasViewportHeight,
+                                                      showBorder:
+                                                          _showPageBorder,
+                                                      showPageDivider:
+                                                          _showSinglePageDivider,
+                                                      hdrViewEnabled:
+                                                          _hdrViewEnabled,
+                                                      selectedElementId:
+                                                          _selectedElementId,
+                                                      croppingElementId:
+                                                          _croppingElementId,
+                                                      deleteArmedElementId:
+                                                          _deleteArmedElementId,
+                                                      snapGuides:
+                                                          _activeSnapGuides,
+                                                      onTapCanvas:
+                                                          _clearSelectedElement,
+                                                      onTapElement:
+                                                          _selectElement,
+                                                      onDoubleTapElement:
+                                                          (elementId) {
+                                                            _handleElementDoubleTap(
+                                                              elementId:
+                                                                  elementId,
+                                                            );
+                                                          },
+                                                      onMoveElement:
+                                                          (
+                                                            elementId,
+                                                            x,
+                                                            y,
+                                                            persist,
+                                                          ) {
+                                                            _updateElementPosition(
+                                                              elementId:
+                                                                  elementId,
+                                                              x: x,
+                                                              y: y,
+                                                              persist: persist,
+                                                            );
+                                                          },
+                                                      onResizeElement:
+                                                          (
+                                                            elementId,
+                                                            width,
+                                                            persist,
+                                                          ) {
+                                                            _updateElementSize(
+                                                              elementId:
+                                                                  elementId,
+                                                              width: width,
+                                                              persist: persist,
+                                                            );
+                                                          },
+                                                      onCropMove:
+                                                          (
+                                                            elementId,
+                                                            x,
+                                                            y,
+                                                            persist,
+                                                          ) {
+                                                            _updateImageCropOffset(
+                                                              elementId:
+                                                                  elementId,
+                                                              x: x,
+                                                              y: y,
+                                                              persist: persist,
+                                                            );
+                                                          },
+                                                      onCropScale:
+                                                          (
+                                                            elementId,
+                                                            scale,
+                                                            persist,
+                                                          ) {
+                                                            _updateImageCropScale(
+                                                              elementId:
+                                                                  elementId,
+                                                              scale: scale,
+                                                              persist: persist,
+                                                            );
+                                                          },
+                                                      onCropBoundsChanged:
+                                                          (
+                                                            elementId,
+                                                            x,
+                                                            y,
+                                                            w,
+                                                            h,
+                                                            cx,
+                                                            cy,
+                                                            cs,
+                                                            persist,
+                                                          ) {
+                                                            _updateImageCropBounds(
+                                                              elementId:
+                                                                  elementId,
+                                                              x: x,
+                                                              y: y,
+                                                              width: w,
+                                                              height: h,
+                                                              cropOffsetX: cx,
+                                                              cropOffsetY: cy,
+                                                              cropScale: cs,
+                                                              persist: persist,
+                                                            );
+                                                          },
+                                                      onDeleteElement:
+                                                          (elementId) {
+                                                            _requestDeleteElement(
+                                                              elementId:
+                                                                  elementId,
+                                                            );
+                                                          },
+                                                      onConfirmDeleteElement:
+                                                          (elementId) {
+                                                            unawaited(
+                                                              _confirmDeleteElement(
+                                                                elementId:
+                                                                    elementId,
+                                                              ),
+                                                            );
+                                                          },
+                                                      onCancelDeleteElement:
+                                                          _cancelDeleteElement,
+                                                    ),
+                                                  );
+                                                },
+                                              ),
+                                            )
+                                          : NotificationListener<
+                                              ScrollNotification
+                                            >(
+                                              onNotification: (notification) {
+                                                _clearSelectionOnUserScroll(
+                                                  notification,
+                                                );
+                                                _syncPreviewPageIndex();
+                                                return false;
+                                              },
+                                              child: SingleChildScrollView(
+                                                controller:
+                                                    _previewScrollController,
+                                                scrollDirection:
+                                                    Axis.horizontal,
+                                                physics:
+                                                    const BouncingScrollPhysics(),
+                                                child: _PreviewCanvasStrip(
+                                                  pages: pages,
+                                                  elements: _project.elements,
+                                                  currentPageIndex:
+                                                      _currentPageIndex,
                                                   viewportWidth:
-                                                      singleCanvasWidth,
+                                                      previewCanvasWidth,
                                                   viewportHeight:
                                                       canvasViewportHeight,
                                                   showBorder: _showPageBorder,
-                                                  showPageDivider:
-                                                      _showSinglePageDivider,
                                                   hdrViewEnabled:
                                                       _hdrViewEnabled,
                                                   selectedElementId:
@@ -6325,127 +6535,10 @@ class _BlankPageState extends State<BlankPage> {
                                                   onCancelDeleteElement:
                                                       _cancelDeleteElement,
                                                 ),
-                                              );
-                                            },
-                                          ),
-                                        )
-                                      : NotificationListener<
-                                          ScrollNotification
-                                        >(
-                                          onNotification: (notification) {
-                                            _clearSelectionOnUserScroll(
-                                              notification,
-                                            );
-                                            _syncPreviewPageIndex();
-                                            return false;
-                                          },
-                                          child: SingleChildScrollView(
-                                            controller:
-                                                _previewScrollController,
-                                            scrollDirection: Axis.horizontal,
-                                            physics:
-                                                const BouncingScrollPhysics(),
-                                            child: _PreviewCanvasStrip(
-                                              pages: pages,
-                                              elements: _project.elements,
-                                              currentPageIndex:
-                                                  _currentPageIndex,
-                                              viewportWidth: previewCanvasWidth,
-                                              viewportHeight:
-                                                  canvasViewportHeight,
-                                              showBorder: _showPageBorder,
-                                              hdrViewEnabled: _hdrViewEnabled,
-                                              selectedElementId:
-                                                  _selectedElementId,
-                                              croppingElementId:
-                                                  _croppingElementId,
-                                              deleteArmedElementId:
-                                                  _deleteArmedElementId,
-                                              snapGuides: _activeSnapGuides,
-                                              onTapCanvas:
-                                                  _clearSelectedElement,
-                                              onTapElement: _selectElement,
-                                              onDoubleTapElement: (elementId) {
-                                                _handleElementDoubleTap(
-                                                  elementId: elementId,
-                                                );
-                                              },
-                                              onMoveElement:
-                                                  (elementId, x, y, persist) {
-                                                    _updateElementPosition(
-                                                      elementId: elementId,
-                                                      x: x,
-                                                      y: y,
-                                                      persist: persist,
-                                                    );
-                                                  },
-                                              onResizeElement:
-                                                  (elementId, width, persist) {
-                                                    _updateElementSize(
-                                                      elementId: elementId,
-                                                      width: width,
-                                                      persist: persist,
-                                                    );
-                                                  },
-                                              onCropMove:
-                                                  (elementId, x, y, persist) {
-                                                    _updateImageCropOffset(
-                                                      elementId: elementId,
-                                                      x: x,
-                                                      y: y,
-                                                      persist: persist,
-                                                    );
-                                                  },
-                                              onCropScale:
-                                                  (elementId, scale, persist) {
-                                                    _updateImageCropScale(
-                                                      elementId: elementId,
-                                                      scale: scale,
-                                                      persist: persist,
-                                                    );
-                                                  },
-                                              onCropBoundsChanged:
-                                                  (
-                                                    elementId,
-                                                    x,
-                                                    y,
-                                                    w,
-                                                    h,
-                                                    cx,
-                                                    cy,
-                                                    cs,
-                                                    persist,
-                                                  ) {
-                                                    _updateImageCropBounds(
-                                                      elementId: elementId,
-                                                      x: x,
-                                                      y: y,
-                                                      width: w,
-                                                      height: h,
-                                                      cropOffsetX: cx,
-                                                      cropOffsetY: cy,
-                                                      cropScale: cs,
-                                                      persist: persist,
-                                                    );
-                                                  },
-                                              onDeleteElement: (elementId) {
-                                                _requestDeleteElement(
-                                                  elementId: elementId,
-                                                );
-                                              },
-                                              onConfirmDeleteElement:
-                                                  (elementId) {
-                                                    unawaited(
-                                                      _confirmDeleteElement(
-                                                        elementId: elementId,
-                                                      ),
-                                                    );
-                                                  },
-                                              onCancelDeleteElement:
-                                                  _cancelDeleteElement,
+                                              ),
                                             ),
-                                          ),
-                                        ),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
@@ -7197,6 +7290,12 @@ class _CanvasViewport extends StatelessWidget {
                                   pageHeight: constraints.maxHeight,
                                   pageOffsetX:
                                       -pageIndex * constraints.maxWidth,
+                                  contentClipRect: Rect.fromLTWH(
+                                    0,
+                                    0,
+                                    constraints.maxWidth,
+                                    constraints.maxHeight,
+                                  ),
                                   hdrViewEnabled: hdrViewEnabled,
                                   onTap: () => onTapElement(element.id),
                                   onDoubleTap: () =>
@@ -7244,6 +7343,12 @@ class _CanvasViewport extends StatelessWidget {
                                   pageHeight: constraints.maxHeight,
                                   pageOffsetX:
                                       -pageIndex * constraints.maxWidth,
+                                  contentClipRect: Rect.fromLTWH(
+                                    0,
+                                    0,
+                                    constraints.maxWidth,
+                                    constraints.maxHeight,
+                                  ),
                                   pageOffsetY: 0,
                                   onTap: () => onTapElement(element.id),
                                   onDoubleTap: () =>
@@ -7883,6 +7988,7 @@ class _ImageElementWidget extends StatefulWidget {
     required this.pageHeight,
     this.pageOffsetX = 0,
     this.pageOffsetY = 0,
+    this.contentClipRect,
     required this.hdrViewEnabled,
     required this.onTap,
     required this.onDoubleTap,
@@ -7904,6 +8010,19 @@ class _ImageElementWidget extends StatefulWidget {
   final double pageHeight;
   final double pageOffsetX;
   final double pageOffsetY;
+
+  /// Rect the photo itself is clipped to, in the parent Stack's coordinates,
+  /// or null to leave it unclipped.
+  ///
+  /// Single mode passes the page: a cross-page photo is drawn once per page it
+  /// touches, each time shifted to that page's origin, so without a clip the
+  /// copy on one page carried on past that page's edge and over its neighbour.
+  /// In the peeking single-page view that showed the same photo twice, a page
+  /// gap apart. The preview strip passes null — there the pages are laid out
+  /// end to end at one scale, and a cross-page photo is meant to run across
+  /// the seam unbroken.
+  final Rect? contentClipRect;
+
   final bool hdrViewEnabled;
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
@@ -8058,8 +8177,7 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
 
     final newVisualLeft =
         currentVisualLeft - (newX - startX) * widget.pageWidth;
-    final newVisualTop =
-        currentVisualTop - (newY - startY) * widget.pageHeight;
+    final newVisualTop = currentVisualTop - (newY - startY) * widget.pageHeight;
 
     final newCropOffsetX =
         (newVisualLeft - (frameWidth - currentImageWidth) / 2) / frameWidth;
@@ -8216,97 +8334,107 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            Container(
-              width: width,
-              height: height,
-              decoration: BoxDecoration(
-                color: src.isEmpty
-                    ? const Color(0xFFF6F6F6)
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(
-                  ((widget.element.data['borderRadiusRatio'] as num?)
-                              ?.toDouble() ??
-                          0.0) *
-                      (width < height ? width : height),
+            _clipElementContentToPage(
+              clipRect: widget.contentClipRect,
+              left: left,
+              top: top,
+              child: Container(
+                width: width,
+                height: height,
+                decoration: BoxDecoration(
+                  color: src.isEmpty
+                      ? const Color(0xFFF6F6F6)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(
+                    ((widget.element.data['borderRadiusRatio'] as num?)
+                                ?.toDouble() ??
+                            0.0) *
+                        (width < height ? width : height),
+                  ),
                 ),
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: src.isEmpty
-                  ? const Center(
-                      child: Icon(
-                        Icons.image_outlined,
-                        color: Color(0xFF8A8A8A),
-                        size: 24,
-                      ),
-                    )
-                  : ((widget.element.data['isUltraHdr'] == true ||
-                            _hdrBrightnessFromData(widget.element.data) >
-                                1.0) &&
-                        !widget.isCropMode &&
-                        !kIsWeb &&
-                        defaultTargetPlatform == TargetPlatform.android &&
-                        AppSettingsController.instance.hdrEnabled)
-                  ? HdrImageView(
-                      // Key by path + crop only: adjust/brightness/view
-                      // changes flow over the live channel, so the platform
-                      // view is not recreated (which used to flicker).
-                      key: ValueKey(
-                        'hdr_${src}_'
-                        '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
-                        '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
-                        '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
-                      ),
-                      path: src,
-                      sourceAspectRatio:
-                          (widget.element.data['originalAspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (widget.element.data['aspectRatio'] as num?)
-                              ?.toDouble() ??
-                          0.0,
-                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                      cropScale: _cropScaleFromData(widget.element.data),
-                      hdrBrightness: _hdrBrightnessFromData(
-                        widget.element.data,
-                      ),
-                      colorMatrix:
-                          _photoAdjustmentsFromData(
-                            widget.element.data,
-                          ).hasMatrix
-                          ? _photoAdjustmentsFromData(
-                              widget.element.data,
-                            ).toColorMatrix()
-                          : null,
-                      highlights: _photoAdjustmentsFromData(
-                        widget.element.data,
-                      ).highlights,
-                      shadows: _photoAdjustmentsFromData(
-                        widget.element.data,
-                      ).shadows,
-                      hdrView: widget.hdrViewEnabled,
-                    )
-                  : _maybeColorFiltered(
-                      widget.element.data,
-                      _CroppedImageFile(
+                clipBehavior: Clip.antiAlias,
+                child: src.isEmpty
+                    ? const Center(
+                        child: Icon(
+                          Icons.image_outlined,
+                          color: Color(0xFF8A8A8A),
+                          size: 24,
+                        ),
+                      )
+                    : ((widget.element.data['isUltraHdr'] == true ||
+                              _hdrBrightnessFromData(widget.element.data) >
+                                  1.0) &&
+                          !widget.isCropMode &&
+                          !kIsWeb &&
+                          defaultTargetPlatform == TargetPlatform.android &&
+                          AppSettingsController.instance.hdrEnabled)
+                    ? HdrImageView(
+                        // Key by path + crop only: adjust/brightness/view
+                        // changes flow over the live channel, so the platform
+                        // view is not recreated (which used to flicker).
+                        key: ValueKey(
+                          'hdr_${src}_'
+                          '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
+                          '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
+                          '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
+                        ),
                         path: src,
-                        frameWidth: width,
-                        frameHeight: height,
                         sourceAspectRatio:
                             (widget.element.data['originalAspectRatio'] as num?)
                                 ?.toDouble() ??
                             (widget.element.data['aspectRatio'] as num?)
                                 ?.toDouble() ??
-                            (width / height),
+                            0.0,
                         cropOffsetX: _cropOffsetXFromData(widget.element.data),
                         cropOffsetY: _cropOffsetYFromData(widget.element.data),
                         cropScale: _cropScaleFromData(widget.element.data),
-                        cacheWidth: _previewImageCacheExtent(
-                          context,
-                          width,
-                          height,
+                        hdrBrightness: _hdrBrightnessFromData(
+                          widget.element.data,
+                        ),
+                        colorMatrix:
+                            _photoAdjustmentsFromData(
+                              widget.element.data,
+                            ).hasMatrix
+                            ? _photoAdjustmentsFromData(
+                                widget.element.data,
+                              ).toColorMatrix()
+                            : null,
+                        highlights: _photoAdjustmentsFromData(
+                          widget.element.data,
+                        ).highlights,
+                        shadows: _photoAdjustmentsFromData(
+                          widget.element.data,
+                        ).shadows,
+                        hdrView: widget.hdrViewEnabled,
+                      )
+                    : _maybeColorFiltered(
+                        widget.element.data,
+                        _CroppedImageFile(
+                          path: src,
+                          frameWidth: width,
+                          frameHeight: height,
+                          sourceAspectRatio:
+                              (widget.element.data['originalAspectRatio']
+                                      as num?)
+                                  ?.toDouble() ??
+                              (widget.element.data['aspectRatio'] as num?)
+                                  ?.toDouble() ??
+                              (width / height),
+                          cropOffsetX: _cropOffsetXFromData(
+                            widget.element.data,
+                          ),
+                          cropOffsetY: _cropOffsetYFromData(
+                            widget.element.data,
+                          ),
+                          cropScale: _cropScaleFromData(widget.element.data),
+                          cacheWidth: _previewImageCacheExtent(
+                            context,
+                            width,
+                            height,
+                          ),
                         ),
                       ),
-                    ),
+              ),
             ),
             if (widget.element.data['isUltraHdr'] == true)
               const Positioned(left: 6, top: 6, child: _HdrBadge()),
@@ -8481,6 +8609,7 @@ class _TextElementWidget extends StatefulWidget {
     required this.pageHeight,
     required this.pageOffsetX,
     required this.pageOffsetY,
+    this.contentClipRect,
     required this.onTap,
     required this.onDoubleTap,
     required this.onMove,
@@ -8496,6 +8625,10 @@ class _TextElementWidget extends StatefulWidget {
   final double pageHeight;
   final double pageOffsetX;
   final double pageOffsetY;
+
+  /// See [_ImageElementWidget.contentClipRect].
+  final Rect? contentClipRect;
+
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
   final void Function(double x, double y, bool persist) onMove;
@@ -8563,21 +8696,26 @@ class _TextElementWidgetState extends State<_TextElementWidget> {
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            Container(
-              width: width,
-              height: height,
-              alignment: Alignment.centerLeft,
-              clipBehavior: Clip.hardEdge,
-              decoration: const BoxDecoration(color: Colors.transparent),
-              child: Text(
-                text,
-                maxLines: lineCount,
-                overflow: TextOverflow.clip,
-                style: TextStyle(
-                  color: color,
-                  fontSize: fontSize,
-                  height: 1.12,
-                  fontWeight: FontWeight.w700,
+            _clipElementContentToPage(
+              clipRect: widget.contentClipRect,
+              left: left,
+              top: top,
+              child: Container(
+                width: width,
+                height: height,
+                alignment: Alignment.centerLeft,
+                clipBehavior: Clip.hardEdge,
+                decoration: const BoxDecoration(color: Colors.transparent),
+                child: Text(
+                  text,
+                  maxLines: lineCount,
+                  overflow: TextOverflow.clip,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: fontSize,
+                    height: 1.12,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ),
