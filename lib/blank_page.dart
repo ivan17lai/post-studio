@@ -2129,6 +2129,13 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     _storeUndoSnapshot();
+
+    // Which pages are laid out as a template, read before the aspect changes:
+    // afterwards their photos are being measured against the new page shape and
+    // none of them match anything.
+    final marginRatio = AppSettingsController.instance.templateMarginRatio;
+    final matchedTemplates = _matchedTemplates(marginRatio);
+
     final updatedPages = _project.pages
         .map(
           (page) => page.copyWith(
@@ -2141,11 +2148,29 @@ class _BlankPageState extends State<BlankPage> {
     // Element height is derived from the page aspect, so every element on
     // every page just went stale. normalizeProject recomputes them and pulls
     // anything that no longer fits back into range.
-    await _saveProject(
-      normalizeProject(
-        _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
-      ),
+    var reshaped = normalizeProject(
+      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
     );
+
+    // A template's slots are a grid over the page, so a page that was laid out
+    // as one is re-flowed into the new shape — which re-crops each photo to the
+    // slot it lands in. Skipped where the template is not offered for the new
+    // aspect at all; there is nothing sensible to re-flow into.
+    for (final entry in matchedTemplates.entries) {
+      if (!entry.value.matchesPage(reshaped.pages[entry.key])) {
+        continue;
+      }
+      reshaped = reshaped.copyWith(
+        elements: _elementsWithTemplateApplied(
+          project: reshaped,
+          pageIndex: entry.key,
+          option: entry.value,
+          marginRatio: marginRatio,
+        ),
+      );
+    }
+
+    await _saveProject(reshaped);
 
     if (mounted) {
       setState(() {});
@@ -4374,21 +4399,25 @@ class _BlankPageState extends State<BlankPage> {
   /// Derived by comparison rather than remembered, the same way the template
   /// picker decides which card to highlight — so moving or deleting a slot by
   /// hand stops the page matching, and nothing has to be kept in step.
-  TemplateOption? _matchedTemplateForCurrentPage(double marginRatio) {
-    final page = _project.pages[_currentPageIndex];
-    final pageElements = elementsAnchoredToPage(_project, _currentPageIndex);
+  TemplateOption? _matchedTemplateForPage(int pageIndex, double marginRatio) {
+    final page = _project.pages[pageIndex];
+    final pageElements = elementsAnchoredToPage(_project, pageIndex);
     for (final option in _TemplateTabPage.allTemplates) {
       if (option.matchesPage(page) &&
-          option.matchesLayout(
-            page,
-            pageElements,
-            _currentPageIndex,
-            marginRatio,
-          )) {
+          option.matchesLayout(page, pageElements, pageIndex, marginRatio)) {
         return option;
       }
     }
     return null;
+  }
+
+  /// Every page currently laid out as a template, by page index.
+  Map<int, TemplateOption> _matchedTemplates(double marginRatio) {
+    return <int, TemplateOption>{
+      for (var i = 0; i < _project.pages.length; i++)
+        if (_matchedTemplateForPage(i, marginRatio) case final option?)
+          i: option,
+    };
   }
 
   /// Applies a margin setting change and re-flows the page if it is currently
@@ -4400,13 +4429,31 @@ class _BlankPageState extends State<BlankPage> {
   Future<void> _changeTemplateMargin(VoidCallback applyChange) async {
     // Read the layout against the margin still in force. Afterwards the
     // positions are measured against the new one and nothing matches.
-    final matched = _matchedTemplateForCurrentPage(
+    final matched = _matchedTemplates(
       AppSettingsController.instance.templateMarginRatio,
     );
     applyChange();
-    if (matched != null) {
-      await _applyTemplate(matched);
+    if (matched.isEmpty) {
+      return;
     }
+
+    // The margin is a project-wide setting, so every templated page re-flows,
+    // not just the one on screen.
+    final nextMarginRatio = AppSettingsController.instance.templateMarginRatio;
+    var reflowed = _project;
+    for (final entry in matched.entries) {
+      reflowed = reflowed.copyWith(
+        elements: _elementsWithTemplateApplied(
+          project: reflowed,
+          pageIndex: entry.key,
+          option: entry.value,
+          marginRatio: nextMarginRatio,
+        ),
+      );
+    }
+
+    _storeUndoSnapshot();
+    await _saveProject(reflowed);
   }
 
   Future<void> _applyTemplate(TemplateOption option) async {
@@ -4420,8 +4467,45 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     _storeUndoSnapshot();
+    await _saveProject(
+      _project.copyWith(
+        elements: _elementsWithTemplateApplied(
+          project: _project,
+          pageIndex: _currentPageIndex,
+          option: option,
+          marginRatio: AppSettingsController.instance.templateMarginRatio,
+        ),
+      ),
+    );
 
-    final pageElements = elementsAnchoredToPage(_project, _currentPageIndex);
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _selectedElementId = null;
+      _deleteArmedElementId = null;
+      // Stay on the template picker: applying doubles as the preview, so the
+      // user can flip between layouts and see which card is highlighted.
+      _selectedBottomTab = _tabTemplate;
+    });
+    _syncBottomTab();
+  }
+
+  /// [project]'s elements with the page at [pageIndex] re-laid out as [option].
+  ///
+  /// Extracted so re-flowing a page is not tied to applying a template by hand.
+  /// A margin or page-aspect change re-flows every page that is currently laid
+  /// out as a template, and had to reach the same photo-into-slot mapping — a
+  /// second copy of it would have drifted the way the geometry copies did.
+  List<CanvasElement> _elementsWithTemplateApplied({
+    required ProjectRecord project,
+    required int pageIndex,
+    required TemplateOption option,
+    required double marginRatio,
+  }) {
+    final currentPage = project.pages[pageIndex];
+    final pageElements = elementsAnchoredToPage(project, pageIndex);
     final existingImages = pageElements
         .where(
           (e) =>
@@ -4432,9 +4516,8 @@ class _BlankPageState extends State<BlankPage> {
         .toList();
     final existingTexts = pageElements.where((e) => e.type == 'text').toList();
 
-    final marginRatio = AppSettingsController.instance.templateMarginRatio;
     final templateElements = option.buildElements(
-      _currentPageIndex,
+      pageIndex,
       currentPage,
       marginRatio,
     );
@@ -4500,26 +4583,11 @@ class _BlankPageState extends State<BlankPage> {
     updatedElements.addAll(existingTexts);
 
     final replacedIds = pageElements.map((element) => element.id).toSet();
-    final nextElements = <CanvasElement>[
-      for (final element in _project.elements)
+    return <CanvasElement>[
+      for (final element in project.elements)
         if (!replacedIds.contains(element.id)) element,
       ...updatedElements,
     ];
-
-    await _saveProject(_project.copyWith(elements: nextElements));
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _selectedElementId = null;
-      _deleteArmedElementId = null;
-      // Stay on the template picker: applying doubles as the preview, so the
-      // user can flip between layouts and see which card is highlighted.
-      _selectedBottomTab = _tabTemplate;
-    });
-    _syncBottomTab();
   }
 
   Future<void> _deleteElement({required String elementId}) async {
