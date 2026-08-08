@@ -759,8 +759,6 @@ class _BlankPageState extends State<BlankPage> {
   static const String _tabTextPosition = 'text_position';
   static const String _tabTextSettings = 'text_settings';
   static const String _tabLayers = 'layers';
-  static const double _singlePagePeekViewportFraction = 0.78;
-  static const double _singlePagePeekGap = 8.0;
 
   /// Width of one page in the preview strip, as a fraction of the screen.
   ///
@@ -888,15 +886,16 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
-  PageController _buildPageController() {
-    return PageController(
-      initialPage: _currentPageIndex,
-      viewportFraction: _pageControllerViewportFractionForState(),
-    );
-  }
-
-  bool _hasTwoOptionRows(String tab) =>
-      tab == _tabPage || tab == _tabImage || tab == _tabTextSettings;
+  /// Single mode shows exactly one page, always.
+  ///
+  /// It used to shrink to 0.78 and let the neighbours peek in whenever the
+  /// open bottom tab happened to have two rows of options — the same 0.78 the
+  /// preview strip uses, so tapping a photo silently turned the single-page
+  /// view into the preview one. Worse, `viewportFraction` is final, so every
+  /// flip had to throw the PageController away and build another, losing the
+  /// scroll position: that was the jump.
+  PageController _buildPageController() =>
+      PageController(initialPage: _currentPageIndex);
 
   double _bottomPanelHeightForTab(String tab) {
     if (tab == _tabPage) {
@@ -961,42 +960,6 @@ class _BlankPageState extends State<BlankPage> {
       _activeSnapGuides = const <_SnapGuide>[];
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _syncBottomTab());
-  }
-
-  bool _shouldUseSinglePagePeek({int? pageIndex, String? selectedTab}) {
-    if (_displayMode != PageDisplayMode.single || _project.pages.isEmpty) {
-      return false;
-    }
-
-    final resolvedPageIndex = (pageIndex ?? _currentPageIndex)
-        .clamp(0, _project.pages.length - 1)
-        .toInt();
-    final page = _project.pages[resolvedPageIndex];
-    return page.aspectHeight > page.aspectWidth &&
-        _hasTwoOptionRows(selectedTab ?? _selectedBottomTab);
-  }
-
-  double _pageControllerViewportFractionForState() {
-    if (_displayMode != PageDisplayMode.single) {
-      return _previewPageWidthFraction;
-    }
-    return _shouldUseSinglePagePeek() ? _singlePagePeekViewportFraction : 1.0;
-  }
-
-  void _refreshPageControllerViewportIfNeeded() {
-    final viewportFraction = _pageControllerViewportFractionForState();
-    if ((_pageController.viewportFraction - viewportFraction).abs() < 0.001) {
-      return;
-    }
-
-    final oldController = _pageController;
-    _pageController = PageController(
-      initialPage: _currentPageIndex,
-      viewportFraction: viewportFraction,
-    );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      oldController.dispose();
-    });
   }
 
   Future<void> _persistProject(ProjectRecord updatedProject) async {
@@ -1393,14 +1356,12 @@ class _BlankPageState extends State<BlankPage> {
           if (nextTab == _tabImage) {
             _imageSubTab = _tabImageSource;
           }
-          _refreshPageControllerViewportIfNeeded();
         });
       } else {
         _selectedBottomTab = nextTab;
         if (nextTab == _tabImage) {
           _imageSubTab = _tabImageSource;
         }
-        _refreshPageControllerViewportIfNeeded();
       }
     }
     final targetIndex = tabs.indexOf(_selectedBottomTab);
@@ -1451,7 +1412,6 @@ class _BlankPageState extends State<BlankPage> {
       }
       _deleteArmedElementId = null;
       _selectedBottomTab = tab;
-      _refreshPageControllerViewportIfNeeded();
     });
 
     if (_bottomTabPageController.hasClients) {
@@ -1475,7 +1435,6 @@ class _BlankPageState extends State<BlankPage> {
       if (shouldFallbackToElements) {
         _selectedBottomTab = _tabElements;
       }
-      _refreshPageControllerViewportIfNeeded();
     });
     if (_bottomTabPageController.hasClients) {
       _bottomTabPageController.jumpToPage(
@@ -1515,7 +1474,6 @@ class _BlankPageState extends State<BlankPage> {
       _croppingElementId = null;
       _deleteArmedElementId = null;
       _selectedBottomTab = _tabTemplate;
-      _refreshPageControllerViewportIfNeeded();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1675,7 +1633,6 @@ class _BlankPageState extends State<BlankPage> {
       }
       _selectedBottomTab = _tabTemplate;
       _showPageSorter = updatedPages.length > 1 && _showPageSorter;
-      _refreshPageControllerViewportIfNeeded();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1782,7 +1739,6 @@ class _BlankPageState extends State<BlankPage> {
       _croppingElementId = null;
       _deleteArmedElementId = null;
       _activeSnapGuides = const <_SnapGuide>[];
-      _refreshPageControllerViewportIfNeeded();
     });
 
     unawaited(_saveProject(updatedProject));
@@ -2107,7 +2063,6 @@ class _BlankPageState extends State<BlankPage> {
       _croppingElementId = null;
       _deleteArmedElementId = null;
       _activeSnapGuides = const <_SnapGuide>[];
-      _refreshPageControllerViewportIfNeeded();
     });
     unawaited(_saveProject(updatedProject));
   }
@@ -2238,9 +2193,7 @@ class _BlankPageState extends State<BlankPage> {
     );
 
     if (mounted) {
-      setState(() {
-        _refreshPageControllerViewportIfNeeded();
-      });
+      setState(() {});
     }
   }
 
@@ -2554,14 +2507,12 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final oldController = _pageController;
     final currentPageIndex = _currentPageIndex;
 
     setState(() {
       _displayMode = mode;
       _showPageBorder = mode == PageDisplayMode.preview;
       _showSinglePageDivider = false;
-      _pageController = _buildPageController();
 
       // Going into single mode drops the selection.
       //
@@ -2587,13 +2538,6 @@ class _BlankPageState extends State<BlankPage> {
         _jumpPreviewToPage(currentPageIndex);
       }
       _syncBottomTab();
-      // Not this frame: the canvas cross-fades between modes, so the outgoing
-      // tree — and the controller it is still driving — stays mounted until
-      // the fade ends. Disposing here would tear it out mid-animation.
-      Future<void>.delayed(
-        _displayModeSwitchDuration + const Duration(milliseconds: 40),
-        oldController.dispose,
-      );
     });
   }
 
@@ -3027,7 +2971,6 @@ class _BlankPageState extends State<BlankPage> {
         _selectedBottomTab = _tabImage;
         _imageSubTab = _tabImageSource;
       }
-      _refreshPageControllerViewportIfNeeded();
     });
     if (selectedElement != null &&
         _elementCrossesPageBoundary(selectedElement)) {
@@ -4665,7 +4608,6 @@ class _BlankPageState extends State<BlankPage> {
       _deleteArmedElementId = null;
       _selectedSorterPageId = null;
       _showPageSorter = false;
-      _refreshPageControllerViewportIfNeeded();
     });
 
     if (_displayMode == PageDisplayMode.single) {
@@ -5922,12 +5864,7 @@ class _BlankPageState extends State<BlankPage> {
     final currentPage = pages[_currentPageIndex];
     final strings = AppStrings.of(context);
     final screenWidth = MediaQuery.of(context).size.width;
-    final shouldUseSinglePagePeek = _shouldUseSinglePagePeek();
-    final singlePageGap = shouldUseSinglePagePeek ? _singlePagePeekGap : 0.0;
-    final singleCanvasWidth =
-        (screenWidth *
-            (shouldUseSinglePagePeek ? _singlePagePeekViewportFraction : 1.0)) -
-        (singlePageGap * 2);
+    final singleCanvasWidth = screenWidth;
     final previewCanvasWidth = _previewPageWidth(context);
 
     // How tall the canvas actually needs to be: the tallest page it can show,
@@ -6239,8 +6176,6 @@ class _BlankPageState extends State<BlankPage> {
                                               },
                                               child: PageView.builder(
                                                 controller: _pageController,
-                                                padEnds:
-                                                    shouldUseSinglePagePeek,
                                                 // Always scrollable. Locking it
                                                 // while something was selected meant
                                                 // the only way off a page was to
@@ -6256,7 +6191,6 @@ class _BlankPageState extends State<BlankPage> {
                                                     _croppingElementId = null;
                                                     _deleteArmedElementId =
                                                         null;
-                                                    _refreshPageControllerViewportIfNeeded();
                                                   });
                                                   WidgetsBinding.instance
                                                       .addPostFrameCallback(
@@ -6265,150 +6199,142 @@ class _BlankPageState extends State<BlankPage> {
                                                 },
                                                 itemBuilder: (context, index) {
                                                   final page = pages[index];
-                                                  return Padding(
-                                                    padding:
-                                                        EdgeInsets.symmetric(
-                                                          horizontal:
-                                                              singlePageGap,
+                                                  return _CanvasViewport(
+                                                    elements:
+                                                        elementsVisibleOnPage(
+                                                          _project,
+                                                          index,
                                                         ),
-                                                    child: _CanvasViewport(
-                                                      elements:
-                                                          elementsVisibleOnPage(
-                                                            _project,
-                                                            index,
-                                                          ),
-                                                      pageIndex: index,
-                                                      pageCount: pages.length,
-                                                      page: page,
-                                                      viewportWidth:
-                                                          singleCanvasWidth,
-                                                      viewportHeight:
-                                                          canvasViewportHeight,
-                                                      showBorder:
-                                                          _showPageBorder,
-                                                      showPageDivider:
-                                                          _showSinglePageDivider,
-                                                      hdrViewEnabled:
-                                                          _hdrViewEnabled,
-                                                      selectedElementId:
-                                                          _selectedElementId,
-                                                      croppingElementId:
-                                                          _croppingElementId,
-                                                      deleteArmedElementId:
-                                                          _deleteArmedElementId,
-                                                      snapGuides:
-                                                          _activeSnapGuides,
-                                                      onTapCanvas:
-                                                          _clearSelectedElement,
-                                                      onTapElement:
-                                                          _selectElement,
-                                                      onDoubleTapElement:
-                                                          (elementId) {
-                                                            _handleElementDoubleTap(
+                                                    pageIndex: index,
+                                                    pageCount: pages.length,
+                                                    page: page,
+                                                    viewportWidth:
+                                                        singleCanvasWidth,
+                                                    viewportHeight:
+                                                        canvasViewportHeight,
+                                                    showBorder: _showPageBorder,
+                                                    showPageDivider:
+                                                        _showSinglePageDivider,
+                                                    hdrViewEnabled:
+                                                        _hdrViewEnabled,
+                                                    selectedElementId:
+                                                        _selectedElementId,
+                                                    croppingElementId:
+                                                        _croppingElementId,
+                                                    deleteArmedElementId:
+                                                        _deleteArmedElementId,
+                                                    snapGuides:
+                                                        _activeSnapGuides,
+                                                    onTapCanvas:
+                                                        _clearSelectedElement,
+                                                    onTapElement:
+                                                        _selectElement,
+                                                    onDoubleTapElement:
+                                                        (elementId) {
+                                                          _handleElementDoubleTap(
+                                                            elementId:
+                                                                elementId,
+                                                          );
+                                                        },
+                                                    onMoveElement:
+                                                        (
+                                                          elementId,
+                                                          x,
+                                                          y,
+                                                          persist,
+                                                        ) {
+                                                          _updateElementPosition(
+                                                            elementId:
+                                                                elementId,
+                                                            x: x,
+                                                            y: y,
+                                                            persist: persist,
+                                                          );
+                                                        },
+                                                    onResizeElement:
+                                                        (
+                                                          elementId,
+                                                          width,
+                                                          persist,
+                                                        ) {
+                                                          _updateElementSize(
+                                                            elementId:
+                                                                elementId,
+                                                            width: width,
+                                                            persist: persist,
+                                                          );
+                                                        },
+                                                    onCropMove:
+                                                        (
+                                                          elementId,
+                                                          x,
+                                                          y,
+                                                          persist,
+                                                        ) {
+                                                          _updateImageCropOffset(
+                                                            elementId:
+                                                                elementId,
+                                                            x: x,
+                                                            y: y,
+                                                            persist: persist,
+                                                          );
+                                                        },
+                                                    onCropScale:
+                                                        (
+                                                          elementId,
+                                                          scale,
+                                                          persist,
+                                                        ) {
+                                                          _updateImageCropScale(
+                                                            elementId:
+                                                                elementId,
+                                                            scale: scale,
+                                                            persist: persist,
+                                                          );
+                                                        },
+                                                    onCropBoundsChanged:
+                                                        (
+                                                          elementId,
+                                                          x,
+                                                          y,
+                                                          w,
+                                                          h,
+                                                          cx,
+                                                          cy,
+                                                          cs,
+                                                          persist,
+                                                        ) {
+                                                          _updateImageCropBounds(
+                                                            elementId:
+                                                                elementId,
+                                                            x: x,
+                                                            y: y,
+                                                            width: w,
+                                                            height: h,
+                                                            cropOffsetX: cx,
+                                                            cropOffsetY: cy,
+                                                            cropScale: cs,
+                                                            persist: persist,
+                                                          );
+                                                        },
+                                                    onDeleteElement:
+                                                        (elementId) {
+                                                          _requestDeleteElement(
+                                                            elementId:
+                                                                elementId,
+                                                          );
+                                                        },
+                                                    onConfirmDeleteElement:
+                                                        (elementId) {
+                                                          unawaited(
+                                                            _confirmDeleteElement(
                                                               elementId:
                                                                   elementId,
-                                                            );
-                                                          },
-                                                      onMoveElement:
-                                                          (
-                                                            elementId,
-                                                            x,
-                                                            y,
-                                                            persist,
-                                                          ) {
-                                                            _updateElementPosition(
-                                                              elementId:
-                                                                  elementId,
-                                                              x: x,
-                                                              y: y,
-                                                              persist: persist,
-                                                            );
-                                                          },
-                                                      onResizeElement:
-                                                          (
-                                                            elementId,
-                                                            width,
-                                                            persist,
-                                                          ) {
-                                                            _updateElementSize(
-                                                              elementId:
-                                                                  elementId,
-                                                              width: width,
-                                                              persist: persist,
-                                                            );
-                                                          },
-                                                      onCropMove:
-                                                          (
-                                                            elementId,
-                                                            x,
-                                                            y,
-                                                            persist,
-                                                          ) {
-                                                            _updateImageCropOffset(
-                                                              elementId:
-                                                                  elementId,
-                                                              x: x,
-                                                              y: y,
-                                                              persist: persist,
-                                                            );
-                                                          },
-                                                      onCropScale:
-                                                          (
-                                                            elementId,
-                                                            scale,
-                                                            persist,
-                                                          ) {
-                                                            _updateImageCropScale(
-                                                              elementId:
-                                                                  elementId,
-                                                              scale: scale,
-                                                              persist: persist,
-                                                            );
-                                                          },
-                                                      onCropBoundsChanged:
-                                                          (
-                                                            elementId,
-                                                            x,
-                                                            y,
-                                                            w,
-                                                            h,
-                                                            cx,
-                                                            cy,
-                                                            cs,
-                                                            persist,
-                                                          ) {
-                                                            _updateImageCropBounds(
-                                                              elementId:
-                                                                  elementId,
-                                                              x: x,
-                                                              y: y,
-                                                              width: w,
-                                                              height: h,
-                                                              cropOffsetX: cx,
-                                                              cropOffsetY: cy,
-                                                              cropScale: cs,
-                                                              persist: persist,
-                                                            );
-                                                          },
-                                                      onDeleteElement:
-                                                          (elementId) {
-                                                            _requestDeleteElement(
-                                                              elementId:
-                                                                  elementId,
-                                                            );
-                                                          },
-                                                      onConfirmDeleteElement:
-                                                          (elementId) {
-                                                            unawaited(
-                                                              _confirmDeleteElement(
-                                                                elementId:
-                                                                    elementId,
-                                                              ),
-                                                            );
-                                                          },
-                                                      onCancelDeleteElement:
-                                                          _cancelDeleteElement,
-                                                    ),
+                                                            ),
+                                                          );
+                                                        },
+                                                    onCancelDeleteElement:
+                                                        _cancelDeleteElement,
                                                   );
                                                 },
                                               ),
