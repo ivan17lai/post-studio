@@ -897,25 +897,6 @@ class _BlankPageState extends State<BlankPage> {
   PageController _buildPageController() =>
       PageController(initialPage: _currentPageIndex);
 
-  double _bottomPanelHeightForTab(String tab) {
-    if (tab == _tabPage) {
-      return 270.0;
-    }
-    if (tab == _tabImagePosition || tab == _tabTextPosition) {
-      return 130.0;
-    }
-    if (tab == _tabImageSettings) {
-      return 139.0;
-    }
-    if (tab == _tabTextSettings) {
-      return 165.0;
-    }
-    if (tab == _tabLayers) {
-      return 75.0;
-    }
-    return 75.0;
-  }
-
   bool _isImageTab(String tab) => tab == _tabLayers || tab == _tabImage;
 
   bool _isTextTab(String tab) =>
@@ -6123,9 +6104,17 @@ class _BlankPageState extends State<BlankPage> {
                               minHeight: 0,
                               maxHeight: canvasViewportHeight,
                               alignment: Alignment.center,
-                              child: AnimatedScale(
-                                duration: const Duration(milliseconds: 240),
-                                curve: Curves.easeInOut,
+                              // Plain Transform, not AnimatedScale. The height
+                              // this scale is derived from comes from the
+                              // bottom panel, which animates its own size, so
+                              // the target moved every frame and a 240ms
+                              // AnimatedScale spent the whole panel animation
+                              // chasing it — two animations on one quantity,
+                              // which read as the canvas wobbling. Following
+                              // the layout directly makes the canvas track the
+                              // panel exactly, and it still looks animated
+                              // because the panel's animation drives it.
+                              child: Transform.scale(
                                 scale: fittedCanvasScale,
                                 alignment: Alignment.center,
                                 child: SizedBox(
