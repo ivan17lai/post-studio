@@ -917,32 +917,6 @@ class _BlankPageState extends State<BlankPage> {
     return tab == _tabElements;
   }
 
-  /// Drops the selection when the user swipes the canvas itself.
-  ///
-  /// Dragging a photo does not reach here: the element's own pan recognizer
-  /// wins the gesture arena, so the scrollable never starts and no
-  /// notification is sent. That is the whole distinction — a swipe that moves
-  /// the canvas clears the selection, a swipe that moves a photo does not.
-  ///
-  /// [ScrollStartNotification.dragDetails] is what separates a finger from a
-  /// programmatic scroll: `animateToPage` after adding a page also starts a
-  /// scroll, and that must not deselect the element it just added.
-  void _clearSelectionOnUserScroll(ScrollNotification notification) {
-    if (notification is! ScrollStartNotification ||
-        notification.dragDetails == null ||
-        _selectedElementId == null) {
-      return;
-    }
-
-    setState(() {
-      _selectedElementId = null;
-      _croppingElementId = null;
-      _deleteArmedElementId = null;
-      _activeSnapGuides = const <_SnapGuide>[];
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncBottomTab());
-  }
-
   Future<void> _persistProject(ProjectRecord updatedProject) async {
     _project = updatedProject.copyWith(pageCount: updatedProject.pages.length);
     if (mounted) {
@@ -6122,9 +6096,6 @@ class _BlankPageState extends State<BlankPage> {
                                               ScrollNotification
                                             >(
                                               onNotification: (notification) {
-                                                _clearSelectionOnUserScroll(
-                                                  notification,
-                                                );
                                                 if (notification
                                                         is ScrollStartNotification ||
                                                     notification
@@ -6159,8 +6130,14 @@ class _BlankPageState extends State<BlankPage> {
                                                 onPageChanged: (index) {
                                                   setState(() {
                                                     _currentPageIndex = index;
-                                                    _selectedElementId = null;
-                                                    _croppingElementId = null;
+                                                    // Selection survives a
+                                                    // swipe; only the armed
+                                                    // delete does not, because
+                                                    // carrying a pending
+                                                    // confirm onto another
+                                                    // page means the next tap
+                                                    // deletes something that
+                                                    // is no longer on screen.
                                                     _deleteArmedElementId =
                                                         null;
                                                   });
@@ -6315,9 +6292,6 @@ class _BlankPageState extends State<BlankPage> {
                                               ScrollNotification
                                             >(
                                               onNotification: (notification) {
-                                                _clearSelectionOnUserScroll(
-                                                  notification,
-                                                );
                                                 _syncPreviewPageIndex();
                                                 return false;
                                               },
