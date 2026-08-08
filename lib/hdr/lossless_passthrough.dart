@@ -1,3 +1,4 @@
+import '../canvas_geometry.dart';
 import '../photo_adjustments.dart';
 import '../project_record.dart';
 
@@ -54,10 +55,14 @@ LosslessExportDecision evaluateLosslessExport({
   }
   final page = project.pages[pageIndex];
 
-  if (page.elements.length != 1) {
+  // Everything that shows on this page, wherever it is anchored. Asking for
+  // exactly one also covers "nothing bleeds in from a neighbour", which used
+  // to need a separate sweep over every other page.
+  final visible = elementsVisibleOnPage(project, pageIndex);
+  if (visible.length != 1) {
     return const LosslessExportDecision.ineligible('notSingleElement');
   }
-  final element = page.elements.single;
+  final element = visible.single;
   if (element.type != 'image') {
     return const LosslessExportDecision.ineligible('notImage');
   }
@@ -70,7 +75,8 @@ LosslessExportDecision evaluateLosslessExport({
   }
 
   // Full bleed: the frame must start at the page origin and span its width.
-  if (element.x.abs() > positionTolerance ||
+  // x is in document space, so the page's own origin is its index.
+  if ((element.x - pageIndex).abs() > positionTolerance ||
       element.y.abs() > positionTolerance ||
       (element.width - 1.0).abs() > positionTolerance) {
     return const LosslessExportDecision.ineligible('notFullBleed');
@@ -122,23 +128,6 @@ LosslessExportDecision evaluateLosslessExport({
   if ((originalAspect - frameAspect).abs() / frameAspect >
       aspectRelativeTolerance) {
     return const LosslessExportDecision.ineligible('sourceCropped');
-  }
-
-  // Nothing from other pages may bleed into this one.
-  for (var otherIndex = 0; otherIndex < project.pages.length; otherIndex++) {
-    if (otherIndex == pageIndex) {
-      continue;
-    }
-    for (final other in project.pages[otherIndex].elements) {
-      if (!other.allowCrossPage) {
-        continue;
-      }
-      final left = (otherIndex - pageIndex) + other.x;
-      final right = left + other.width;
-      if (right > positionTolerance && left < 1.0 - positionTolerance) {
-        return const LosslessExportDecision.ineligible('crossPageOverlap');
-      }
-    }
   }
 
   return LosslessExportDecision.eligibleFor(

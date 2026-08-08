@@ -15,6 +15,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app_settings.dart';
 import 'app_strings.dart';
+import 'canvas_geometry.dart';
 import 'hdr/hdr_image_view.dart';
 import 'hdr/lossless_passthrough.dart';
 import 'hdr/ultra_hdr.dart';
@@ -126,36 +127,28 @@ double _clampCropImageOffset(double value, double min, double max) {
   return value.clamp(min, max).toDouble();
 }
 
-String _textContentFromData(Map<String, dynamic> data) {
-  final text = data['text'] as String?;
-  if (text == null || text.trim().isEmpty) {
-    return 'Text';
-  }
-  return text;
-}
+String _textContentFromData(Map<String, dynamic> data) =>
+    textContentFromData(data);
 
-double _textFontSizeRatioFromData(Map<String, dynamic> data) {
-  final value = (data['fontSizeRatio'] as num?)?.toDouble() ?? 0.075;
-  return value.clamp(0.025, 0.16).toDouble();
-}
+double _textFontSizeRatioFromData(Map<String, dynamic> data) =>
+    textFontSizeRatioFromData(data);
 
 Color _textColorFromData(Map<String, dynamic> data) {
   return Color((data['colorValue'] as num?)?.toInt() ?? 0xFF111111);
 }
 
-int _textLineCount(String text) {
-  return text.split('\n').length.clamp(1, 8);
-}
+int _textLineCount(String text) => textLineCount(text);
 
 double _textRenderedHeightRatio({
   required CanvasElement element,
   required ProjectPage page,
 }) {
-  final fontSizeRatio = _textFontSizeRatioFromData(element.data);
-  final lineCount = _textLineCount(_textContentFromData(element.data));
-  final height =
-      fontSizeRatio * (page.aspectWidth / page.aspectHeight) * 1.24 * lineCount;
-  return height.clamp(0.04, 0.9).toDouble();
+  return textHeightRatio(
+    fontSizeRatio: _textFontSizeRatioFromData(element.data),
+    lineCount: _textLineCount(_textContentFromData(element.data)),
+    pageAspectWidth: page.aspectWidth,
+    pageAspectHeight: page.aspectHeight,
+  );
 }
 
 SliderThemeData _lightControlSliderTheme(BuildContext context) {
@@ -505,8 +498,6 @@ Uint8List _renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
       .cast<Map<String, dynamic>>();
   final targetPageIndex = (payload['targetPageIndex'] as num).toInt();
   final pagePayload = pages[targetPageIndex];
-  final targetOriginalIndex =
-      (pagePayload['originalIndex'] as num?)?.toInt() ?? targetPageIndex;
   final aspectWidth = (pagePayload['aspectWidth'] as num).toDouble();
   final aspectHeight = (pagePayload['aspectHeight'] as num).toDouble();
   final exportHeight = (exportWidth * (aspectHeight / aspectWidth)).round();
@@ -523,70 +514,76 @@ Uint8List _renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
     ),
   );
 
-  for (
-    var sourcePageIndex = 0;
-    sourcePageIndex < pages.length;
-    sourcePageIndex++
-  ) {
-    final sourcePage = pages[sourcePageIndex];
-    final sourceOriginalIndex =
-        (sourcePage['originalIndex'] as num?)?.toInt() ?? sourcePageIndex;
-    final elements = (sourcePage['elements'] as List<dynamic>)
-        .cast<Map<String, dynamic>>();
+  // One flat pass in the order the payload lists them, which is the project's
+  // z-order. Walking pages then elements, as this used to, pinned an element
+  // below everything on any later page.
+  final elements = (payload['elements'] as List<dynamic>)
+      .cast<Map<String, dynamic>>();
 
-    for (final element in elements) {
-      if ((element['type'] as String?) != 'image') {
-        continue;
-      }
-
-      final allowCrossPage = element['allowCrossPage'] as bool? ?? true;
-      if (!allowCrossPage && sourcePageIndex != targetPageIndex) {
-        continue;
-      }
-
-      final src = element['src'] as String? ?? '';
-      if (src.isEmpty) {
-        continue;
-      }
-
-      final sourceImage = decodedImageMap[src];
-      if (sourceImage == null) {
-        continue;
-      }
-
-      final frameAspectRatio =
-          ((element['aspectRatio'] as num?)?.toDouble()) ??
-          (sourceImage.width / sourceImage.height);
-      final targetWidth =
-          (((element['width'] as num?)?.toDouble() ?? 0) * exportWidth)
-              .round()
-              .clamp(1, 20000);
-      final targetHeight = (targetWidth / frameAspectRatio).round().clamp(
-        1,
-        20000,
-      );
-      final targetX =
-          (((element['x'] as num?)?.toDouble() ?? 0) * exportWidth).round() +
-          ((sourceOriginalIndex - targetOriginalIndex) * exportWidth);
-      final targetY = (((element['y'] as num?)?.toDouble() ?? 0) * exportHeight)
-          .round();
-
-      _compositeClippedImage(
-        canvas: canvas,
-        sourceImage: sourceImage,
-        frameAspectRatio: frameAspectRatio,
-        targetX: targetX,
-        targetY: targetY,
-        targetWidth: targetWidth,
-        targetHeight: targetHeight,
-        interpolation: img.Interpolation.linear,
-        cropOffsetX: (element['cropOffsetX'] as num?)?.toDouble() ?? 0,
-        cropOffsetY: (element['cropOffsetY'] as num?)?.toDouble() ?? 0,
-        cropScale: (element['cropScale'] as num?)?.toDouble() ?? 1,
-        borderRadiusRatio:
-            (element['borderRadiusRatio'] as num?)?.toDouble() ?? 0,
-      );
+  for (final element in elements) {
+    if ((element['type'] as String?) != 'image') {
+      continue;
     }
+
+    final anchorIndex = (element['anchorPageIndex'] as num?)?.toInt() ?? 0;
+    final anchorPage = anchorIndex >= 0 && anchorIndex < pages.length
+        ? pages[anchorIndex]
+        : pagePayload;
+
+    if (!isPayloadVisibleOnPage(
+      element: element,
+      anchorAspectWidth: (anchorPage['aspectWidth'] as num).toDouble(),
+      anchorAspectHeight: (anchorPage['aspectHeight'] as num).toDouble(),
+      anchorPageIndex: anchorIndex,
+      targetPageIndex: targetPageIndex,
+    )) {
+      continue;
+    }
+
+    final src = element['src'] as String? ?? '';
+    if (src.isEmpty) {
+      continue;
+    }
+
+    final sourceImage = decodedImageMap[src];
+    if (sourceImage == null) {
+      continue;
+    }
+
+    final frameAspectRatio =
+        ((element['aspectRatio'] as num?)?.toDouble()) ??
+        (sourceImage.width / sourceImage.height);
+    final targetWidth =
+        (((element['width'] as num?)?.toDouble() ?? 0) * exportWidth)
+            .round()
+            .clamp(1, 20000);
+    final targetHeight = (targetWidth / frameAspectRatio).round().clamp(
+      1,
+      20000,
+    );
+    // x is in document space, so subtracting the target page places it.
+    final targetX =
+        ((((element['x'] as num?)?.toDouble() ?? 0) - targetPageIndex) *
+                exportWidth)
+            .round();
+    final targetY = (((element['y'] as num?)?.toDouble() ?? 0) * exportHeight)
+        .round();
+
+    _compositeClippedImage(
+      canvas: canvas,
+      sourceImage: sourceImage,
+      frameAspectRatio: frameAspectRatio,
+      targetX: targetX,
+      targetY: targetY,
+      targetWidth: targetWidth,
+      targetHeight: targetHeight,
+      interpolation: img.Interpolation.linear,
+      cropOffsetX: (element['cropOffsetX'] as num?)?.toDouble() ?? 0,
+      cropOffsetY: (element['cropOffsetY'] as num?)?.toDouble() ?? 0,
+      cropScale: (element['cropScale'] as num?)?.toDouble() ?? 1,
+      borderRadiusRatio:
+          (element['borderRadiusRatio'] as num?)?.toDouble() ?? 0,
+    );
   }
 
   return Uint8List.fromList(img.encodeJpg(canvas, quality: 100));
@@ -604,27 +601,6 @@ int _previewImageCacheExtent(
             .round()
             .clamp(96, 768)
       : 512;
-}
-
-bool _shouldPaintCrossPageElement({
-  required CanvasElement element,
-  required int sourcePageIndex,
-  required int targetPageIndex,
-}) {
-  if (sourcePageIndex == targetPageIndex || !element.allowCrossPage) {
-    return false;
-  }
-
-  final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
-  final elementHeight = aspectRatio != null && aspectRatio > 0
-      ? element.width / aspectRatio
-      : element.height;
-  final left = (sourcePageIndex - targetPageIndex) + element.x;
-  final right = left + element.width;
-  final top = element.y;
-  final bottom = top + elementHeight;
-
-  return right > 0 && left < 1 && bottom > 0 && top < 1;
 }
 
 bool _shouldBuildPreviewPage({
@@ -646,6 +622,45 @@ enum _SnapGuideAxis { vertical, horizontal }
 
 const Color _selectionChromeColor = Color(0xFFBDBDBD);
 const double _canvasControlChromePadding = 9.0;
+
+/// Cross-fade between the single-page and preview canvases.
+const Duration _displayModeSwitchDuration = Duration(milliseconds: 240);
+
+/// Clips an element's own content to the page it is being drawn on.
+///
+/// [clipRect] is in the parent Stack's coordinates while the element sits at
+/// ([left], [top]) within it; null leaves the content unclipped.
+///
+/// Only the content is clipped — the selection chrome is a sibling of whatever
+/// this wraps and stays outside, because handles sit just beyond the element's
+/// edge and an element flush against the page edge would otherwise lose them.
+Widget _clipElementContentToPage({
+  required Rect? clipRect,
+  required double left,
+  required double top,
+  required Widget child,
+}) {
+  if (clipRect == null) {
+    return child;
+  }
+  return ClipRect(
+    clipper: _RectClipper(clipRect.translate(-left, -top)),
+    child: child,
+  );
+}
+
+/// Clips to a rect given in the child's own coordinates.
+class _RectClipper extends CustomClipper<Rect> {
+  const _RectClipper(this.rect);
+
+  final Rect rect;
+
+  @override
+  Rect getClip(Size size) => rect;
+
+  @override
+  bool shouldReclip(_RectClipper oldClipper) => oldClipper.rect != rect;
+}
 
 class _SnapGuide {
   const _SnapGuide({
@@ -744,8 +759,15 @@ class _BlankPageState extends State<BlankPage> {
   static const String _tabTextPosition = 'text_position';
   static const String _tabTextSettings = 'text_settings';
   static const String _tabLayers = 'layers';
-  static const double _singlePagePeekViewportFraction = 0.78;
-  static const double _singlePagePeekGap = 8.0;
+
+  /// Width of one page in the preview strip, as a fraction of the screen.
+  ///
+  /// Layout, the scroll-to-page jump and the scroll-position-to-page-index
+  /// readback all have to agree on this, or the strip settles between pages.
+  static const double _previewPageWidthFraction = 0.78;
+
+  double _previewPageWidth(BuildContext context) =>
+      MediaQuery.of(context).size.width * _previewPageWidthFraction;
   int _currentPageIndex = 0;
   late ProjectRecord _project;
   bool _showPageBorder = false;
@@ -769,7 +791,6 @@ class _BlankPageState extends State<BlankPage> {
   late final PageController _bottomTabPageController;
   final ScrollController _previewScrollController = ScrollController();
   final ImagePicker _imagePicker = ImagePicker();
-  final GlobalKey _exportRepaintKey = GlobalKey();
   final Map<String, Uint8List> _exportImageBytesCache = <String, Uint8List>{};
   final Map<String, Color> _customPageColorDrafts = <String, Color>{};
   List<_SnapGuide> _activeSnapGuides = const <_SnapGuide>[];
@@ -818,15 +839,13 @@ class _BlankPageState extends State<BlankPage> {
         '';
 
     final pendingPaths = <String>{};
-    for (final page in _project.pages) {
-      for (final element in page.elements) {
-        if (element.type != 'image' || element.data.containsKey('isUltraHdr')) {
-          continue;
-        }
-        final src = elementSource(element);
-        if (src.isNotEmpty) {
-          pendingPaths.add(src);
-        }
+    for (final element in _project.elements) {
+      if (element.type != 'image' || element.data.containsKey('isUltraHdr')) {
+        continue;
+      }
+      final src = elementSource(element);
+      if (src.isNotEmpty) {
+        pendingPaths.add(src);
       }
     }
     if (pendingPaths.isEmpty) {
@@ -842,27 +861,22 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     var changed = false;
-    final updatedPages = _project.pages.map((page) {
-      var pageChanged = false;
-      final updatedElements = page.elements.map((element) {
-        if (element.type != 'image' || element.data.containsKey('isUltraHdr')) {
-          return element;
-        }
-        final verdict = verdicts[elementSource(element)];
-        if (verdict == null) {
-          return element;
-        }
-        pageChanged = true;
-        changed = true;
-        return element.copyWith(
-          data: <String, dynamic>{...element.data, 'isUltraHdr': verdict},
-        );
-      }).toList();
-      return pageChanged ? page.copyWith(elements: updatedElements) : page;
+    final updatedElements = _project.elements.map((element) {
+      if (element.type != 'image' || element.data.containsKey('isUltraHdr')) {
+        return element;
+      }
+      final verdict = verdicts[elementSource(element)];
+      if (verdict == null) {
+        return element;
+      }
+      changed = true;
+      return element.copyWith(
+        data: <String, dynamic>{...element.data, 'isUltraHdr': verdict},
+      );
     }).toList();
 
     if (changed) {
-      await _saveProject(_project.copyWith(pages: updatedPages));
+      await _saveProject(_project.copyWith(elements: updatedElements));
     }
   }
 
@@ -872,34 +886,16 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
-  PageController _buildPageController() {
-    return PageController(
-      initialPage: _currentPageIndex,
-      viewportFraction: _pageControllerViewportFractionForState(),
-    );
-  }
-
-  bool _hasTwoOptionRows(String tab) =>
-      tab == _tabPage || tab == _tabImage || tab == _tabTextSettings;
-
-  double _bottomPanelHeightForTab(String tab) {
-    if (tab == _tabPage) {
-      return 270.0;
-    }
-    if (tab == _tabImagePosition || tab == _tabTextPosition) {
-      return 130.0;
-    }
-    if (tab == _tabImageSettings) {
-      return 139.0;
-    }
-    if (tab == _tabTextSettings) {
-      return 165.0;
-    }
-    if (tab == _tabLayers) {
-      return 75.0;
-    }
-    return 75.0;
-  }
+  /// Single mode shows exactly one page, always.
+  ///
+  /// It used to shrink to 0.78 and let the neighbours peek in whenever the
+  /// open bottom tab happened to have two rows of options — the same 0.78 the
+  /// preview strip uses, so tapping a photo silently turned the single-page
+  /// view into the preview one. Worse, `viewportFraction` is final, so every
+  /// flip had to throw the PageController away and build another, losing the
+  /// scroll position: that was the jump.
+  PageController _buildPageController() =>
+      PageController(initialPage: _currentPageIndex);
 
   bool _isImageTab(String tab) => tab == _tabLayers || tab == _tabImage;
 
@@ -919,42 +915,6 @@ class _BlankPageState extends State<BlankPage> {
       return _isTextTab(tab);
     }
     return tab == _tabElements;
-  }
-
-  bool _shouldUseSinglePagePeek({int? pageIndex, String? selectedTab}) {
-    if (_displayMode != PageDisplayMode.single || _project.pages.isEmpty) {
-      return false;
-    }
-
-    final resolvedPageIndex = (pageIndex ?? _currentPageIndex)
-        .clamp(0, _project.pages.length - 1)
-        .toInt();
-    final page = _project.pages[resolvedPageIndex];
-    return page.aspectHeight > page.aspectWidth &&
-        _hasTwoOptionRows(selectedTab ?? _selectedBottomTab);
-  }
-
-  double _pageControllerViewportFractionForState() {
-    if (_displayMode != PageDisplayMode.single) {
-      return 0.78;
-    }
-    return _shouldUseSinglePagePeek() ? _singlePagePeekViewportFraction : 1.0;
-  }
-
-  void _refreshPageControllerViewportIfNeeded() {
-    final viewportFraction = _pageControllerViewportFractionForState();
-    if ((_pageController.viewportFraction - viewportFraction).abs() < 0.001) {
-      return;
-    }
-
-    final oldController = _pageController;
-    _pageController = PageController(
-      initialPage: _currentPageIndex,
-      viewportFraction: viewportFraction,
-    );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      oldController.dispose();
-    });
   }
 
   Future<void> _persistProject(ProjectRecord updatedProject) async {
@@ -1041,15 +1001,7 @@ class _BlankPageState extends State<BlankPage> {
     ProjectPage page, {
     double? width,
   }) {
-    if (element.type == 'text') {
-      return _textRenderedHeightRatio(element: element, page: page);
-    }
-    final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
-    final nextWidth = width ?? element.width;
-    if (aspectRatio != null && aspectRatio > 0) {
-      return nextWidth * (page.aspectWidth / page.aspectHeight) / aspectRatio;
-    }
-    return element.height;
+    return elementHeightRatio(element, page, width: width);
   }
 
   double _sourceAspectRatioForElement(CanvasElement element) {
@@ -1328,11 +1280,9 @@ class _BlankPageState extends State<BlankPage> {
       return null;
     }
 
-    for (final page in _project.pages) {
-      for (final element in page.elements) {
-        if (element.id == selectedId) {
-          return element;
-        }
+    for (final element in _project.elements) {
+      if (element.id == selectedId) {
+        return element;
       }
     }
     return null;
@@ -1361,14 +1311,12 @@ class _BlankPageState extends State<BlankPage> {
           if (nextTab == _tabImage) {
             _imageSubTab = _tabImageSource;
           }
-          _refreshPageControllerViewportIfNeeded();
         });
       } else {
         _selectedBottomTab = nextTab;
         if (nextTab == _tabImage) {
           _imageSubTab = _tabImageSource;
         }
-        _refreshPageControllerViewportIfNeeded();
       }
     }
     final targetIndex = tabs.indexOf(_selectedBottomTab);
@@ -1419,7 +1367,6 @@ class _BlankPageState extends State<BlankPage> {
       }
       _deleteArmedElementId = null;
       _selectedBottomTab = tab;
-      _refreshPageControllerViewportIfNeeded();
     });
 
     if (_bottomTabPageController.hasClients) {
@@ -1443,7 +1390,6 @@ class _BlankPageState extends State<BlankPage> {
       if (shouldFallbackToElements) {
         _selectedBottomTab = _tabElements;
       }
-      _refreshPageControllerViewportIfNeeded();
     });
     if (_bottomTabPageController.hasClients) {
       _bottomTabPageController.jumpToPage(
@@ -1483,7 +1429,6 @@ class _BlankPageState extends State<BlankPage> {
       _croppingElementId = null;
       _deleteArmedElementId = null;
       _selectedBottomTab = _tabTemplate;
-      _refreshPageControllerViewportIfNeeded();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1611,8 +1556,22 @@ class _BlankPageState extends State<BlankPage> {
         ? updatedPages.length - 1
         : _currentPageIndex;
 
+    // The page's own elements go with it, and everything anchored after it
+    // shifts left to stay on the page it was on. Then normalize, because
+    // removing a page can leave its neighbour last, with cross-page content
+    // still hanging off an edge that no longer has a page behind it.
     await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      normalizeProject(
+        _project.copyWith(
+          pages: updatedPages,
+          pageCount: updatedPages.length,
+          elements: elementsAfterPageRemoved(
+            elements: _project.elements,
+            pageCount: _project.pages.length,
+            removedPageIndex: pageIndex,
+          ),
+        ),
+      ),
     );
 
     if (!mounted) {
@@ -1629,7 +1588,6 @@ class _BlankPageState extends State<BlankPage> {
       }
       _selectedBottomTab = _tabTemplate;
       _showPageSorter = updatedPages.length > 1 && _showPageSorter;
-      _refreshPageControllerViewportIfNeeded();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1710,9 +1668,21 @@ class _BlankPageState extends State<BlankPage> {
     final nextCurrentIndex = updatedPages.indexWhere(
       (page) => page.id == currentPageId,
     );
-    final updatedProject = _project.copyWith(
-      pages: updatedPages,
-      pageCount: updatedPages.length,
+    // Elements have to be moved along with their page by hand now that they no
+    // longer live inside it. A page that lands first or last also has no
+    // neighbour left to spill onto, so anything hanging off that end would
+    // render nowhere at all — normalize pulls it back.
+    final updatedProject = normalizeProject(
+      _project.copyWith(
+        pages: updatedPages,
+        pageCount: updatedPages.length,
+        elements: elementsAfterPageMoved(
+          elements: _project.elements,
+          pageCount: _project.pages.length,
+          oldIndex: oldIndex,
+          newIndex: targetIndex,
+        ),
+      ),
     );
 
     setState(() {
@@ -1724,48 +1694,68 @@ class _BlankPageState extends State<BlankPage> {
       _croppingElementId = null;
       _deleteArmedElementId = null;
       _activeSnapGuides = const <_SnapGuide>[];
-      _refreshPageControllerViewportIfNeeded();
     });
 
     unawaited(_saveProject(updatedProject));
   }
 
+  /// Restacks the layer list shown for the current page.
+  ///
+  /// The indices are positions within that page's *visible* elements, which
+  /// may include ones anchored to other pages. Both ends are mapped back to
+  /// the project-wide list before the move, so restacking a cross-page photo
+  /// against the content it overlaps actually takes effect -- under the old
+  /// per-page storage it could only ever move within its own page's list, and
+  /// its stacking against every other page was fixed.
   void _reorderElements(int oldIndex, int newIndex) {
-    final currentPage = _project.pages[_currentPageIndex];
+    final visible = _visibleElementsOnCurrentPage;
     if (oldIndex < 0 ||
-        oldIndex >= currentPage.elements.length ||
+        oldIndex >= visible.length ||
         newIndex < 0 ||
-        newIndex > currentPage.elements.length) {
+        newIndex > visible.length) {
       return;
     }
     if (oldIndex == newIndex || oldIndex == newIndex - 1) {
       return;
     }
 
+    final moved = visible[oldIndex];
+    final elements = List<CanvasElement>.from(_project.elements);
+    final from = elements.indexWhere((item) => item.id == moved.id);
+    if (from == -1) {
+      return;
+    }
+
+    // The slot the user dropped into is expressed against the visible list, so
+    // resolve it to the element it lands in front of, then find that element's
+    // place in the project list.
+    final int to;
+    if (newIndex >= visible.length) {
+      to = elements.length;
+    } else {
+      final anchor = visible[newIndex];
+      to = elements.indexWhere((item) => item.id == anchor.id);
+      if (to == -1) {
+        return;
+      }
+    }
+
     _storeUndoSnapshot();
 
-    final updatedElements = List<CanvasElement>.from(currentPage.elements);
-    final movedElement = updatedElements.removeAt(oldIndex);
+    elements.removeAt(from);
+    elements.insert(from < to ? to - 1 : to, moved);
 
-    // Adjust target index after removal (since list visual order is reversed and newIndex represents the slot)
-    final targetIndex = oldIndex < newIndex ? newIndex - 1 : newIndex;
-    updatedElements.insert(targetIndex, movedElement);
-
-    final updatedPage = currentPage.copyWith(elements: updatedElements);
-    final updatedPages = List<ProjectPage>.from(_project.pages);
-    updatedPages[_currentPageIndex] = updatedPage;
-
-    final updatedProject = _project.copyWith(
-      pages: updatedPages,
-      pageCount: updatedPages.length,
-    );
-
+    final updatedProject = _project.copyWith(elements: elements);
     setState(() {
       _project = updatedProject;
     });
 
     unawaited(_saveProject(updatedProject));
   }
+
+  /// Everything showing on the current page, back to front.
+  List<CanvasElement> get _visibleElementsOnCurrentPage =>
+      elementsVisibleOnPage(_project, _currentPageIndex);
 
   Future<void> _requestAiPageSort() async {
     final settings = AppSettingsController.instance;
@@ -2004,9 +1994,20 @@ class _BlankPageState extends State<BlankPage> {
     final nextCurrentIndex = updatedPages.indexWhere(
       (page) => page.id == currentPageId,
     );
-    final updatedProject = _project.copyWith(
-      pages: updatedPages,
-      pageCount: updatedPages.length,
+    // Elements have to be moved along with their page by hand now that they no
+    // longer live inside it. A page that lands first or last also has no
+    // neighbour left to spill onto, so anything hanging off that end would
+    // render nowhere at all — normalize pulls it back.
+    final updatedProject = normalizeProject(
+      _project.copyWith(
+        pages: updatedPages,
+        pageCount: updatedPages.length,
+        elements: elementsAfterPagesReordered(
+          elements: _project.elements,
+          pageCount: _project.pages.length,
+          order: order,
+        ),
+      ),
     );
 
     _storeUndoSnapshot();
@@ -2017,13 +2018,12 @@ class _BlankPageState extends State<BlankPage> {
       _croppingElementId = null;
       _deleteArmedElementId = null;
       _activeSnapGuides = const <_SnapGuide>[];
-      _refreshPageControllerViewportIfNeeded();
     });
     unawaited(_saveProject(updatedProject));
   }
 
   Future<bool> _confirmPageAspectChangeIfNeeded() async {
-    final hasElements = _project.pages.any((page) => page.elements.isNotEmpty);
+    final hasElements = _project.elements.isNotEmpty;
     if (!hasElements) {
       return true;
     }
@@ -2138,14 +2138,17 @@ class _BlankPageState extends State<BlankPage> {
         )
         .toList();
 
+    // Element height is derived from the page aspect, so every element on
+    // every page just went stale. normalizeProject recomputes them and pulls
+    // anything that no longer fits back into range.
     await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      normalizeProject(
+        _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      ),
     );
 
     if (mounted) {
-      setState(() {
-        _refreshPageControllerViewportIfNeeded();
-      });
+      setState(() {});
     }
   }
 
@@ -2459,14 +2462,27 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final oldController = _pageController;
     final currentPageIndex = _currentPageIndex;
 
     setState(() {
       _displayMode = mode;
       _showPageBorder = mode == PageDisplayMode.preview;
       _showSinglePageDivider = false;
-      _pageController = _buildPageController();
+
+      // Going into single mode drops the selection.
+      //
+      // Preview shows the whole document at once, so a selected element is
+      // always in view. Single mode shows one page, and an element selected
+      // across the seam is half off-screen with its handles split over two
+      // pages — you end up dragging something you can only partly see. The
+      // other direction keeps the selection: everything selectable in single
+      // mode is still visible, and still whole, in preview.
+      if (mode == PageDisplayMode.single) {
+        _selectedElementId = null;
+        _croppingElementId = null;
+        _deleteArmedElementId = null;
+        _activeSnapGuides = const <_SnapGuide>[];
+      }
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2476,22 +2492,17 @@ class _BlankPageState extends State<BlankPage> {
       } else if (_displayMode == PageDisplayMode.preview) {
         _jumpPreviewToPage(currentPageIndex);
       }
-      oldController.dispose();
+      _syncBottomTab();
     });
   }
 
   Future<void> _addImageElement() async {
-    final currentPage = _project.pages[_currentPageIndex];
-    final newElement = CanvasElement.image(pageId: currentPage.id);
-    final updatedPage = currentPage.copyWith(
-      elements: List<CanvasElement>.from(currentPage.elements)..add(newElement),
-    );
-
-    final updatedPages = List<ProjectPage>.from(_project.pages);
-    updatedPages[_currentPageIndex] = updatedPage;
+    final newElement = CanvasElement.image(x: _currentPageIndex + 0.12);
 
     await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      _project.copyWith(
+        elements: List<CanvasElement>.from(_project.elements)..add(newElement),
+      ),
     );
 
     if (!mounted) {
@@ -2511,17 +2522,12 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   Future<void> _addTextElement() async {
-    final currentPage = _project.pages[_currentPageIndex];
-    final newElement = CanvasElement.text(pageId: currentPage.id);
-    final updatedPage = currentPage.copyWith(
-      elements: List<CanvasElement>.from(currentPage.elements)..add(newElement),
-    );
-
-    final updatedPages = List<ProjectPage>.from(_project.pages);
-    updatedPages[_currentPageIndex] = updatedPage;
+    final newElement = CanvasElement.text(x: _currentPageIndex + 0.14);
 
     await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      _project.copyWith(
+        elements: List<CanvasElement>.from(_project.elements)..add(newElement),
+      ),
     );
 
     if (!mounted) {
@@ -2560,27 +2566,23 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final currentPage = _project.pages[_currentPageIndex];
     final aspectRatio = size.width / size.height;
-    final newElement = CanvasElement.image(pageId: currentPage.id).copyWith(
-      height: 0.36 / aspectRatio,
-      data: <String, dynamic>{
-        'src': preparedImage.displayPath,
-        'originalSrc': preparedImage.originalPath,
-        'aspectRatio': aspectRatio,
-        'originalAspectRatio': aspectRatio,
-        'isUltraHdr': preparedImage.isUltraHdr,
-      },
-    );
-    final updatedPage = currentPage.copyWith(
-      elements: List<CanvasElement>.from(currentPage.elements)..add(newElement),
-    );
-
-    final updatedPages = List<ProjectPage>.from(_project.pages);
-    updatedPages[_currentPageIndex] = updatedPage;
+    final newElement = CanvasElement.image(x: _currentPageIndex + 0.12)
+        .copyWith(
+          height: 0.36 / aspectRatio,
+          data: <String, dynamic>{
+            'src': preparedImage.displayPath,
+            'originalSrc': preparedImage.originalPath,
+            'aspectRatio': aspectRatio,
+            'originalAspectRatio': aspectRatio,
+            'isUltraHdr': preparedImage.isUltraHdr,
+          },
+        );
 
     await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
+      _project.copyWith(
+        elements: List<CanvasElement>.from(_project.elements)..add(newElement),
+      ),
     );
 
     if (!mounted) {
@@ -2863,11 +2865,6 @@ class _BlankPageState extends State<BlankPage> {
     );
   }
 
-  bool _elementCrossesPageBoundary(CanvasElement element) {
-    return element.allowCrossPage &&
-        (element.x < 0 || (element.x + element.width) > 1);
-  }
-
   void _selectElement(String? elementId) {
     if (elementId == null) {
       _clearSelectedElement();
@@ -2878,32 +2875,14 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    CanvasElement? selectedElement;
-    for (var pageIndex = 0; pageIndex < _project.pages.length; pageIndex++) {
-      final page = _project.pages[pageIndex];
-      for (
-        var elementIndex = 0;
-        elementIndex < page.elements.length;
-        elementIndex++
-      ) {
-        final element = page.elements[elementIndex];
-        if (element.id == elementId) {
-          selectedElement = element;
-          break;
-        }
-      }
-      if (selectedElement != null) {
-        break;
-      }
-    }
+    final selectedElement = _findElementById(elementId);
 
+    // Selecting never moves the canvas. Tapping a cross-page photo used to
+    // switch the editor to preview mode and scroll the strip, on the reasoning
+    // that you should be able to see the whole thing — but the mode and the
+    // scroll position are the user's, and having a tap take both away is worse
+    // than seeing half a photo. Switching modes is a deliberate act now.
     setState(() {
-      if (selectedElement != null &&
-          _elementCrossesPageBoundary(selectedElement) &&
-          _displayMode != PageDisplayMode.preview) {
-        _displayMode = PageDisplayMode.preview;
-        _showPageBorder = true;
-      }
       _selectedElementId = elementId;
       if (_deleteArmedElementId != elementId) {
         _deleteArmedElementId = null;
@@ -2936,14 +2915,7 @@ class _BlankPageState extends State<BlankPage> {
         _selectedBottomTab = _tabImage;
         _imageSubTab = _tabImageSource;
       }
-      _refreshPageControllerViewportIfNeeded();
     });
-    if (selectedElement != null &&
-        _elementCrossesPageBoundary(selectedElement)) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _jumpPreviewToPage(_currentPageIndex);
-      });
-    }
     if (_bottomTabPageController.hasClients) {
       _bottomTabPageController.jumpToPage(
         _bottomTabs.indexOf(_selectedBottomTab),
@@ -2951,10 +2923,7 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
-  void _handleElementDoubleTap({
-    required String pageId,
-    required String elementId,
-  }) {
+  void _handleElementDoubleTap({required String elementId}) {
     final element = _findElementById(elementId);
 
     if (_selectedElementId != elementId) {
@@ -2964,15 +2933,53 @@ class _BlankPageState extends State<BlankPage> {
       unawaited(_showTextEditor(elementId));
       return;
     }
-    unawaited(_fitElementToCanvas(pageId: pageId, elementId: elementId));
+
+    // A photo already straddling a seam snaps flush across the pages it
+    // touches; one sitting on a single page falls back to fitting that page.
+    if (element != null && _elementTouchesMultiplePages(element)) {
+      unawaited(_fillElementAcrossTouchedPages(elementId: elementId));
+      return;
+    }
+    unawaited(_fitElementToCanvas(elementId: elementId));
   }
 
+  /// Whether editing [element] right now should hold it inside its own page.
+  ///
+  /// Single mode shows one page, so an element is kept on it. Not one that is
+  /// already spanning a seam, though: that stays free to move, or selecting a
+  /// cross-page photo in single mode would snap it shut — the exact data loss
+  /// P2 removed display-mode-keyed constraints to fix. Drag it back inside a
+  /// single page and it locks there, because then it is a single-page photo.
+  ///
+  /// Nothing is written to the element. The rule is read off where it sits, so
+  /// preview mode still moves it freely and no state can go stale.
+  bool _confineToPage(CanvasElement element) =>
+      _displayMode == PageDisplayMode.single &&
+      !_elementTouchesMultiplePages(element);
+
+  bool _elementTouchesMultiplePages(CanvasElement element) {
+    if (!element.allowCrossPage) {
+      return false;
+    }
+    final range = touchedPageRange(
+      element: element,
+      pageCount: _project.pages.length,
+    );
+    return range.last > range.first;
+  }
+
+  /// Page [element] is filed under, from where it starts.
+  int _anchorIndexOf(CanvasElement element) =>
+      anchorPageIndex(element, _project.pages.length);
+
+  /// Page [element] takes its shape from.
+  ProjectPage _anchorPageOf(CanvasElement element) =>
+      _project.pages[_anchorIndexOf(element)];
+
   CanvasElement? _findElementById(String elementId, {String? type}) {
-    for (final page in _project.pages) {
-      for (final item in page.elements) {
-        if (item.id == elementId && (type == null || item.type == type)) {
-          return item;
-        }
+    for (final item in _project.elements) {
+      if (item.id == elementId && (type == null || item.type == type)) {
+        return item;
       }
     }
     return null;
@@ -2982,31 +2989,17 @@ class _BlankPageState extends State<BlankPage> {
     CanvasElement updatedElement, {
     required bool persist,
   }) async {
-    final pageIndex = _project.pages.indexWhere(
-      (page) => page.id == updatedElement.pageId,
-    );
-    if (pageIndex == -1) {
-      return;
-    }
-
-    final page = _project.pages[pageIndex];
-    final elementIndex = page.elements.indexWhere(
+    final elementIndex = _project.elements.indexWhere(
       (element) => element.id == updatedElement.id,
     );
     if (elementIndex == -1) {
       return;
     }
 
-    final updatedElements = List<CanvasElement>.from(page.elements);
+    final updatedElements = List<CanvasElement>.from(_project.elements);
     updatedElements[elementIndex] = updatedElement;
 
-    final updatedPages = List<ProjectPage>.from(_project.pages);
-    updatedPages[pageIndex] = page.copyWith(elements: updatedElements);
-
-    final updatedProject = _project.copyWith(
-      pages: updatedPages,
-      pageCount: updatedPages.length,
-    );
+    final updatedProject = _project.copyWith(elements: updatedElements);
 
     setState(() {
       _project = updatedProject;
@@ -3083,9 +3076,7 @@ class _BlankPageState extends State<BlankPage> {
       _hasPendingElementUndoSnapshot = true;
     }
 
-    final pageIndex = _project.pages.indexWhere(
-      (page) => page.id == selectedText.pageId,
-    );
+    final pageIndex = _anchorIndexOf(selectedText);
     if (pageIndex == -1) {
       return;
     }
@@ -3113,7 +3104,6 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   void _updateElementPosition({
-    required String pageId,
     required String elementId,
     required double x,
     required double y,
@@ -3123,19 +3113,21 @@ class _BlankPageState extends State<BlankPage> {
       _storeUndoSnapshot();
       _hasPendingElementUndoSnapshot = true;
     }
-    final pageIndex = _project.pages.indexWhere((page) => page.id == pageId);
-    if (pageIndex == -1) {
+    final element = _findElementById(elementId);
+    if (element == null) {
       return;
     }
-
+    final pageIndex = _anchorIndexOf(element);
     final page = _project.pages[pageIndex];
-    final element = page.elements.firstWhere((item) => item.id == elementId);
-    final maxX = (1 - element.width).clamp(0.0, 1.0);
-    final maxY = (1 - _elementRenderedHeight(element, page)).clamp(0.0, 1.0);
-    final rawX = _displayMode == PageDisplayMode.single
-        ? x.clamp(0.0, maxX)
-        : x.clamp(-0.95, 1.95);
-    final rawY = y.clamp(0.0, maxY);
+    final xRange = allowedXRange(
+      element,
+      anchorPageIndex: pageIndex,
+      pageCount: _project.pages.length,
+      confineToAnchorPage: _confineToPage(element),
+    );
+    final yRange = allowedYRange(element, page);
+    final rawX = xRange.clamp(x);
+    final rawY = yRange.clamp(y);
     final snappedPosition = _snapEnabledForElement(element)
         ? _snapElementPosition(
             pageIndex: pageIndex,
@@ -3143,8 +3135,8 @@ class _BlankPageState extends State<BlankPage> {
             element: element,
             x: rawX,
             y: rawY,
-            maxX: maxX,
-            maxY: maxY,
+            xRange: xRange,
+            yRange: yRange,
           )
         : _SnapResult(x: rawX, y: rawY);
     final updatedElement = element.copyWith(
@@ -3171,8 +3163,8 @@ class _BlankPageState extends State<BlankPage> {
     required CanvasElement element,
     required double x,
     required double y,
-    required double maxX,
-    required double maxY,
+    required CanvasXRange xRange,
+    required CanvasXRange yRange,
   }) {
     const snapThreshold = 0.018;
     final snapPageEdges = _snapFlagForElement(element, 'snapPageEdges');
@@ -3188,10 +3180,12 @@ class _BlankPageState extends State<BlankPage> {
     final yOffsets = <_SnapTarget>[];
 
     void addPageTarget(int targetPageIndex, double value) {
+      // Candidate and guide are both in document space now, so the value the
+      // snap resolves to is the guide's own position.
       final globalX = targetPageIndex + value;
       xTargets.add(
         _SnapTarget(
-          value: globalX - pageIndex,
+          value: globalX,
           guideValue: globalX,
           axis: _SnapGuideAxis.vertical,
         ),
@@ -3215,20 +3209,16 @@ class _BlankPageState extends State<BlankPage> {
       addPageTarget(pageIndex, 0.75);
     }
 
-    for (
-      var otherPageIndex = 0;
-      otherPageIndex < _project.pages.length;
-      otherPageIndex++
-    ) {
-      final otherPage = _project.pages[otherPageIndex];
-      final pageOffset = (otherPageIndex - pageIndex).toDouble();
-      for (final other in otherPage.elements) {
+    // Every element in the project is a snap candidate; positions are already
+    // in document space, so no per-page offset is needed to compare them.
+    {
+      for (final other in _project.elements) {
         if (other.id == element.id || other.type != 'image') {
           continue;
         }
 
-        final otherHeight = _elementRenderedHeight(other, otherPage);
-        final otherLeft = pageOffset + other.x;
+        final otherHeight = _elementRenderedHeight(other, _anchorPageOf(other));
+        final otherLeft = other.x;
         final otherCenterX = otherLeft + other.width / 2;
         final otherRight = otherLeft + other.width;
         final otherTop = other.y;
@@ -3242,10 +3232,10 @@ class _BlankPageState extends State<BlankPage> {
         final verticalGuideEnd = elementBottom > otherBottom
             ? elementBottom
             : otherBottom;
-        final elementGlobalLeft = pageIndex + x;
+        final elementGlobalLeft = x;
         final elementGlobalRight = elementGlobalLeft + element.width;
-        final otherGlobalLeft = pageIndex + otherLeft;
-        final otherGlobalRight = pageIndex + otherRight;
+        final otherGlobalLeft = otherLeft;
+        final otherGlobalRight = otherRight;
         final horizontalGuideStart = elementGlobalLeft < otherGlobalLeft
             ? elementGlobalLeft
             : otherGlobalLeft;
@@ -3258,7 +3248,7 @@ class _BlankPageState extends State<BlankPage> {
             xTargets.add(
               _SnapTarget(
                 value: value,
-                guideValue: pageIndex + value,
+                guideValue: value,
                 axis: _SnapGuideAxis.vertical,
                 guideStart: verticalGuideStart,
                 guideEnd: verticalGuideEnd,
@@ -3282,14 +3272,14 @@ class _BlankPageState extends State<BlankPage> {
           xOffsets.addAll(<_SnapTarget>[
             _SnapTarget(
               value: otherLeft - element.width,
-              guideValue: pageIndex + otherLeft,
+              guideValue: otherLeft,
               axis: _SnapGuideAxis.vertical,
               guideStart: verticalGuideStart,
               guideEnd: verticalGuideEnd,
             ),
             _SnapTarget(
               value: otherRight,
-              guideValue: pageIndex + otherRight,
+              guideValue: otherRight,
               axis: _SnapGuideAxis.vertical,
               guideStart: verticalGuideStart,
               guideEnd: verticalGuideEnd,
@@ -3398,16 +3388,13 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     return _SnapResult(
-      x: _displayMode == PageDisplayMode.single
-          ? snappedX.clamp(0.0, maxX)
-          : snappedX.clamp(-0.95, 1.95),
-      y: snappedY.clamp(0.0, maxY),
+      x: xRange.clamp(snappedX),
+      y: yRange.clamp(snappedY),
       guides: <_SnapGuide>[...xGuides, ...yGuides],
     );
   }
 
   void _updateElementSize({
-    required String pageId,
     required String elementId,
     required double width,
     required bool persist,
@@ -3416,13 +3403,16 @@ class _BlankPageState extends State<BlankPage> {
       _storeUndoSnapshot();
       _hasPendingElementUndoSnapshot = true;
     }
-    final pageIndex = _project.pages.indexWhere((page) => page.id == pageId);
-    if (pageIndex == -1) {
+    final element = _findElementById(elementId);
+    if (element == null) {
       return;
     }
 
+    // Derived from where the element is, not from a page passed in by the
+    // caller: a caller holding a stale page was how resizing a cross-page
+    // element used to clamp it back onto the page it no longer started on.
+    final pageIndex = _anchorIndexOf(element);
     final page = _project.pages[pageIndex];
-    final element = page.elements.firstWhere((item) => item.id == elementId);
     final aspectRatio =
         (element.data['aspectRatio'] as num?)?.toDouble() ??
         (element.width / element.height);
@@ -3448,14 +3438,17 @@ class _BlankPageState extends State<BlankPage> {
       page,
       width: snappedWidth,
     );
-    final maxX = (1 - snappedWidth).clamp(0.0, 1.0);
     final maxY = (1 - nextHeight).clamp(0.0, 1.0);
     final updatedElement = element.copyWith(
       width: snappedWidth,
       height: nextHeight,
-      x: (_displayMode == PageDisplayMode.single
-          ? element.x.clamp(0.0, maxX)
-          : element.x),
+      x: allowedXRange(
+        element,
+        anchorPageIndex: pageIndex,
+        pageCount: _project.pages.length,
+        width: snappedWidth,
+        confineToAnchorPage: _confineToPage(element),
+      ).clamp(element.x),
       y: element.y.clamp(0.0, maxY),
       data: <String, dynamic>{...element.data, 'aspectRatio': aspectRatio},
     );
@@ -3480,23 +3473,14 @@ class _BlankPageState extends State<BlankPage> {
     required CanvasElement element,
     required double aspectRatio,
   }) {
-    if (_displayMode != PageDisplayMode.single) {
-      return 2.2;
-    }
-
-    final maxWidthByRight = (1 - element.x).clamp(0.08, 1.0).toDouble();
-    final maxHeightByBottom = (1 - element.y).clamp(0.0, 1.0).toDouble();
-    final maxWidthByBottom =
-        (maxHeightByBottom *
-                aspectRatio *
-                (page.aspectHeight / page.aspectWidth))
-            .clamp(0.08, 1.0)
-            .toDouble();
-    final maxWidth = maxWidthByRight < maxWidthByBottom
-        ? maxWidthByRight
-        : maxWidthByBottom;
-
-    return maxWidth.clamp(0.08, 1.0).toDouble();
+    return maxElementWidth(
+      element: element,
+      page: page,
+      aspectRatio: aspectRatio,
+      anchorPageIndex: _anchorIndexOf(element),
+      pageCount: _project.pages.length,
+      confineToAnchorPage: _confineToPage(element),
+    );
   }
 
   _SnapResult _snapElementSize({
@@ -3522,10 +3506,12 @@ class _BlankPageState extends State<BlankPage> {
     final yTargets = <_SnapTarget>[];
 
     void addPageTarget(int targetPageIndex, double value) {
+      // Candidate and guide are both in document space now, so the value the
+      // snap resolves to is the guide's own position.
       final globalX = targetPageIndex + value;
       xTargets.add(
         _SnapTarget(
-          value: globalX - pageIndex,
+          value: globalX,
           guideValue: globalX,
           axis: _SnapGuideAxis.vertical,
         ),
@@ -3549,20 +3535,16 @@ class _BlankPageState extends State<BlankPage> {
       addPageTarget(pageIndex, 0.75);
     }
 
-    for (
-      var otherPageIndex = 0;
-      otherPageIndex < _project.pages.length;
-      otherPageIndex++
-    ) {
-      final otherPage = _project.pages[otherPageIndex];
-      final pageOffset = (otherPageIndex - pageIndex).toDouble();
-      for (final other in otherPage.elements) {
+    // Every element in the project is a snap candidate; positions are already
+    // in document space, so no per-page offset is needed to compare them.
+    {
+      for (final other in _project.elements) {
         if (other.id == element.id || other.type != 'image') {
           continue;
         }
 
-        final otherHeight = _elementRenderedHeight(other, otherPage);
-        final otherLeft = pageOffset + other.x;
+        final otherHeight = _elementRenderedHeight(other, _anchorPageOf(other));
+        final otherLeft = other.x;
         final otherCenterX = otherLeft + other.width / 2;
         final otherRight = otherLeft + other.width;
         final otherTop = other.y;
@@ -3570,10 +3552,10 @@ class _BlankPageState extends State<BlankPage> {
         final otherBottom = otherTop + otherHeight;
         final verticalGuideStart = element.y < otherTop ? element.y : otherTop;
         final verticalGuideEnd = bottom > otherBottom ? bottom : otherBottom;
-        final elementGlobalLeft = pageIndex + element.x;
-        final elementGlobalRight = pageIndex + right;
-        final otherGlobalLeft = pageIndex + otherLeft;
-        final otherGlobalRight = pageIndex + otherRight;
+        final elementGlobalLeft = element.x;
+        final elementGlobalRight = right;
+        final otherGlobalLeft = otherLeft;
+        final otherGlobalRight = otherRight;
         final horizontalGuideStart = elementGlobalLeft < otherGlobalLeft
             ? elementGlobalLeft
             : otherGlobalLeft;
@@ -3586,7 +3568,7 @@ class _BlankPageState extends State<BlankPage> {
             xTargets.add(
               _SnapTarget(
                 value: value,
-                guideValue: pageIndex + value,
+                guideValue: value,
                 axis: _SnapGuideAxis.vertical,
                 guideStart: verticalGuideStart,
                 guideEnd: verticalGuideEnd,
@@ -3610,14 +3592,14 @@ class _BlankPageState extends State<BlankPage> {
           xTargets.addAll(<_SnapTarget>[
             _SnapTarget(
               value: otherLeft,
-              guideValue: pageIndex + otherLeft,
+              guideValue: otherLeft,
               axis: _SnapGuideAxis.vertical,
               guideStart: verticalGuideStart,
               guideEnd: verticalGuideEnd,
             ),
             _SnapTarget(
               value: otherRight,
-              guideValue: pageIndex + otherRight,
+              guideValue: otherRight,
               axis: _SnapGuideAxis.vertical,
               guideStart: verticalGuideStart,
               guideEnd: verticalGuideEnd,
@@ -3717,11 +3699,9 @@ class _BlankPageState extends State<BlankPage> {
   ({double value, double min, double max}) _imageSizeSliderRange(
     CanvasElement image,
   ) {
-    const min = 0.08;
-    var max = _displayMode == PageDisplayMode.single ? 1.0 : 2.2;
-    final pageIndex = _project.pages.indexWhere(
-      (page) => page.id == image.pageId,
-    );
+    const min = kMinElementWidth;
+    var max = image.allowCrossPage ? _project.pages.length.toDouble() : 1.0;
+    final pageIndex = _anchorIndexOf(image);
     if (pageIndex != -1) {
       final page = _project.pages[pageIndex];
       final aspectRatio =
@@ -3744,16 +3724,12 @@ class _BlankPageState extends State<BlankPage> {
     required double singleCanvasWidth,
     required double previewCanvasWidth,
   }) {
-    final pageIndex = _project.pages.indexWhere(
-      (page) => page.id == element.pageId,
-    );
+    final pageIndex = _anchorIndexOf(element);
     final page = pageIndex == -1
         ? _project.pages[_currentPageIndex]
         : _project.pages[pageIndex];
     final width = _displayMode == PageDisplayMode.single
-        ? (singleCanvasWidth - (_canvasControlChromePadding * 2))
-              .clamp(1.0, singleCanvasWidth)
-              .toDouble()
+        ? singleCanvasWidth.clamp(1.0, double.infinity).toDouble()
         : previewCanvasWidth.clamp(1.0, double.infinity).toDouble();
     return (
       width: width,
@@ -3775,20 +3751,19 @@ class _BlankPageState extends State<BlankPage> {
     CanvasElement element, {
     required ({double width, double height}) pagePixelSize,
   }) {
-    final minX = _displayMode == PageDisplayMode.single ? 0.0 : -0.95;
-    var maxX = _displayMode == PageDisplayMode.single
-        ? (1 - element.width).clamp(0.0, 1.0).toDouble()
-        : 1.95;
+    final pageIndex = _anchorIndexOf(element);
+    final xRange = allowedXRange(
+      element,
+      anchorPageIndex: pageIndex == -1 ? _currentPageIndex : pageIndex,
+      pageCount: _project.pages.length,
+      confineToAnchorPage: _confineToPage(element),
+    );
+    final minX = xRange.min;
+    var maxX = xRange.max;
     const minY = 0.0;
     var maxY = (1 - element.height).clamp(0.0, 1.0).toDouble();
-    final pageIndex = _project.pages.indexWhere(
-      (page) => page.id == element.pageId,
-    );
     if (pageIndex != -1) {
-      final page = _project.pages[pageIndex];
-      maxY = (1 - _elementRenderedHeight(element, page))
-          .clamp(0.0, 1.0)
-          .toDouble();
+      maxY = allowedYRange(element, _project.pages[pageIndex]).max;
     }
     if (maxX <= minX) {
       maxX = minX + 0.001;
@@ -3818,7 +3793,6 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
     _updateElementPosition(
-      pageId: selectedImage.pageId,
       elementId: selectedImage.id,
       x: x,
       y: y,
@@ -3836,7 +3810,6 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
     _updateElementPosition(
-      pageId: selectedText.pageId,
       elementId: selectedText.id,
       x: x,
       y: y,
@@ -3853,7 +3826,6 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
     _updateElementSize(
-      pageId: selectedImage.pageId,
       elementId: selectedImage.id,
       width: width,
       persist: persist,
@@ -4069,23 +4041,19 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final pageIndex = _project.pages.indexWhere(
-      (page) => page.id == selectedImage.pageId,
-    );
+    final pageIndex = _anchorIndexOf(selectedImage);
     if (pageIndex == -1) {
       return;
     }
 
     final page = _project.pages[pageIndex];
-    final maxX = (1 - selectedImage.width).clamp(0.0, 1.0);
-    final maxY = (1 - _elementRenderedHeight(selectedImage, page)).clamp(
-      0.0,
-      1.0,
-    );
-    final rawX = _displayMode == PageDisplayMode.single
-        ? (selectedImage.x + dx).clamp(0.0, maxX)
-        : (selectedImage.x + dx).clamp(-0.95, 1.95);
-    final rawY = (selectedImage.y + dy).clamp(0.0, maxY);
+    final rawX = allowedXRange(
+      selectedImage,
+      anchorPageIndex: pageIndex,
+      pageCount: _project.pages.length,
+      confineToAnchorPage: _confineToPage(selectedImage),
+    ).clamp(selectedImage.x + dx);
+    final rawY = allowedYRange(selectedImage, page).clamp(selectedImage.y + dy);
 
     if (rawX == selectedImage.x && rawY == selectedImage.y) {
       return;
@@ -4114,23 +4082,19 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final pageIndex = _project.pages.indexWhere(
-      (page) => page.id == selectedText.pageId,
-    );
+    final pageIndex = _anchorIndexOf(selectedText);
     if (pageIndex == -1) {
       return;
     }
 
     final page = _project.pages[pageIndex];
-    final maxX = (1 - selectedText.width).clamp(0.0, 1.0);
-    final maxY = (1 - _elementRenderedHeight(selectedText, page)).clamp(
-      0.0,
-      1.0,
-    );
-    final rawX = _displayMode == PageDisplayMode.single
-        ? (selectedText.x + dx).clamp(0.0, maxX)
-        : (selectedText.x + dx).clamp(-0.95, 1.95);
-    final rawY = (selectedText.y + dy).clamp(0.0, maxY);
+    final rawX = allowedXRange(
+      selectedText,
+      anchorPageIndex: pageIndex,
+      pageCount: _project.pages.length,
+      confineToAnchorPage: _confineToPage(selectedText),
+    ).clamp(selectedText.x + dx);
+    final rawY = allowedYRange(selectedText, page).clamp(selectedText.y + dy);
 
     if (rawX == selectedText.x && rawY == selectedText.y) {
       return;
@@ -4153,24 +4117,15 @@ class _BlankPageState extends State<BlankPage> {
     );
   }
 
-  Future<void> _fitElementToCanvas({
-    required String pageId,
-    required String elementId,
-  }) async {
-    final pageIndex = _project.pages.indexWhere((page) => page.id == pageId);
-    if (pageIndex == -1) {
+  Future<void> _fitElementToCanvas({required String elementId}) async {
+    final element = _findElementById(elementId);
+    if (element == null) {
       return;
     }
 
+    final pageIndex = _anchorIndexOf(element);
     final page = _project.pages[pageIndex];
-    final elementIndex = page.elements.indexWhere(
-      (item) => item.id == elementId,
-    );
-    if (elementIndex == -1) {
-      return;
-    }
 
-    final element = page.elements[elementIndex];
     final imageAspectRatio =
         (element.data['originalAspectRatio'] as num?)?.toDouble() ??
         (element.data['aspectRatio'] as num?)?.toDouble() ??
@@ -4190,7 +4145,8 @@ class _BlankPageState extends State<BlankPage> {
     _storeUndoSnapshot();
     await _replaceElement(
       element.copyWith(
-        x: (1 - fittedWidth) / 2,
+        // Centred on the page it is anchored to, in document space.
+        x: pageIndex + (1 - fittedWidth) / 2,
         y: (1 - fittedHeight) / 2,
         width: fittedWidth,
         height: fittedHeight,
@@ -4202,6 +4158,60 @@ class _BlankPageState extends State<BlankPage> {
       ),
       persist: true,
     );
+  }
+
+  /// Snaps a cross-page photo flush across every page it currently touches:
+  /// full page height, aligned to the leftmost touched page, spanning through
+  /// the rightmost. The frame aspect changes to match that span, so the photo
+  /// is cropped to fill rather than stretched.
+  Future<void> _fillElementAcrossTouchedPages({
+    required String elementId,
+  }) async {
+    final element = _findElementById(elementId);
+    if (element == null) {
+      return;
+    }
+
+    final page = _anchorPageOf(element);
+    final range = touchedPageRange(
+      element: element,
+      pageCount: _project.pages.length,
+    );
+    final spanWidth = (range.last - range.first + 1).toDouble();
+
+    _storeUndoSnapshot();
+    var updatedElement = element.copyWith(
+      // The leftmost page it touches — already a document-space position.
+      x: range.first.toDouble(),
+      y: 0,
+      width: spanWidth,
+      height: 1,
+      data: <String, dynamic>{
+        ...element.data,
+        'aspectRatio': fullBleedFrameAspectRatio(
+          spanWidth: spanWidth,
+          page: page,
+        ),
+        'aspectPreset': 'crossPageFill',
+      },
+    );
+
+    // Same convention as _updateSelectedImageAspect: keep whatever pan the
+    // user had set, but re-clamp it against the frame's new shape.
+    final clampedCrop = _clampedCropOffsetForElement(
+      updatedElement,
+      x: _cropOffsetXFromData(updatedElement.data),
+      y: _cropOffsetYFromData(updatedElement.data),
+    );
+    updatedElement = updatedElement.copyWith(
+      data: <String, dynamic>{
+        ...updatedElement.data,
+        'cropOffsetX': clampedCrop.x,
+        'cropOffsetY': clampedCrop.y,
+      },
+    );
+
+    await _replaceElement(updatedElement, persist: true);
   }
 
   Future<void> _updateSelectedImageAspect(_ImageAspectOption option) async {
@@ -4259,10 +4269,16 @@ class _BlankPageState extends State<BlankPage> {
   /// alone — asking whenever the page merely had elements on it meant the empty
   /// slots a template leaves behind triggered the dialog every time.
   Future<bool> _confirmApplyTemplateIfNeeded(
-    ProjectPage page,
+    int pageIndex,
     TemplateOption option,
   ) async {
-    final photoCount = page.elements.where(_elementHoldsPhoto).length;
+    // Anchored, not merely visible: applying a template only ever rewrites the
+    // elements filed under this page, so a photo bleeding in from a neighbour
+    // is not at risk and must not be counted as one that would be dropped.
+    final photoCount = elementsAnchoredToPage(
+      _project,
+      pageIndex,
+    ).where(_elementHoldsPhoto).length;
     final slotCount = option.slots.length;
     final droppedCount = photoCount - slotCount;
     if (droppedCount <= 0) {
@@ -4356,7 +4372,7 @@ class _BlankPageState extends State<BlankPage> {
   Future<void> _applyTemplate(TemplateOption option) async {
     final currentPage = _project.pages[_currentPageIndex];
     final shouldApply = await _confirmApplyTemplateIfNeeded(
-      currentPage,
+      _currentPageIndex,
       option,
     );
     if (!mounted || !shouldApply) {
@@ -4365,7 +4381,8 @@ class _BlankPageState extends State<BlankPage> {
 
     _storeUndoSnapshot();
 
-    final existingImages = currentPage.elements
+    final pageElements = elementsAnchoredToPage(_project, _currentPageIndex);
+    final existingImages = pageElements
         .where(
           (e) =>
               e.type == 'image' &&
@@ -4373,13 +4390,11 @@ class _BlankPageState extends State<BlankPage> {
               (e.data['src'] as String).isNotEmpty,
         )
         .toList();
-    final existingTexts = currentPage.elements
-        .where((e) => e.type == 'text')
-        .toList();
+    final existingTexts = pageElements.where((e) => e.type == 'text').toList();
 
     final marginRatio = AppSettingsController.instance.templateMarginRatio;
     final templateElements = option.buildElements(
-      currentPage.id,
+      _currentPageIndex,
       currentPage,
       marginRatio,
     );
@@ -4444,14 +4459,14 @@ class _BlankPageState extends State<BlankPage> {
 
     updatedElements.addAll(existingTexts);
 
-    final updatedPage = currentPage.copyWith(elements: updatedElements);
+    final replacedIds = pageElements.map((element) => element.id).toSet();
+    final nextElements = <CanvasElement>[
+      for (final element in _project.elements)
+        if (!replacedIds.contains(element.id)) element,
+      ...updatedElements,
+    ];
 
-    final updatedPages = List<ProjectPage>.from(_project.pages);
-    updatedPages[_currentPageIndex] = updatedPage;
-
-    await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
-    );
+    await _saveProject(_project.copyWith(elements: nextElements));
 
     if (!mounted) {
       return;
@@ -4467,26 +4482,12 @@ class _BlankPageState extends State<BlankPage> {
     _syncBottomTab();
   }
 
-  Future<void> _deleteElement({
-    required String pageId,
-    required String elementId,
-  }) async {
-    final pageIndex = _project.pages.indexWhere((page) => page.id == pageId);
-    if (pageIndex == -1) {
-      return;
-    }
+  Future<void> _deleteElement({required String elementId}) async {
+    final updatedElements = _project.elements
+        .where((element) => element.id != elementId)
+        .toList();
 
-    final page = _project.pages[pageIndex];
-    final updatedPages = List<ProjectPage>.from(_project.pages);
-    updatedPages[pageIndex] = page.copyWith(
-      elements: page.elements
-          .where((element) => element.id != elementId)
-          .toList(),
-    );
-
-    await _saveProject(
-      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
-    );
+    await _saveProject(_project.copyWith(elements: updatedElements));
 
     if (!mounted) {
       return;
@@ -4515,16 +4516,13 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
-  Future<void> _confirmDeleteElement({
-    required String pageId,
-    required String elementId,
-  }) async {
+  Future<void> _confirmDeleteElement({required String elementId}) async {
     if (_deleteArmedElementId != elementId) {
       return;
     }
 
     _storeUndoSnapshot();
-    await _deleteElement(pageId: pageId, elementId: elementId);
+    await _deleteElement(elementId: elementId);
   }
 
   void _cancelDeleteElement(String elementId) {
@@ -4551,9 +4549,7 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final screenWidth = MediaQuery.of(context).size.width;
-    final pageWidth = screenWidth * 0.78;
-    _previewScrollController.jumpTo(pageWidth * pageIndex);
+    _previewScrollController.jumpTo(_previewPageWidth(context) * pageIndex);
   }
 
   void _goToPage(int pageIndex) {
@@ -4568,7 +4564,6 @@ class _BlankPageState extends State<BlankPage> {
       _deleteArmedElementId = null;
       _selectedSorterPageId = null;
       _showPageSorter = false;
-      _refreshPageControllerViewportIfNeeded();
     });
 
     if (_displayMode == PageDisplayMode.single) {
@@ -4593,96 +4588,15 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
-    final screenWidth = MediaQuery.of(context).size.width;
-    final pageWidth = screenWidth * 0.78;
-    final pageIndex = (_previewScrollController.offset / pageWidth)
-        .round()
-        .clamp(0, _project.pages.length - 1);
+    final pageIndex =
+        (_previewScrollController.offset / _previewPageWidth(context))
+            .round()
+            .clamp(0, _project.pages.length - 1);
 
     if (pageIndex != _currentPageIndex) {
       setState(() {
         _currentPageIndex = pageIndex;
       });
-    }
-  }
-
-  Future<Directory> _resolveExportDirectory() async => Directory.systemTemp;
-
-  Future<void> _exportCurrentPageAsJpg() async {
-    final strings = AppStrings.of(context);
-    if (_isExporting) {
-      return;
-    }
-
-    FocusScope.of(context).unfocus();
-    setState(() {
-      _isExporting = true;
-    });
-
-    try {
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-
-      final boundary =
-          _exportRepaintKey.currentContext?.findRenderObject()
-              as RenderRepaintBoundary?;
-      if (boundary == null) {
-        throw Exception(strings.t('exportCanvasNotFound'));
-      }
-
-      final uiImage = await boundary.toImage(pixelRatio: 6);
-      final byteData = await uiImage.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) {
-        throw Exception(strings.t('canvasConvertFailed'));
-      }
-
-      final pngBytes = byteData.buffer.asUint8List();
-      final decodedImage = img.decodeImage(pngBytes);
-      if (decodedImage == null) {
-        throw Exception(strings.t('imageDecodeFailed'));
-      }
-
-      final jpgBytes = Uint8List.fromList(
-        img.encodeJpg(decodedImage, quality: 100),
-      );
-
-      final exportDirectory = await _resolveExportDirectory();
-      await exportDirectory.create(recursive: true);
-
-      final safeProjectName = _project.name
-          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
-          .trim();
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final file = File(
-        '${exportDirectory.path}${Platform.pathSeparator}${safeProjectName.isEmpty ? 'project' : safeProjectName}_page${_currentPageIndex + 1}_$timestamp.jpg',
-      );
-
-      await file.writeAsBytes(jpgBytes, flush: true);
-
-      if (!mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            strings.t('exportedJpg', args: <String, String>{'path': file.path}),
-          ),
-        ),
-      );
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.t('exportFailedTryAgain'))),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isExporting = false;
-        });
-      }
     }
   }
 
@@ -4708,7 +4622,7 @@ class _BlankPageState extends State<BlankPage> {
     const maxWidth = 6000;
     var exportWidth = defaultWidth;
 
-    for (final element in page.elements) {
+    for (final element in _project.elements) {
       if (element.type != 'image') {
         continue;
       }
@@ -4739,7 +4653,7 @@ class _BlankPageState extends State<BlankPage> {
     final canvas = img.Image(width: exportWidth, height: exportHeight);
     img.fill(canvas, color: img.ColorRgb8(255, 255, 255));
 
-    for (final element in page.elements) {
+    for (final element in _project.elements) {
       if (element.type != 'image') {
         continue;
       }
@@ -4819,7 +4733,7 @@ class _BlankPageState extends State<BlankPage> {
     final strings = AppStrings.of(context);
     final imagePaths = <String>{};
     for (final page in _project.pages) {
-      for (final element in page.elements) {
+      for (final element in _project.elements) {
         if (element.type != 'image') {
           continue;
         }
@@ -4888,8 +4802,14 @@ class _BlankPageState extends State<BlankPage> {
     required int exportWidth,
   }) {
     final pageIndex = _project.pages.indexWhere((item) => item.id == page.id);
-    if (pageIndex != -1 &&
-        page.elements.any((element) => element.type == 'text')) {
+    // Everything that shows here, including whatever bleeds in from a
+    // neighbour — this used to be the page's own elements, so a photo anchored
+    // next door simply vanished from the thumbnail.
+    final visible = pageIndex == -1
+        ? const <CanvasElement>[]
+        : elementsVisibleOnPage(_project, pageIndex);
+
+    if (visible.any((element) => element.type == 'text')) {
       return _renderProjectPageInSetBytesWithFlutter(
         exportWidth: exportWidth,
         pageIndexes: <int>[pageIndex],
@@ -4905,7 +4825,7 @@ class _BlankPageState extends State<BlankPage> {
           (page.extras['backgroundColorValue'] as num?)?.toInt() ??
           Colors.white.value,
       'images': <String, Uint8List>{
-        for (final element in page.elements)
+        for (final element in visible)
           if (element.type == 'image')
             ...() {
               final src =
@@ -4922,11 +4842,12 @@ class _BlankPageState extends State<BlankPage> {
               return <String, Uint8List>{src: bytes};
             }(),
       },
-      'elements': page.elements
+      // The isolate renders one page, so x goes back to page-local here.
+      'elements': visible
           .map(
             (element) => <String, dynamic>{
               'type': element.type,
-              'x': element.x,
+              'x': element.x - pageIndex,
               'y': element.y,
               'width': element.width,
               'height': element.height,
@@ -4951,9 +4872,10 @@ class _BlankPageState extends State<BlankPage> {
 
   bool _pageIndexesContainText(List<int> pageIndexes) {
     for (final pageIndex in pageIndexes) {
-      if (_project.pages[pageIndex].elements.any(
-        (element) => element.type == 'text',
-      )) {
+      if (elementsVisibleOnPage(
+        _project,
+        pageIndex,
+      ).any((element) => element.type == 'text')) {
         return true;
       }
     }
@@ -4994,127 +4916,116 @@ class _BlankPageState extends State<BlankPage> {
     );
 
     try {
-      for (
-        var sourceListIndex = 0;
-        sourceListIndex < pageIndexes.length;
-        sourceListIndex++
-      ) {
-        final sourceOriginalIndex = pageIndexes[sourceListIndex];
-        final sourcePage = _project.pages[sourceOriginalIndex];
-        for (final element in sourcePage.elements) {
-          if (sourceListIndex != targetListIndex) {
-            if (!element.allowCrossPage) {
-              continue;
-            }
-            final elementHeight = _elementRenderedHeight(element, sourcePage);
-            final left =
-                (sourceOriginalIndex - targetOriginalIndex) + element.x;
-            final right = left + element.width;
-            final top = element.y;
-            final bottom = top + elementHeight;
-            if (right <= 0 || left >= 1 || bottom <= 0 || top >= 1) {
-              continue;
-            }
+      // One flat pass over the project in z-order. The old double loop walked
+      // pages then their elements, which is this list with a partition drawn
+      // through it — and that partition is exactly what stopped an element
+      // anchored to one page from ever drawing above one anchored to another.
+      for (final element in _project.elements) {
+        final anchorIndex = anchorPageIndex(element, _project.pages.length);
+        if (!isVisibleOnPage(
+          element: element,
+          anchorPage: _project.pages[anchorIndex],
+          anchorPageIndex: anchorIndex,
+          targetPageIndex: targetOriginalIndex,
+        )) {
+          continue;
+        }
+
+        final targetX = ((element.x - targetOriginalIndex) * exportWidth)
+            .roundToDouble();
+        final targetY = (element.y * exportHeight).roundToDouble();
+
+        if (element.type == 'image') {
+          final src =
+              element.data['originalSrc'] as String? ??
+              element.data['src'] as String? ??
+              '';
+          final bytes = _exportImageBytesCache[src];
+          if (bytes == null) {
+            continue;
           }
+          final sourceImage = await _decodeUiImageForExport(bytes);
+          if (sourceImage == null) {
+            continue;
+          }
+          decodedImages.add(sourceImage);
 
-          final targetX =
-              ((element.x + sourceOriginalIndex - targetOriginalIndex) *
-                      exportWidth)
-                  .roundToDouble();
-          final targetY = (element.y * exportHeight).roundToDouble();
-
-          if (element.type == 'image') {
-            final src =
-                element.data['originalSrc'] as String? ??
-                element.data['src'] as String? ??
-                '';
-            final bytes = _exportImageBytesCache[src];
-            if (bytes == null) {
-              continue;
-            }
-            final sourceImage = await _decodeUiImageForExport(bytes);
-            if (sourceImage == null) {
-              continue;
-            }
-            decodedImages.add(sourceImage);
-
-            final aspectRatio =
-                (element.data['aspectRatio'] as num?)?.toDouble() ??
-                (sourceImage.width / sourceImage.height);
-            final targetWidth = (element.width * exportWidth)
-                .round()
-                .clamp(1, 20000)
-                .toDouble();
-            final targetHeight = (targetWidth / aspectRatio)
-                .round()
-                .clamp(1, 20000)
-                .toDouble();
-            final cropRect = _sourceCropRectForFrame(
-              sourceWidth: sourceImage.width,
-              sourceHeight: sourceImage.height,
-              frameAspectRatio: aspectRatio,
-              cropOffsetX: _cropOffsetXFromData(element.data),
-              cropOffsetY: _cropOffsetYFromData(element.data),
-              cropScale: _cropScaleFromData(element.data),
-            );
-            final borderRadiusRatio =
-                (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
-            final double radius =
-                borderRadiusRatio *
-                (targetWidth < targetHeight ? targetWidth : targetHeight);
-            if (radius > 0) {
-              canvas.save();
-              final rrect = RRect.fromRectAndRadius(
-                Rect.fromLTWH(targetX, targetY, targetWidth, targetHeight),
-                Radius.circular(radius),
-              );
-              canvas.clipRRect(rrect);
-            }
-            canvas.drawImageRect(
-              sourceImage,
-              Rect.fromLTWH(
-                cropRect.x.toDouble(),
-                cropRect.y.toDouble(),
-                cropRect.width.toDouble(),
-                cropRect.height.toDouble(),
-              ),
-              Rect.fromLTWH(targetX, targetY, targetWidth, targetHeight),
-              Paint()..filterQuality = FilterQuality.high,
-            );
-            if (radius > 0) {
-              canvas.restore();
-            }
-          } else if (element.type == 'text') {
-            final text = _textContentFromData(element.data);
-            final fontSize =
-                _textFontSizeRatioFromData(element.data) * exportWidth;
-            final maxWidth = (element.width * exportWidth)
-                .round()
-                .clamp(1, 20000)
-                .toDouble();
-            final textPainter = TextPainter(
-              text: TextSpan(
-                text: text,
-                style: TextStyle(
-                  color: _textColorFromData(element.data),
-                  fontSize: fontSize,
-                  height: 1.12,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              textDirection: TextDirection.ltr,
-              maxLines: _textLineCount(text),
-            )..layout(maxWidth: maxWidth);
-            final clipHeight = textPainter.height
-                .clamp(1.0, exportHeight)
-                .toDouble();
+          final aspectRatio =
+              (element.data['aspectRatio'] as num?)?.toDouble() ??
+              (sourceImage.width / sourceImage.height);
+          final targetWidth = (element.width * exportWidth)
+              .round()
+              .clamp(1, 20000)
+              .toDouble();
+          final targetHeight = (targetWidth / aspectRatio)
+              .round()
+              .clamp(1, 20000)
+              .toDouble();
+          final cropRect = _sourceCropRectForFrame(
+            sourceWidth: sourceImage.width,
+            sourceHeight: sourceImage.height,
+            frameAspectRatio: aspectRatio,
+            cropOffsetX: _cropOffsetXFromData(element.data),
+            cropOffsetY: _cropOffsetYFromData(element.data),
+            cropScale: _cropScaleFromData(element.data),
+          );
+          final borderRadiusRatio =
+              (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0;
+          final double radius =
+              borderRadiusRatio *
+              (targetWidth < targetHeight ? targetWidth : targetHeight);
+          if (radius > 0) {
             canvas.save();
-            canvas.clipRect(
-              Rect.fromLTWH(targetX, targetY, maxWidth, clipHeight),
+            final rrect = RRect.fromRectAndRadius(
+              Rect.fromLTWH(targetX, targetY, targetWidth, targetHeight),
+              Radius.circular(radius),
             );
-            textPainter.paint(canvas, Offset(targetX, targetY));
+            canvas.clipRRect(rrect);
+          }
+          canvas.drawImageRect(
+            sourceImage,
+            Rect.fromLTWH(
+              cropRect.x.toDouble(),
+              cropRect.y.toDouble(),
+              cropRect.width.toDouble(),
+              cropRect.height.toDouble(),
+            ),
+            Rect.fromLTWH(targetX, targetY, targetWidth, targetHeight),
+            Paint()..filterQuality = FilterQuality.high,
+          );
+          if (radius > 0) {
             canvas.restore();
           }
+        } else if (element.type == 'text') {
+          final text = _textContentFromData(element.data);
+          final fontSize =
+              _textFontSizeRatioFromData(element.data) * exportWidth;
+          final maxWidth = (element.width * exportWidth)
+              .round()
+              .clamp(1, 20000)
+              .toDouble();
+          final textPainter = TextPainter(
+            text: TextSpan(
+              text: text,
+              style: TextStyle(
+                color: _textColorFromData(element.data),
+                fontSize: fontSize,
+                height: 1.12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            textDirection: TextDirection.ltr,
+            maxLines: _textLineCount(text),
+          )..layout(maxWidth: maxWidth);
+          final clipHeight = textPainter.height
+              .clamp(1.0, exportHeight)
+              .toDouble();
+          canvas.save();
+          canvas.clipRect(
+            Rect.fromLTWH(targetX, targetY, maxWidth, clipHeight),
+          );
+          textPainter.paint(canvas, Offset(targetX, targetY));
+          canvas.restore();
         }
       }
 
@@ -5162,48 +5073,41 @@ class _BlankPageState extends State<BlankPage> {
 
     final targetOriginalIndex = pageIndexes[targetListIndex];
     final usedImagePaths = <String>{};
+    for (final element in _project.elements) {
+      if (element.type != 'image') {
+        continue;
+      }
 
-    for (
-      var sourceListIndex = 0;
-      sourceListIndex < pageIndexes.length;
-      sourceListIndex++
-    ) {
-      final sourceOriginalIndex = pageIndexes[sourceListIndex];
-      final sourcePage = _project.pages[sourceOriginalIndex];
-      for (final element in sourcePage.elements) {
-        if (element.type != 'image') {
-          continue;
-        }
+      final anchorIndex = anchorPageIndex(element, _project.pages.length);
+      if (!isVisibleOnPage(
+        element: element,
+        anchorPage: _project.pages[anchorIndex],
+        anchorPageIndex: anchorIndex,
+        targetPageIndex: targetOriginalIndex,
+      )) {
+        continue;
+      }
 
-        if (sourceListIndex != targetListIndex) {
-          if (!element.allowCrossPage) {
-            continue;
-          }
-
-          final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
-          final elementHeight = aspectRatio != null && aspectRatio > 0
-              ? element.width / aspectRatio
-              : element.height;
-          final left = (sourceOriginalIndex - targetOriginalIndex) + element.x;
-          final right = left + element.width;
-          final top = element.y;
-          final bottom = top + elementHeight;
-          if (right <= 0 || left >= 1 || bottom <= 0 || top >= 1) {
-            continue;
-          }
-        }
-
-        final src =
-            element.data['originalSrc'] as String? ??
-            element.data['src'] as String? ??
-            '';
-        if (src.isNotEmpty && _exportImageBytesCache.containsKey(src)) {
-          usedImagePaths.add(src);
-        }
+      final src =
+          element.data['originalSrc'] as String? ??
+          element.data['src'] as String? ??
+          '';
+      if (src.isNotEmpty && _exportImageBytesCache.containsKey(src)) {
+        usedImagePaths.add(src);
       }
     }
 
-    final pagePayloads = pageIndexes
+    // Ship every page, in original order, not just the selected ones. Two
+    // reasons: a neighbour that was not ticked still owns content that bleeds
+    // onto this page, and the native Android renderer derives its cross-page
+    // offset from the position in this list. When the list was the selection,
+    // that position stopped matching the real page number as soon as the user
+    // ticked a subset or turned on reverse order, and cross-page content
+    // landed on the wrong side or vanished.
+    final allPageIndexes = <int>[
+      for (var i = 0; i < _project.pages.length; i++) i,
+    ];
+    final pagePayloads = allPageIndexes
         .map(
           (pageIndex) => <String, dynamic>{
             'aspectWidth': _project.pages[pageIndex].aspectWidth,
@@ -5219,66 +5123,66 @@ class _BlankPageState extends State<BlankPage> {
                     .extras[_pageBackgroundColorPresetKey] ==
                 _pageBackgroundColorPresetHdrWhite,
             'originalIndex': pageIndex,
-            'elements': _project.pages[pageIndex].elements
-                .map(
-                  (element) => <String, dynamic>{
-                    'type': element.type,
-                    'x': element.x,
-                    'y': element.y,
-                    'width': element.width,
-                    'height': element.height,
-                    'allowCrossPage': element.allowCrossPage,
-                    'src':
-                        element.data['originalSrc'] as String? ??
-                        element.data['src'] as String? ??
-                        '',
-                    'aspectRatio': (element.data['aspectRatio'] as num?)
-                        ?.toDouble(),
-                    'cropOffsetX': _cropOffsetXFromData(element.data),
-                    'cropOffsetY': _cropOffsetYFromData(element.data),
-                    'cropScale': _cropScaleFromData(element.data),
-                    'borderRadiusRatio':
-                        (element.data['borderRadiusRatio'] as num?)
-                            ?.toDouble() ??
-                        0.0,
-                    'hdrBrightness': _hdrBrightnessFromData(element.data),
-                    if (_photoAdjustmentsFromData(element.data).hasMatrix)
-                      'colorMatrix': PhotoAdjustments.roundMatrix(
-                        _photoAdjustmentsFromData(element.data).toColorMatrix(),
-                      ),
-                    if (_photoAdjustmentsFromData(
-                      element.data,
-                    ).hasToneCurve) ...<String, dynamic>{
-                      'highlights': _photoAdjustmentsFromData(
-                        element.data,
-                      ).highlights,
-                      'shadows': _photoAdjustmentsFromData(
-                        element.data,
-                      ).shadows,
-                    },
-                    if (element.type == 'text') ...<String, dynamic>{
-                      'text': _textContentFromData(element.data),
-                      'colorValue': _textColorFromData(element.data).toARGB32(),
-                      'fontSizeRatio': _textFontSizeRatioFromData(element.data),
-                      'maxLines': _textLineCount(
-                        _textContentFromData(element.data),
-                      ),
-                    },
-                  },
-                )
-                .toList(),
+          },
+        )
+        .toList();
+
+    // Elements ride alongside the pages now rather than inside them: one flat
+    // list in z-order, spanning the whole project. Each carries the page it is
+    // anchored to, which is all the renderer needs to size its frame, and `x`
+    // is document space, so placing it on the target page is a subtraction.
+    final elementPayloads = _project.elements
+        .map(
+          (element) => <String, dynamic>{
+            'type': element.type,
+            'x': element.x,
+            'y': element.y,
+            'width': element.width,
+            'height': element.height,
+            'allowCrossPage': element.allowCrossPage,
+            'anchorPageIndex': anchorPageIndex(element, _project.pages.length),
+            'src':
+                element.data['originalSrc'] as String? ??
+                element.data['src'] as String? ??
+                '',
+            'aspectRatio': (element.data['aspectRatio'] as num?)?.toDouble(),
+            'cropOffsetX': _cropOffsetXFromData(element.data),
+            'cropOffsetY': _cropOffsetYFromData(element.data),
+            'cropScale': _cropScaleFromData(element.data),
+            'borderRadiusRatio':
+                (element.data['borderRadiusRatio'] as num?)?.toDouble() ?? 0.0,
+            'hdrBrightness': _hdrBrightnessFromData(element.data),
+            if (_photoAdjustmentsFromData(element.data).hasMatrix)
+              'colorMatrix': PhotoAdjustments.roundMatrix(
+                _photoAdjustmentsFromData(element.data).toColorMatrix(),
+              ),
+            if (_photoAdjustmentsFromData(
+              element.data,
+            ).hasToneCurve) ...<String, dynamic>{
+              'highlights': _photoAdjustmentsFromData(element.data).highlights,
+              'shadows': _photoAdjustmentsFromData(element.data).shadows,
+            },
+            if (element.type == 'text') ...<String, dynamic>{
+              'text': _textContentFromData(element.data),
+              'colorValue': _textColorFromData(element.data).toARGB32(),
+              'fontSizeRatio': _textFontSizeRatioFromData(element.data),
+              'maxLines': _textLineCount(_textContentFromData(element.data)),
+            },
           },
         )
         .toList();
 
     final payload = <String, dynamic>{
       'exportWidth': exportWidth,
-      'targetPageIndex': targetListIndex,
+      // Indexes into 'pages' above, which is now every page in original order,
+      // so this is the target's real page number.
+      'targetPageIndex': targetOriginalIndex,
       'hdrMode': hdrMode.payloadValue,
       'images': <String, Uint8List>{
         for (final path in usedImagePaths) path: _exportImageBytesCache[path]!,
       },
       'pages': pagePayloads,
+      'elements': elementPayloads,
     };
 
     if (defaultTargetPlatform == TargetPlatform.android) {
@@ -5490,7 +5394,10 @@ class _BlankPageState extends State<BlankPage> {
     // Only surface the Ultra HDR export option when the project actually has
     // HDR content; an all-SDR project gains nothing from a gain map.
     final projectHasHdr = _project.pages.any(
-      (page) => page.elements.any(_elementHasHdrContent),
+      (page) => elementsVisibleOnPage(
+        _project,
+        _project.pages.indexOf(page),
+      ).any(_elementHasHdrContent),
     );
     var reverseOrder = true;
     var qualityMode = ExportQualityMode.igStandard1080;
@@ -5619,6 +5526,7 @@ class _BlankPageState extends State<BlankPage> {
                               const SizedBox(height: 10),
                               _ExportPageSelectionStrip(
                                 pages: _project.pages,
+                                elements: _project.elements,
                                 selectedIndexes: selectedExportPageIndexes,
                                 onToggle: (pageIndex) {
                                   setDialogState(() {
@@ -5912,27 +5820,39 @@ class _BlankPageState extends State<BlankPage> {
     final currentPage = pages[_currentPageIndex];
     final strings = AppStrings.of(context);
     final screenWidth = MediaQuery.of(context).size.width;
-    final shouldCompactCanvas =
-        currentPage.aspectHeight > currentPage.aspectWidth &&
-        _hasTwoOptionRows(_selectedBottomTab);
-    final shouldUseSinglePagePeek = _shouldUseSinglePagePeek();
-    final singlePageGap = shouldUseSinglePagePeek ? _singlePagePeekGap : 0.0;
-    final singleCanvasWidth =
-        (screenWidth *
-            (shouldUseSinglePagePeek ? _singlePagePeekViewportFraction : 1.0)) -
-        (singlePageGap * 2);
-    final previewCanvasWidth = screenWidth * 0.78;
-    const fixedCanvasHeightRatio = 4 / 3;
-    final singleCanvasHeight = singleCanvasWidth * fixedCanvasHeightRatio;
-    final previewCanvasHeight = previewCanvasWidth * fixedCanvasHeightRatio;
-    final canvasHeight = _displayMode == PageDisplayMode.single
-        ? singleCanvasHeight
-        : previewCanvasHeight;
-    final canvasScale = shouldUseSinglePagePeek
-        ? 1.0
-        : shouldCompactCanvas
-        ? 0.7
-        : 1.0;
+    final singleCanvasWidth = screenWidth;
+    final previewCanvasWidth = _previewPageWidth(context);
+
+    // How tall the canvas actually needs to be: the tallest page it can show,
+    // at the width the current mode draws pages, plus room for the selection
+    // handles that sit just outside the page edge.
+    //
+    // This used to be a fixed 4:3 box, which is taller than any 4:5 page needs.
+    // The fit-to-height scale below measured against that box rather than
+    // against the page, so the canvas shrank while there was still room for the
+    // page itself — most visibly the moment the bottom panel grew to make space
+    // for the image controls.
+    double tallestPageHeight(double pageWidth) {
+      var tallest = 0.0;
+      for (final page in pages) {
+        final height = pageWidth * (page.aspectHeight / page.aspectWidth);
+        if (height > tallest) {
+          tallest = height;
+        }
+      }
+      return tallest;
+    }
+
+    final canvasHeight =
+        (_displayMode == PageDisplayMode.single
+            ? tallestPageHeight(singleCanvasWidth)
+            : tallestPageHeight(previewCanvasWidth)) +
+        (_canvasControlChromePadding * 2);
+    // The canvas is only ever shrunk to fit the height the bottom panel leaves
+    // it (maxFittingScale below). Selecting a photo used to shrink it a further
+    // 0.7 on top of that, which is what made the page jump smaller the moment
+    // an image tab opened.
+    const canvasScale = 1.0;
     const bottomTabRowHeight = 30.0;
     const bottomTabPanelGap = 10.0;
     final bottomSafePadding = MediaQuery.of(context).padding.bottom;
@@ -6127,9 +6047,19 @@ class _BlankPageState extends State<BlankPage> {
                           (constraints.maxHeight - (canvasVerticalGap * 2))
                               .clamp(0.0, double.infinity)
                               .toDouble();
-                      final maxFittingScale = canvasHeight <= 0
+                      // The scrollable takes the whole height it is offered,
+                      // never just the page's own. A page is shorter than the
+                      // area around it, and the leftover strip above and below
+                      // used to be dead: a swipe starting there hit nothing, so
+                      // the page would not turn. The page is still centred
+                      // inside, so nothing moves visually.
+                      final canvasViewportHeight =
+                          canvasHeight > availableCanvasHeight
+                          ? canvasHeight
+                          : availableCanvasHeight;
+                      final maxFittingScale = canvasViewportHeight <= 0
                           ? canvasScale
-                          : (availableCanvasHeight / canvasHeight)
+                          : (availableCanvasHeight / canvasViewportHeight)
                                 .clamp(0.05, 1.0)
                                 .toDouble();
                       final fittedCanvasScale = canvasScale > maxFittingScale
@@ -6141,87 +6071,266 @@ class _BlankPageState extends State<BlankPage> {
                           vertical: canvasVerticalGap,
                         ),
                         child: Center(
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 240),
-                            curve: Curves.easeInOut,
-                            height: canvasHeight * fittedCanvasScale,
-                            alignment: Alignment.center,
+                          child: SizedBox(
+                            height: canvasViewportHeight * fittedCanvasScale,
                             child: OverflowBox(
                               minHeight: 0,
-                              maxHeight: canvasHeight,
+                              maxHeight: canvasViewportHeight,
                               alignment: Alignment.center,
-                              child: AnimatedScale(
-                                duration: const Duration(milliseconds: 240),
-                                curve: Curves.easeInOut,
+                              // Plain Transform, not AnimatedScale. The height
+                              // this scale is derived from comes from the
+                              // bottom panel, which animates its own size, so
+                              // the target moved every frame and a 240ms
+                              // AnimatedScale spent the whole panel animation
+                              // chasing it — two animations on one quantity,
+                              // which read as the canvas wobbling. Following
+                              // the layout directly makes the canvas track the
+                              // panel exactly, and it still looks animated
+                              // because the panel's animation drives it.
+                              child: Transform.scale(
                                 scale: fittedCanvasScale,
                                 alignment: Alignment.center,
                                 child: SizedBox(
-                                  height: canvasHeight,
-                                  child: _displayMode == PageDisplayMode.single
-                                      ? NotificationListener<
-                                          ScrollNotification
-                                        >(
-                                          onNotification: (notification) {
-                                            if (notification
-                                                    is ScrollStartNotification ||
-                                                notification
-                                                    is ScrollUpdateNotification) {
-                                              _setSinglePageDividerVisible(
-                                                true,
-                                              );
-                                            } else if (notification
-                                                    is ScrollEndNotification ||
-                                                (notification
-                                                        is UserScrollNotification &&
-                                                    notification.direction ==
-                                                        ScrollDirection.idle)) {
-                                              _setSinglePageDividerVisible(
-                                                false,
-                                              );
-                                            }
-                                            return false;
-                                          },
-                                          child: PageView.builder(
-                                            controller: _pageController,
-                                            padEnds: shouldUseSinglePagePeek,
-                                            physics: _selectedElementId == null
-                                                ? const PageScrollPhysics()
-                                                : const NeverScrollableScrollPhysics(),
-                                            itemCount: pages.length,
-                                            onPageChanged: (index) {
-                                              setState(() {
-                                                _currentPageIndex = index;
-                                                _selectedElementId = null;
-                                                _croppingElementId = null;
-                                                _deleteArmedElementId = null;
-                                                _refreshPageControllerViewportIfNeeded();
-                                              });
-                                              WidgetsBinding.instance
-                                                  .addPostFrameCallback(
-                                                    (_) => _syncBottomTab(),
+                                  height: canvasViewportHeight,
+                                  // Switching modes swaps one scrollable for a
+                                  // completely different one; without this it
+                                  // was a hard cut. Both trees are alive during
+                                  // the fade, which is only safe now that
+                                  // neither carries a GlobalKey -- a key in two
+                                  // places at once would throw.
+                                  child: AnimatedSwitcher(
+                                    duration: _displayModeSwitchDuration,
+                                    switchInCurve: Curves.easeOut,
+                                    switchOutCurve: Curves.easeIn,
+                                    child: KeyedSubtree(
+                                      key: ValueKey<PageDisplayMode>(
+                                        _displayMode,
+                                      ),
+                                      child:
+                                          _displayMode == PageDisplayMode.single
+                                          ? NotificationListener<
+                                              ScrollNotification
+                                            >(
+                                              onNotification: (notification) {
+                                                if (notification
+                                                        is ScrollStartNotification ||
+                                                    notification
+                                                        is ScrollUpdateNotification) {
+                                                  _setSinglePageDividerVisible(
+                                                    true,
                                                   );
-                                            },
-                                            itemBuilder: (context, index) {
-                                              final page = pages[index];
-                                              return Padding(
-                                                padding: EdgeInsets.symmetric(
-                                                  horizontal: singlePageGap,
-                                                ),
-                                                child: _CanvasViewport(
+                                                } else if (notification
+                                                        is ScrollEndNotification ||
+                                                    (notification
+                                                            is UserScrollNotification &&
+                                                        notification
+                                                                .direction ==
+                                                            ScrollDirection
+                                                                .idle)) {
+                                                  _setSinglePageDividerVisible(
+                                                    false,
+                                                  );
+                                                }
+                                                return false;
+                                              },
+                                              child: PageView.builder(
+                                                controller: _pageController,
+                                                // Always scrollable. Locking it
+                                                // while something was selected meant
+                                                // the only way off a page was to
+                                                // deselect first; now the swipe
+                                                // itself does that.
+                                                physics:
+                                                    const PageScrollPhysics(),
+                                                itemCount: pages.length,
+                                                onPageChanged: (index) {
+                                                  setState(() {
+                                                    _currentPageIndex = index;
+                                                    // Selection survives a
+                                                    // swipe; only the armed
+                                                    // delete does not, because
+                                                    // carrying a pending
+                                                    // confirm onto another
+                                                    // page means the next tap
+                                                    // deletes something that
+                                                    // is no longer on screen.
+                                                    _deleteArmedElementId =
+                                                        null;
+                                                  });
+                                                  WidgetsBinding.instance
+                                                      .addPostFrameCallback(
+                                                        (_) => _syncBottomTab(),
+                                                      );
+                                                },
+                                                itemBuilder: (context, index) {
+                                                  final page = pages[index];
+                                                  return _CanvasViewport(
+                                                    elements:
+                                                        elementsVisibleOnPage(
+                                                          _project,
+                                                          index,
+                                                        ),
+                                                    pageIndex: index,
+                                                    pageCount: pages.length,
+                                                    isCurrentPage:
+                                                        index ==
+                                                        _currentPageIndex,
+                                                    page: page,
+                                                    viewportWidth:
+                                                        singleCanvasWidth,
+                                                    viewportHeight:
+                                                        canvasViewportHeight,
+                                                    showBorder: _showPageBorder,
+                                                    showPageDivider:
+                                                        _showSinglePageDivider,
+                                                    hdrViewEnabled:
+                                                        _hdrViewEnabled,
+                                                    selectedElementId:
+                                                        _selectedElementId,
+                                                    croppingElementId:
+                                                        _croppingElementId,
+                                                    deleteArmedElementId:
+                                                        _deleteArmedElementId,
+                                                    snapGuides:
+                                                        _activeSnapGuides,
+                                                    onTapCanvas:
+                                                        _clearSelectedElement,
+                                                    onTapElement:
+                                                        _selectElement,
+                                                    onDoubleTapElement:
+                                                        (elementId) {
+                                                          _handleElementDoubleTap(
+                                                            elementId:
+                                                                elementId,
+                                                          );
+                                                        },
+                                                    onMoveElement:
+                                                        (
+                                                          elementId,
+                                                          x,
+                                                          y,
+                                                          persist,
+                                                        ) {
+                                                          _updateElementPosition(
+                                                            elementId:
+                                                                elementId,
+                                                            x: x,
+                                                            y: y,
+                                                            persist: persist,
+                                                          );
+                                                        },
+                                                    onResizeElement:
+                                                        (
+                                                          elementId,
+                                                          width,
+                                                          persist,
+                                                        ) {
+                                                          _updateElementSize(
+                                                            elementId:
+                                                                elementId,
+                                                            width: width,
+                                                            persist: persist,
+                                                          );
+                                                        },
+                                                    onCropMove:
+                                                        (
+                                                          elementId,
+                                                          x,
+                                                          y,
+                                                          persist,
+                                                        ) {
+                                                          _updateImageCropOffset(
+                                                            elementId:
+                                                                elementId,
+                                                            x: x,
+                                                            y: y,
+                                                            persist: persist,
+                                                          );
+                                                        },
+                                                    onCropScale:
+                                                        (
+                                                          elementId,
+                                                          scale,
+                                                          persist,
+                                                        ) {
+                                                          _updateImageCropScale(
+                                                            elementId:
+                                                                elementId,
+                                                            scale: scale,
+                                                            persist: persist,
+                                                          );
+                                                        },
+                                                    onCropBoundsChanged:
+                                                        (
+                                                          elementId,
+                                                          x,
+                                                          y,
+                                                          w,
+                                                          h,
+                                                          cx,
+                                                          cy,
+                                                          cs,
+                                                          persist,
+                                                        ) {
+                                                          _updateImageCropBounds(
+                                                            elementId:
+                                                                elementId,
+                                                            x: x,
+                                                            y: y,
+                                                            width: w,
+                                                            height: h,
+                                                            cropOffsetX: cx,
+                                                            cropOffsetY: cy,
+                                                            cropScale: cs,
+                                                            persist: persist,
+                                                          );
+                                                        },
+                                                    onDeleteElement:
+                                                        (elementId) {
+                                                          _requestDeleteElement(
+                                                            elementId:
+                                                                elementId,
+                                                          );
+                                                        },
+                                                    onConfirmDeleteElement:
+                                                        (elementId) {
+                                                          unawaited(
+                                                            _confirmDeleteElement(
+                                                              elementId:
+                                                                  elementId,
+                                                            ),
+                                                          );
+                                                        },
+                                                    onCancelDeleteElement:
+                                                        _cancelDeleteElement,
+                                                  );
+                                                },
+                                              ),
+                                            )
+                                          : NotificationListener<
+                                              ScrollNotification
+                                            >(
+                                              onNotification: (notification) {
+                                                _syncPreviewPageIndex();
+                                                return false;
+                                              },
+                                              child: SingleChildScrollView(
+                                                controller:
+                                                    _previewScrollController,
+                                                scrollDirection:
+                                                    Axis.horizontal,
+                                                physics:
+                                                    const BouncingScrollPhysics(),
+                                                child: _PreviewCanvasStrip(
                                                   pages: pages,
-                                                  pageIndex: index,
-                                                  page: page,
+                                                  elements: _project.elements,
+                                                  currentPageIndex:
+                                                      _currentPageIndex,
                                                   viewportWidth:
-                                                      singleCanvasWidth,
+                                                      previewCanvasWidth,
                                                   viewportHeight:
-                                                      singleCanvasHeight,
-                                                  repaintKey:
-                                                      index == _currentPageIndex
-                                                      ? _exportRepaintKey
-                                                      : null,
+                                                      canvasViewportHeight,
                                                   showBorder: _showPageBorder,
-                                                  showPageDivider:
-                                                      _showSinglePageDivider,
                                                   hdrViewEnabled:
                                                       _hdrViewEnabled,
                                                   selectedElementId:
@@ -6237,7 +6346,6 @@ class _BlankPageState extends State<BlankPage> {
                                                   onDoubleTapElement:
                                                       (elementId) {
                                                         _handleElementDoubleTap(
-                                                          pageId: page.id,
                                                           elementId: elementId,
                                                         );
                                                       },
@@ -6249,7 +6357,6 @@ class _BlankPageState extends State<BlankPage> {
                                                         persist,
                                                       ) {
                                                         _updateElementPosition(
-                                                          pageId: page.id,
                                                           elementId: elementId,
                                                           x: x,
                                                           y: y,
@@ -6263,7 +6370,6 @@ class _BlankPageState extends State<BlankPage> {
                                                         persist,
                                                       ) {
                                                         _updateElementSize(
-                                                          pageId: page.id,
                                                           elementId: elementId,
                                                           width: width,
                                                           persist: persist,
@@ -6328,7 +6434,6 @@ class _BlankPageState extends State<BlankPage> {
                                                       (elementId) {
                                                         unawaited(
                                                           _confirmDeleteElement(
-                                                            pageId: page.id,
                                                             elementId:
                                                                 elementId,
                                                           ),
@@ -6337,128 +6442,10 @@ class _BlankPageState extends State<BlankPage> {
                                                   onCancelDeleteElement:
                                                       _cancelDeleteElement,
                                                 ),
-                                              );
-                                            },
-                                          ),
-                                        )
-                                      : NotificationListener<
-                                          ScrollNotification
-                                        >(
-                                          onNotification: (notification) {
-                                            _syncPreviewPageIndex();
-                                            return false;
-                                          },
-                                          child: SingleChildScrollView(
-                                            controller:
-                                                _previewScrollController,
-                                            scrollDirection: Axis.horizontal,
-                                            physics: _selectedElementId == null
-                                                ? const BouncingScrollPhysics()
-                                                : const NeverScrollableScrollPhysics(),
-                                            child: _PreviewCanvasStrip(
-                                              pages: pages,
-                                              currentPageIndex:
-                                                  _currentPageIndex,
-                                              viewportWidth: previewCanvasWidth,
-                                              viewportHeight:
-                                                  previewCanvasHeight,
-                                              exportPageId: currentPage.id,
-                                              exportRepaintKey:
-                                                  _exportRepaintKey,
-                                              showBorder: _showPageBorder,
-                                              hdrViewEnabled: _hdrViewEnabled,
-                                              selectedElementId:
-                                                  _selectedElementId,
-                                              croppingElementId:
-                                                  _croppingElementId,
-                                              deleteArmedElementId:
-                                                  _deleteArmedElementId,
-                                              snapGuides: _activeSnapGuides,
-                                              onTapCanvas:
-                                                  _clearSelectedElement,
-                                              onTapElement: _selectElement,
-                                              onDoubleTapElement: (elementId) {
-                                                final pageId = pages
-                                                    .firstWhere(
-                                                      (item) =>
-                                                          item.elements.any(
-                                                            (element) =>
-                                                                element.id ==
-                                                                elementId,
-                                                          ),
-                                                    )
-                                                    .id;
-                                                _handleElementDoubleTap(
-                                                  pageId: pageId,
-                                                  elementId: elementId,
-                                                );
-                                              },
-                                              onMoveElement:
-                                                  (
-                                                    pageId,
-                                                    elementId,
-                                                    x,
-                                                    y,
-                                                    persist,
-                                                  ) {
-                                                    _updateElementPosition(
-                                                      pageId: pageId,
-                                                      elementId: elementId,
-                                                      x: x,
-                                                      y: y,
-                                                      persist: persist,
-                                                    );
-                                                  },
-                                              onResizeElement:
-                                                  (
-                                                    pageId,
-                                                    elementId,
-                                                    width,
-                                                    persist,
-                                                  ) {
-                                                    _updateElementSize(
-                                                      pageId: pageId,
-                                                      elementId: elementId,
-                                                      width: width,
-                                                      persist: persist,
-                                                    );
-                                                  },
-                                              onCropMove:
-                                                  (elementId, x, y, persist) {
-                                                    _updateImageCropOffset(
-                                                      elementId: elementId,
-                                                      x: x,
-                                                      y: y,
-                                                      persist: persist,
-                                                    );
-                                                  },
-                                              onCropScale:
-                                                  (elementId, scale, persist) {
-                                                    _updateImageCropScale(
-                                                      elementId: elementId,
-                                                      scale: scale,
-                                                      persist: persist,
-                                                    );
-                                                  },
-                                              onDeleteElement: (_, elementId) {
-                                                _requestDeleteElement(
-                                                  elementId: elementId,
-                                                );
-                                              },
-                                              onConfirmDeleteElement:
-                                                  (pageId, elementId) {
-                                                    unawaited(
-                                                      _confirmDeleteElement(
-                                                        pageId: pageId,
-                                                        elementId: elementId,
-                                                      ),
-                                                    );
-                                                  },
-                                              onCancelDeleteElement:
-                                                  _cancelDeleteElement,
+                                              ),
                                             ),
-                                          ),
-                                        ),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
@@ -6476,6 +6463,7 @@ class _BlankPageState extends State<BlankPage> {
                             Positioned.fill(
                               child: _PageSorterView(
                                 pages: pages,
+                                elements: _project.elements,
                                 selectedPageId: _selectedSorterPageId,
                                 onTapPage: _toggleSorterPageSelection,
                                 onReorder: _reorderPages,
@@ -6530,6 +6518,7 @@ class _BlankPageState extends State<BlankPage> {
                                   ? <Widget>[
                                       _PageTabPage(
                                         page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         onAspectSelected: (width, height) {
                                           _updateCurrentPageAspect(
                                             aspectWidth: width,
@@ -6551,6 +6540,11 @@ class _BlankPageState extends State<BlankPage> {
                                       ),
                                       _TemplateTabPage(
                                         page: currentPage,
+                                        pageIndex: _currentPageIndex,
+                                        elements: elementsAnchoredToPage(
+                                          _project,
+                                          _currentPageIndex,
+                                        ),
                                         onApplyTemplate: _applyTemplate,
                                         marginEnabled: AppSettingsController
                                             .instance
@@ -6799,7 +6793,7 @@ class _BlankPageState extends State<BlankPage> {
                                         ],
                                       ),
                                       _LayersTabPage(
-                                        page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         selectedElementId: _selectedElementId,
                                         onSelectElement: (elementId) {
                                           if (_selectedElementId != elementId) {
@@ -6817,6 +6811,7 @@ class _BlankPageState extends State<BlankPage> {
                                   ? <Widget>[
                                       _PageTabPage(
                                         page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         onAspectSelected: (width, height) {
                                           _updateCurrentPageAspect(
                                             aspectWidth: width,
@@ -6838,6 +6833,11 @@ class _BlankPageState extends State<BlankPage> {
                                       ),
                                       _TemplateTabPage(
                                         page: currentPage,
+                                        pageIndex: _currentPageIndex,
+                                        elements: elementsAnchoredToPage(
+                                          _project,
+                                          _currentPageIndex,
+                                        ),
                                         onApplyTemplate: _applyTemplate,
                                         marginEnabled: AppSettingsController
                                             .instance
@@ -6918,7 +6918,7 @@ class _BlankPageState extends State<BlankPage> {
                                         },
                                       ),
                                       _LayersTabPage(
-                                        page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         selectedElementId: _selectedElementId,
                                         onSelectElement: (elementId) {
                                           if (_selectedElementId != elementId) {
@@ -6935,6 +6935,7 @@ class _BlankPageState extends State<BlankPage> {
                                   : <Widget>[
                                       _PageTabPage(
                                         page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         onAspectSelected: (width, height) {
                                           _updateCurrentPageAspect(
                                             aspectWidth: width,
@@ -6956,6 +6957,11 @@ class _BlankPageState extends State<BlankPage> {
                                       ),
                                       _TemplateTabPage(
                                         page: currentPage,
+                                        pageIndex: _currentPageIndex,
+                                        elements: elementsAnchoredToPage(
+                                          _project,
+                                          _currentPageIndex,
+                                        ),
                                         onApplyTemplate: _applyTemplate,
                                         marginEnabled: AppSettingsController
                                             .instance
@@ -6986,7 +6992,7 @@ class _BlankPageState extends State<BlankPage> {
                                             _showImportedImagePreview,
                                       ),
                                       _LayersTabPage(
-                                        page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
                                         selectedElementId: _selectedElementId,
                                         onSelectElement: (elementId) {
                                           if (_selectedElementId != elementId) {
@@ -7060,12 +7066,13 @@ class _BlankPageState extends State<BlankPage> {
 
 class _CanvasViewport extends StatelessWidget {
   const _CanvasViewport({
-    required this.pages,
+    required this.elements,
     required this.pageIndex,
+    required this.pageCount,
+    required this.isCurrentPage,
     required this.page,
     required this.viewportWidth,
     required this.viewportHeight,
-    required this.repaintKey,
     required this.showBorder,
     required this.showPageDivider,
     required this.hdrViewEnabled,
@@ -7086,12 +7093,33 @@ class _CanvasViewport extends StatelessWidget {
     required this.onCancelDeleteElement,
   });
 
-  final List<ProjectPage> pages;
+  /// Everything that shows on this page, back to front: elements anchored here
+  /// and elements bleeding in from other pages, interleaved in project z-order.
+  /// They are all equally editable -- x is in document space, so a drag means
+  /// the same thing whichever page it started from.
+  final List<CanvasElement> elements;
+
   final int pageIndex;
+
+  /// Only so the divider knows not to draw past the last page.
+  final int pageCount;
+
+  /// Whether this is the page the user is on, as opposed to a neighbour the
+  /// PageView keeps built either side of it.
+  ///
+  /// Gates two things. Selection chrome, because a cross-page element appears
+  /// in every page's viewport and its chrome — unlike its content — is
+  /// deliberately not clipped to the page, so the neighbour drew a second
+  /// selection frame against an element starting off to its left, leaving just
+  /// the sliver hugging the page edge visible.
+  ///
+  /// And visibility: a neighbour is only ever on screen mid-swipe, so it stays
+  /// transparent until [showPageDivider] says a scroll is under way.
+  final bool isCurrentPage;
+
   final ProjectPage page;
   final double viewportWidth;
   final double viewportHeight;
-  final GlobalKey? repaintKey;
   final bool showBorder;
   final bool showPageDivider;
   // Kept as an interface for re-enabling the HDR/SDR preview switch later; the
@@ -7129,201 +7157,206 @@ class _CanvasViewport extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final pageWidth = (viewportWidth - (_canvasControlChromePadding * 2))
-        .clamp(1.0, viewportWidth)
-        .toDouble();
+    // Flush: the page fills its slot, so consecutive pages meet with no gap
+    // when you swipe between them.
+    //
+    // The page used to be inset by _canvasControlChromePadding on each side to
+    // leave room for selection handles, which put 18dp of dead space between
+    // any two pages. It also meant element x — laid out against pageWidth —
+    // ran on a different pitch from the PageView, which steps by the full
+    // viewport, so a cross-page photo's two halves drifted 18dp apart for
+    // every page seam they crossed. One width fixes both.
+    final pageWidth = viewportWidth;
     final pageHeight = pageWidth * (page.aspectHeight / page.aspectWidth);
     final canvasTop = (viewportHeight - pageHeight) / 2;
 
-    return Align(
-      alignment: Alignment.center,
-      child: SizedBox(
-        width: viewportWidth,
-        height: viewportHeight,
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Center(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: onTapCanvas,
-                child: RepaintBoundary(
-                  key: repaintKey,
-                  child: Container(
-                    width: pageWidth,
-                    height: pageHeight,
-                    decoration: BoxDecoration(
-                      color: _pageBackgroundColorFromExtras(page.extras),
-                      border: showBorder
-                          ? Border.all(color: const Color(0xFF8F8F8F), width: 1)
-                          : null,
-                    ),
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        return Stack(
-                          clipBehavior: Clip.none,
-                          children: [
-                            IgnorePointer(
-                              child: ClipRect(
-                                child: Stack(
-                                  clipBehavior: Clip.hardEdge,
-                                  children: [
-                                    for (
-                                      var sourceIndex = 0;
-                                      sourceIndex < pages.length;
-                                      sourceIndex++
-                                    )
-                                      for (final element
-                                          in pages[sourceIndex].elements)
-                                        if (element.type == 'image' &&
-                                            _shouldPaintCrossPageElement(
-                                              element: element,
-                                              sourcePageIndex: sourceIndex,
-                                              targetPageIndex: pageIndex,
-                                            ))
-                                          _PreviewImageElementWidget(
-                                            element: element,
-                                            isSelected: false,
-                                            isDeleteArmed: false,
-                                            isCropMode: false,
-                                            pageWidth: constraints.maxWidth,
-                                            pageHeight: constraints.maxHeight,
-                                            pageOffsetX:
-                                                (sourceIndex - pageIndex) *
-                                                constraints.maxWidth,
-                                            pageOffsetY: 0,
-                                            hdrViewEnabled: hdrViewEnabled,
-                                            onTap: () {},
-                                            onDoubleTap: () {},
-                                            onMove: (_, _, _) {},
-                                            onResize: (_, _) {},
-                                            onCropMove: (_, _, _) {},
-                                            onCropScale: (_, _) {},
-                                            onDelete: () {},
-                                            onConfirmDelete: () {},
-                                            onCancelDelete: () {},
-                                          ),
-                                  ],
-                                ),
+    return AnimatedOpacity(
+      // Neighbours only exist while you are moving between pages. At rest a
+      // page is the only thing on screen, so the ones on either side stay
+      // invisible and fade up as the swipe reveals them.
+      opacity: isCurrentPage || showPageDivider ? 1 : 0,
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOut,
+      child: Align(
+        alignment: Alignment.center,
+        child: SizedBox(
+          width: viewportWidth,
+          height: viewportHeight,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Center(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: onTapCanvas,
+                  child: RepaintBoundary(
+                    child: Container(
+                      width: pageWidth,
+                      height: pageHeight,
+                      decoration: BoxDecoration(
+                        color: _pageBackgroundColorFromExtras(page.extras),
+                      ),
+                      // Foreground, not decoration: a full-bleed photo covers the
+                      // page edge to edge, so a border painted behind it is
+                      // invisible exactly when it is most needed.
+                      foregroundDecoration: showBorder
+                          ? BoxDecoration(
+                              border: Border.all(
+                                color: const Color(0xFF8F8F8F),
+                                width: 1,
                               ),
-                            ),
-                            for (final element in page.elements) ...[
-                              if (element.type == 'image')
-                                _ImageElementWidget(
-                                  key: ValueKey('canvas_${element.id}'),
-                                  element: element,
-                                  isSelected: selectedElementId == element.id,
-                                  isDeleteArmed:
-                                      deleteArmedElementId == element.id,
-                                  isCropMode: croppingElementId == element.id,
-                                  canvasWidth: constraints.maxWidth,
-                                  canvasHeight: constraints.maxHeight,
-                                  hdrViewEnabled: hdrViewEnabled,
-                                  onTap: () => onTapElement(element.id),
-                                  onDoubleTap: () =>
-                                      onDoubleTapElement(element.id),
-                                  onMove: (x, y, persist) {
-                                    onMoveElement(element.id, x, y, persist);
-                                  },
-                                  onResize: (width, persist) {
-                                    onResizeElement(element.id, width, persist);
-                                  },
-                                  onCropMove: (x, y, persist) {
-                                    onCropMove(element.id, x, y, persist);
-                                  },
-                                  onCropScale: (scale, persist) {
-                                    onCropScale(element.id, scale, persist);
-                                  },
-                                  onCropBoundsChanged:
-                                      (x, y, w, h, cx, cy, cs, persist) {
-                                        onCropBoundsChanged(
-                                          element.id,
-                                          x,
-                                          y,
-                                          w,
-                                          h,
-                                          cx,
-                                          cy,
-                                          cs,
-                                          persist,
-                                        );
-                                      },
-                                  onDelete: () => onDeleteElement(element.id),
-                                  onConfirmDelete: () =>
-                                      onConfirmDeleteElement(element.id),
-                                  onCancelDelete: () =>
-                                      onCancelDeleteElement(element.id),
-                                ),
-                              if (element.type == 'text')
-                                _TextElementWidget(
-                                  key: ValueKey('canvas_text_${element.id}'),
-                                  element: element,
-                                  isSelected: selectedElementId == element.id,
-                                  isDeleteArmed:
-                                      deleteArmedElementId == element.id,
-                                  pageWidth: constraints.maxWidth,
-                                  pageHeight: constraints.maxHeight,
-                                  pageOffsetX: 0,
-                                  pageOffsetY: 0,
-                                  onTap: () => onTapElement(element.id),
-                                  onDoubleTap: () =>
-                                      onDoubleTapElement(element.id),
-                                  onMove: (x, y, persist) {
-                                    onMoveElement(element.id, x, y, persist);
-                                  },
-                                  onDelete: () => onDeleteElement(element.id),
-                                  onConfirmDelete: () =>
-                                      onConfirmDeleteElement(element.id),
-                                  onCancelDelete: () =>
-                                      onCancelDeleteElement(element.id),
-                                ),
+                            )
+                          : null,
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          return Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              for (final element in elements) ...[
+                                if (element.type == 'image')
+                                  _ImageElementWidget(
+                                    key: ValueKey('canvas_${element.id}'),
+                                    element: element,
+                                    isSelected:
+                                        isCurrentPage &&
+                                        selectedElementId == element.id,
+                                    isDeleteArmed:
+                                        isCurrentPage &&
+                                        deleteArmedElementId == element.id,
+                                    isCropMode:
+                                        isCurrentPage &&
+                                        croppingElementId == element.id,
+                                    pageWidth: constraints.maxWidth,
+                                    pageHeight: constraints.maxHeight,
+                                    pageOffsetX:
+                                        -pageIndex * constraints.maxWidth,
+                                    contentClipRect: Rect.fromLTWH(
+                                      0,
+                                      0,
+                                      constraints.maxWidth,
+                                      constraints.maxHeight,
+                                    ),
+                                    hdrViewEnabled: hdrViewEnabled,
+                                    onTap: () => onTapElement(element.id),
+                                    onDoubleTap: () =>
+                                        onDoubleTapElement(element.id),
+                                    onMove: (x, y, persist) {
+                                      onMoveElement(element.id, x, y, persist);
+                                    },
+                                    onResize: (width, persist) {
+                                      onResizeElement(
+                                        element.id,
+                                        width,
+                                        persist,
+                                      );
+                                    },
+                                    onCropMove: (x, y, persist) {
+                                      onCropMove(element.id, x, y, persist);
+                                    },
+                                    onCropScale: (scale, persist) {
+                                      onCropScale(element.id, scale, persist);
+                                    },
+                                    onCropBoundsChanged:
+                                        (x, y, w, h, cx, cy, cs, persist) {
+                                          onCropBoundsChanged(
+                                            element.id,
+                                            x,
+                                            y,
+                                            w,
+                                            h,
+                                            cx,
+                                            cy,
+                                            cs,
+                                            persist,
+                                          );
+                                        },
+                                    onDelete: () => onDeleteElement(element.id),
+                                    onConfirmDelete: () =>
+                                        onConfirmDeleteElement(element.id),
+                                    onCancelDelete: () =>
+                                        onCancelDeleteElement(element.id),
+                                  ),
+                                if (element.type == 'text')
+                                  _TextElementWidget(
+                                    key: ValueKey('canvas_text_${element.id}'),
+                                    element: element,
+                                    isSelected:
+                                        isCurrentPage &&
+                                        selectedElementId == element.id,
+                                    isDeleteArmed:
+                                        isCurrentPage &&
+                                        deleteArmedElementId == element.id,
+                                    pageWidth: constraints.maxWidth,
+                                    pageHeight: constraints.maxHeight,
+                                    pageOffsetX:
+                                        -pageIndex * constraints.maxWidth,
+                                    contentClipRect: Rect.fromLTWH(
+                                      0,
+                                      0,
+                                      constraints.maxWidth,
+                                      constraints.maxHeight,
+                                    ),
+                                    pageOffsetY: 0,
+                                    onTap: () => onTapElement(element.id),
+                                    onDoubleTap: () =>
+                                        onDoubleTapElement(element.id),
+                                    onMove: (x, y, persist) {
+                                      onMoveElement(element.id, x, y, persist);
+                                    },
+                                    onDelete: () => onDeleteElement(element.id),
+                                    onConfirmDelete: () =>
+                                        onConfirmDeleteElement(element.id),
+                                    onCancelDelete: () =>
+                                        onCancelDeleteElement(element.id),
+                                  ),
+                              ],
+                              _SnapGuideOverlay(
+                                guides: snapGuides,
+                                pageIndex: pageIndex,
+                                pageWidth: constraints.maxWidth,
+                                pageHeight: constraints.maxHeight,
+                                pageOffsetX: 0,
+                                pageOffsetY: 0,
+                              ),
                             ],
-                            _SnapGuideOverlay(
-                              guides: snapGuides,
-                              pageIndex: pageIndex,
-                              pageWidth: constraints.maxWidth,
-                              pageHeight: constraints.maxHeight,
-                              pageOffsetX: 0,
-                              pageOffsetY: 0,
-                            ),
-                          ],
-                        );
-                      },
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-            if (page.extras['aiCaption'] != null &&
-                (page.extras['aiCaption'] as String).isNotEmpty)
-              Positioned(
-                left: (viewportWidth - pageWidth) / 2 + 8,
-                bottom: viewportHeight - canvasTop + 8,
-                width: pageWidth - 16,
-                child: Text(
-                  page.extras['aiCaption'] as String,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF6B6F75),
-                    height: 1.35,
+              if (page.extras['aiCaption'] != null &&
+                  (page.extras['aiCaption'] as String).isNotEmpty)
+                Positioned(
+                  left: (viewportWidth - pageWidth) / 2 + 8,
+                  bottom: viewportHeight - canvasTop + 8,
+                  width: pageWidth - 16,
+                  child: Text(
+                    page.extras['aiCaption'] as String,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF6B6F75),
+                      height: 1.35,
+                    ),
                   ),
                 ),
-              ),
-            if (showPageDivider && pageIndex < pages.length - 1)
-              Positioned(
-                right: -1,
-                top: canvasTop,
-                child: IgnorePointer(
-                  child: Container(
-                    width: 2,
-                    height: pageHeight,
-                    color: const Color(0xFFBDBDBD),
+              if (showPageDivider && pageIndex < pageCount - 1)
+                Positioned(
+                  right: -1,
+                  top: canvasTop,
+                  child: IgnorePointer(
+                    child: Container(
+                      width: 2,
+                      height: pageHeight,
+                      color: const Color(0xFFBDBDBD),
+                    ),
                   ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -7333,11 +7366,10 @@ class _CanvasViewport extends StatelessWidget {
 class _PreviewCanvasStrip extends StatelessWidget {
   const _PreviewCanvasStrip({
     required this.pages,
+    required this.elements,
     required this.currentPageIndex,
     required this.viewportWidth,
     required this.viewportHeight,
-    required this.exportPageId,
-    required this.exportRepaintKey,
     required this.showBorder,
     required this.hdrViewEnabled,
     required this.selectedElementId,
@@ -7351,17 +7383,20 @@ class _PreviewCanvasStrip extends StatelessWidget {
     required this.onResizeElement,
     required this.onCropMove,
     required this.onCropScale,
+    required this.onCropBoundsChanged,
     required this.onDeleteElement,
     required this.onConfirmDeleteElement,
     required this.onCancelDeleteElement,
   });
 
   final List<ProjectPage> pages;
+
+  /// Every element in the project, back to front.
+  final List<CanvasElement> elements;
+
   final int currentPageIndex;
   final double viewportWidth;
   final double viewportHeight;
-  final String exportPageId;
-  final GlobalKey exportRepaintKey;
   final bool showBorder;
   final bool hdrViewEnabled;
   final String? selectedElementId;
@@ -7371,27 +7406,41 @@ class _PreviewCanvasStrip extends StatelessWidget {
   final VoidCallback onTapCanvas;
   final ValueChanged<String> onTapElement;
   final ValueChanged<String> onDoubleTapElement;
-  final void Function(
-    String pageId,
-    String elementId,
-    double x,
-    double y,
-    bool persist,
-  )
+  final void Function(String elementId, double x, double y, bool persist)
   onMoveElement;
-  final void Function(
-    String pageId,
-    String elementId,
-    double width,
-    bool persist,
-  )
+  final void Function(String elementId, double width, bool persist)
   onResizeElement;
   final void Function(String elementId, double x, double y, bool persist)
   onCropMove;
   final void Function(String elementId, double scale, bool persist) onCropScale;
-  final void Function(String pageId, String elementId) onDeleteElement;
-  final void Function(String pageId, String elementId) onConfirmDeleteElement;
+  final void Function(
+    String elementId,
+    double x,
+    double y,
+    double width,
+    double height,
+    double cropOffsetX,
+    double cropOffsetY,
+    double cropScale,
+    bool persist,
+  )
+  onCropBoundsChanged;
+  final ValueChanged<String> onDeleteElement;
+  final ValueChanged<String> onConfirmDeleteElement;
   final ValueChanged<String> onCancelDeleteElement;
+
+  int anchorPageIndexOf(CanvasElement element) =>
+      anchorPageIndex(element, pages.length);
+
+  double _pageHeightFor(CanvasElement element) {
+    final page = pages[anchorPageIndexOf(element)];
+    return viewportWidth * (page.aspectHeight / page.aspectWidth);
+  }
+
+  /// Pages are centred vertically in the strip, so an element sits at its
+  /// anchor page's top edge.
+  double _pageTopFor(CanvasElement element) =>
+      (viewportHeight - _pageHeightFor(element)) / 2;
 
   @override
   Widget build(BuildContext context) {
@@ -7417,7 +7466,6 @@ class _PreviewCanvasStrip extends StatelessWidget {
                   behavior: HitTestBehavior.translucent,
                   onTap: onTapCanvas,
                   child: RepaintBoundary(
-                    key: pages[i].id == exportPageId ? exportRepaintKey : null,
                     child: Container(
                       width: viewportWidth,
                       height:
@@ -7425,138 +7473,120 @@ class _PreviewCanvasStrip extends StatelessWidget {
                           (pages[i].aspectHeight / pages[i].aspectWidth),
                       decoration: BoxDecoration(
                         color: _pageBackgroundColorFromExtras(pages[i].extras),
-                        border: showBorder
-                            ? Border.all(
-                                color: const Color(0xFF8F8F8F),
-                                width: 1,
-                              )
-                            : null,
                       ),
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          return IgnorePointer(
-                            child: ClipRect(
-                              child: Stack(
-                                clipBehavior: Clip.hardEdge,
-                                children: [
-                                  for (
-                                    var sourceIndex = 0;
-                                    sourceIndex < pages.length;
-                                    sourceIndex++
-                                  )
-                                    for (final element
-                                        in pages[sourceIndex].elements)
-                                      if (element.type == 'image' &&
-                                          _shouldPaintCrossPageElement(
-                                            element: element,
-                                            sourcePageIndex: sourceIndex,
-                                            targetPageIndex: i,
-                                          ))
-                                        _PreviewImageElementWidget(
-                                          element: element,
-                                          isSelected: false,
-                                          isDeleteArmed: false,
-                                          isCropMode: false,
-                                          pageWidth: constraints.maxWidth,
-                                          pageHeight: constraints.maxHeight,
-                                          pageOffsetX:
-                                              (sourceIndex - i) *
-                                              constraints.maxWidth,
-                                          pageOffsetY: 0,
-                                          hdrViewEnabled: hdrViewEnabled,
-                                          onTap: () {},
-                                          onDoubleTap: () {},
-                                          onMove: (_, _, _) {},
-                                          onResize: (_, _) {},
-                                          onCropMove: (_, _, _) {},
-                                          onCropScale: (_, _) {},
-                                          onDelete: () {},
-                                          onConfirmDelete: () {},
-                                          onCancelDelete: () {},
-                                        ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
+                      // Background only. Every element, cross-page included, is
+                      // painted once by the strip-wide pass below; this page
+                      // used to draw a clipped copy of the same cross-page
+                      // content underneath it, so it rendered twice. The border
+                      // is drawn by its own pass after the elements, for the
+                      // same reason: here it would sit under them.
                     ),
                   ),
                 ),
               ),
           ],
-          for (var i = 0; i < pages.length; i++)
+          // One pass over the project's elements in z-order. x is already in
+          // document space and the strip lays pages out left to right at that
+          // same scale, so an element needs no page offset at all here.
+          for (final element in elements)
             if (_shouldBuildPreviewPage(
-              pageIndex: i,
+              pageIndex: anchorPageIndexOf(element),
               currentPageIndex: currentPageIndex,
-            ))
-              for (final element in pages[i].elements) ...[
-                if (element.type == 'image')
-                  _PreviewImageElementWidget(
-                    key: ValueKey('preview_${element.id}'),
-                    element: element,
-                    isSelected: selectedElementId == element.id,
-                    isDeleteArmed: deleteArmedElementId == element.id,
-                    isCropMode: croppingElementId == element.id,
-                    pageWidth: viewportWidth,
-                    pageHeight:
-                        viewportWidth *
-                        (pages[i].aspectHeight / pages[i].aspectWidth),
-                    pageOffsetX: viewportWidth * i,
-                    pageOffsetY:
-                        ((viewportHeight -
-                            (viewportWidth *
-                                (pages[i].aspectHeight /
-                                    pages[i].aspectWidth))) /
-                        2),
-                    hdrViewEnabled: hdrViewEnabled,
-                    onTap: () => onTapElement(element.id),
-                    onDoubleTap: () => onDoubleTapElement(element.id),
-                    onMove: (x, y, persist) {
-                      onMoveElement(pages[i].id, element.id, x, y, persist);
-                    },
-                    onResize: (width, persist) {
-                      onResizeElement(pages[i].id, element.id, width, persist);
-                    },
-                    onCropMove: (x, y, persist) {
-                      onCropMove(element.id, x, y, persist);
-                    },
-                    onCropScale: (scale, persist) {
-                      onCropScale(element.id, scale, persist);
-                    },
-                    onDelete: () => onDeleteElement(pages[i].id, element.id),
-                    onConfirmDelete: () =>
-                        onConfirmDeleteElement(pages[i].id, element.id),
-                    onCancelDelete: () => onCancelDeleteElement(element.id),
+            )) ...[
+              if (element.type == 'image')
+                _ImageElementWidget(
+                  key: ValueKey('preview_${element.id}'),
+                  element: element,
+                  isSelected: selectedElementId == element.id,
+                  isDeleteArmed: deleteArmedElementId == element.id,
+                  isCropMode: croppingElementId == element.id,
+                  pageWidth: viewportWidth,
+                  pageHeight: _pageHeightFor(element),
+                  pageOffsetX: 0,
+                  pageOffsetY: _pageTopFor(element),
+                  hdrViewEnabled: hdrViewEnabled,
+                  onTap: () => onTapElement(element.id),
+                  onDoubleTap: () => onDoubleTapElement(element.id),
+                  onMove: (x, y, persist) {
+                    onMoveElement(element.id, x, y, persist);
+                  },
+                  onResize: (width, persist) {
+                    onResizeElement(element.id, width, persist);
+                  },
+                  onCropMove: (x, y, persist) {
+                    onCropMove(element.id, x, y, persist);
+                  },
+                  onCropScale: (scale, persist) {
+                    onCropScale(element.id, scale, persist);
+                  },
+                  onCropBoundsChanged: (x, y, w, h, cx, cy, cs, persist) {
+                    onCropBoundsChanged(
+                      element.id,
+                      x,
+                      y,
+                      w,
+                      h,
+                      cx,
+                      cy,
+                      cs,
+                      persist,
+                    );
+                  },
+                  onDelete: () => onDeleteElement(element.id),
+                  onConfirmDelete: () => onConfirmDeleteElement(element.id),
+                  onCancelDelete: () => onCancelDeleteElement(element.id),
+                ),
+              if (element.type == 'text')
+                _TextElementWidget(
+                  key: ValueKey('preview_text_${element.id}'),
+                  element: element,
+                  isSelected: selectedElementId == element.id,
+                  isDeleteArmed: deleteArmedElementId == element.id,
+                  pageWidth: viewportWidth,
+                  pageHeight: _pageHeightFor(element),
+                  pageOffsetX: 0,
+                  pageOffsetY: _pageTopFor(element),
+                  onTap: () => onTapElement(element.id),
+                  onDoubleTap: () => onDoubleTapElement(element.id),
+                  onMove: (x, y, persist) {
+                    onMoveElement(element.id, x, y, persist);
+                  },
+                  onDelete: () => onDeleteElement(element.id),
+                  onConfirmDelete: () => onConfirmDeleteElement(element.id),
+                  onCancelDelete: () => onCancelDeleteElement(element.id),
+                ),
+            ],
+          // Page borders, over the elements: a full-bleed photo covers the page
+          // edge to edge, so a border drawn with the background is invisible
+          // exactly when it is most needed.
+          if (showBorder)
+            for (var i = 0; i < pages.length; i++)
+              if (_shouldBuildPreviewPage(
+                pageIndex: i,
+                currentPageIndex: currentPageIndex,
+              ))
+                Positioned(
+                  left: viewportWidth * i,
+                  top:
+                      ((viewportHeight -
+                          (viewportWidth *
+                              (pages[i].aspectHeight / pages[i].aspectWidth))) /
+                      2),
+                  child: IgnorePointer(
+                    child: Container(
+                      width: viewportWidth,
+                      height:
+                          viewportWidth *
+                          (pages[i].aspectHeight / pages[i].aspectWidth),
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: const Color(0xFF8F8F8F),
+                          width: 1,
+                        ),
+                      ),
+                    ),
                   ),
-                if (element.type == 'text')
-                  _TextElementWidget(
-                    key: ValueKey('preview_text_${element.id}'),
-                    element: element,
-                    isSelected: selectedElementId == element.id,
-                    isDeleteArmed: deleteArmedElementId == element.id,
-                    pageWidth: viewportWidth,
-                    pageHeight:
-                        viewportWidth *
-                        (pages[i].aspectHeight / pages[i].aspectWidth),
-                    pageOffsetX: viewportWidth * i,
-                    pageOffsetY:
-                        ((viewportHeight -
-                            (viewportWidth *
-                                (pages[i].aspectHeight /
-                                    pages[i].aspectWidth))) /
-                        2),
-                    onTap: () => onTapElement(element.id),
-                    onDoubleTap: () => onDoubleTapElement(element.id),
-                    onMove: (x, y, persist) {
-                      onMoveElement(pages[i].id, element.id, x, y, persist);
-                    },
-                    onDelete: () => onDeleteElement(pages[i].id, element.id),
-                    onConfirmDelete: () =>
-                        onConfirmDeleteElement(pages[i].id, element.id),
-                    onCancelDelete: () => onCancelDeleteElement(element.id),
-                  ),
-              ],
+                ),
           for (var i = 0; i < pages.length; i++)
             if (_shouldBuildPreviewPage(
               pageIndex: i,
@@ -7887,6 +7917,14 @@ class _ImagePathPreviewDialog extends StatelessWidget {
   }
 }
 
+/// One image element on the canvas.
+///
+/// Used by both display modes. Single mode positions it against the page it
+/// belongs to ([pageOffsetX]/[pageOffsetY] left at zero); the preview strip
+/// offsets it to wherever that page sits in the strip. Preview mode used to
+/// have its own near-identical copy of this widget, which drifted -- the copy
+/// never gained the crop edge handles, so cropping behaved differently in each
+/// mode.
 class _ImageElementWidget extends StatefulWidget {
   const _ImageElementWidget({
     super.key,
@@ -7894,8 +7932,11 @@ class _ImageElementWidget extends StatefulWidget {
     required this.isSelected,
     required this.isDeleteArmed,
     required this.isCropMode,
-    required this.canvasWidth,
-    required this.canvasHeight,
+    required this.pageWidth,
+    required this.pageHeight,
+    this.pageOffsetX = 0,
+    this.pageOffsetY = 0,
+    this.contentClipRect,
     required this.hdrViewEnabled,
     required this.onTap,
     required this.onDoubleTap,
@@ -7913,8 +7954,23 @@ class _ImageElementWidget extends StatefulWidget {
   final bool isSelected;
   final bool isDeleteArmed;
   final bool isCropMode;
-  final double canvasWidth;
-  final double canvasHeight;
+  final double pageWidth;
+  final double pageHeight;
+  final double pageOffsetX;
+  final double pageOffsetY;
+
+  /// Rect the photo itself is clipped to, in the parent Stack's coordinates,
+  /// or null to leave it unclipped.
+  ///
+  /// Single mode passes the page: a cross-page photo is drawn once per page it
+  /// touches, each time shifted to that page's origin, so without a clip the
+  /// copy on one page carried on past that page's edge and over its neighbour.
+  /// In the peeking single-page view that showed the same photo twice, a page
+  /// gap apart. The preview strip passes null — there the pages are laid out
+  /// end to end at one scale, and a cross-page photo is meant to run across
+  /// the seam unbroken.
+  final Rect? contentClipRect;
+
   final bool hdrViewEnabled;
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
@@ -7978,8 +8034,8 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
     final startX = _edgeDragStartElement.x;
     final startY = _edgeDragStartElement.y;
 
-    final dx = totalDx / widget.canvasWidth;
-    final dy = totalDy / widget.canvasHeight;
+    final dx = totalDx / widget.pageWidth;
+    final dy = totalDy / widget.pageHeight;
 
     double newX = startX;
     double newY = startY;
@@ -8023,8 +8079,8 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
     }
 
     final newAspectRatio = newWidth / newHeight;
-    final frameWidth = newWidth * widget.canvasWidth;
-    final frameHeight = newHeight * widget.canvasHeight;
+    final frameWidth = newWidth * widget.pageWidth;
+    final frameHeight = newHeight * widget.pageHeight;
     final frameAspectRatio = frameWidth / frameHeight;
 
     final sourceAspectRatio =
@@ -8036,8 +8092,8 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
         ? frameAspectRatio
         : sourceAspectRatio;
 
-    final oldFrameWidth = startWidth * widget.canvasWidth;
-    final oldFrameHeight = startHeight * widget.canvasHeight;
+    final oldFrameWidth = startWidth * widget.pageWidth;
+    final oldFrameHeight = startHeight * widget.pageHeight;
     final oldFrameAspectRatio = oldFrameWidth / oldFrameHeight;
 
     double oldBaseImageWidth;
@@ -8068,9 +8124,8 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
         (oldCropOffsetY * oldFrameHeight);
 
     final newVisualLeft =
-        currentVisualLeft - (newX - startX) * widget.canvasWidth;
-    final newVisualTop =
-        currentVisualTop - (newY - startY) * widget.canvasHeight;
+        currentVisualLeft - (newX - startX) * widget.pageWidth;
+    final newVisualTop = currentVisualTop - (newY - startY) * widget.pageHeight;
 
     final newCropOffsetX =
         (newVisualLeft - (frameWidth - currentImageWidth) / 2) / frameWidth;
@@ -8144,403 +8199,6 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
       ),
     );
   }
-
-  @override
-  Widget build(BuildContext context) {
-    final aspectRatio = (widget.element.data['aspectRatio'] as num?)
-        ?.toDouble();
-    final left = widget.element.x * widget.canvasWidth;
-    final top = widget.element.y * widget.canvasHeight;
-    final width = widget.element.width * widget.canvasWidth;
-    final height = aspectRatio != null && aspectRatio > 0
-        ? width / aspectRatio
-        : widget.element.height * widget.canvasHeight;
-    final src = widget.element.data['src'] as String? ?? '';
-    const handleHitSize = 52.0;
-    const handleVisualSize = 30.0;
-    const handleVisualOffset = 10.0;
-    final selectionColor = widget.isDeleteArmed
-        ? kDeleteConfirmColor
-        : _selectionChromeColor;
-
-    return Positioned(
-      left: left,
-      top: top,
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onTap: widget.onTap,
-        onDoubleTap: widget.isDeleteArmed
-            ? widget.onCancelDelete
-            : widget.isCropMode
-            ? null
-            : widget.onDoubleTap,
-        onLongPress: () {
-          if (_isResizing || widget.isCropMode) {
-            return;
-          }
-          widget.onTap();
-          widget.onDelete();
-        },
-        onPanStart: (_) {
-          if (_isResizing) {
-            return;
-          }
-          if (widget.isDeleteArmed) {
-            widget.onCancelDelete();
-            return;
-          }
-          if (widget.isCropMode) {
-            _currentCropOffsetX = _cropOffsetXFromData(widget.element.data);
-            _currentCropOffsetY = _cropOffsetYFromData(widget.element.data);
-            return;
-          }
-          _currentX = widget.element.x;
-          _currentY = widget.element.y;
-          if (!widget.isSelected) {
-            widget.onTap();
-          }
-        },
-        onPanUpdate: (details) {
-          if (_isResizing) {
-            return;
-          }
-          if (widget.isCropMode) {
-            _currentCropOffsetX += details.delta.dx / width;
-            _currentCropOffsetY += details.delta.dy / height;
-            widget.onCropMove(_currentCropOffsetX, _currentCropOffsetY, false);
-            return;
-          }
-          _currentX += details.delta.dx / widget.canvasWidth;
-          _currentY += details.delta.dy / widget.canvasHeight;
-          widget.onMove(_currentX, _currentY, false);
-        },
-        onPanEnd: (_) {
-          if (_isResizing) {
-            return;
-          }
-          if (widget.isCropMode) {
-            widget.onCropMove(_currentCropOffsetX, _currentCropOffsetY, true);
-            return;
-          }
-          widget.onMove(_currentX, _currentY, true);
-        },
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Container(
-              width: width,
-              height: height,
-              decoration: BoxDecoration(
-                color: src.isEmpty
-                    ? const Color(0xFFF6F6F6)
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(
-                  ((widget.element.data['borderRadiusRatio'] as num?)
-                              ?.toDouble() ??
-                          0.0) *
-                      (width < height ? width : height),
-                ),
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: src.isEmpty
-                  ? const Center(
-                      child: Icon(
-                        Icons.image_outlined,
-                        color: Color(0xFF8A8A8A),
-                        size: 24,
-                      ),
-                    )
-                  : ((widget.element.data['isUltraHdr'] == true ||
-                            _hdrBrightnessFromData(widget.element.data) >
-                                1.0) &&
-                        !widget.isCropMode &&
-                        !kIsWeb &&
-                        defaultTargetPlatform == TargetPlatform.android &&
-                        AppSettingsController.instance.hdrEnabled)
-                  ? HdrImageView(
-                      // Key by path + crop only: adjust/brightness/view
-                      // changes flow over the live channel, so the platform
-                      // view is not recreated (which used to flicker).
-                      key: ValueKey(
-                        'hdr_${src}_'
-                        '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
-                        '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
-                        '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
-                      ),
-                      path: src,
-                      sourceAspectRatio:
-                          (widget.element.data['originalAspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (widget.element.data['aspectRatio'] as num?)
-                              ?.toDouble() ??
-                          0.0,
-                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                      cropScale: _cropScaleFromData(widget.element.data),
-                      hdrBrightness: _hdrBrightnessFromData(
-                        widget.element.data,
-                      ),
-                      colorMatrix:
-                          _photoAdjustmentsFromData(
-                            widget.element.data,
-                          ).hasMatrix
-                          ? _photoAdjustmentsFromData(
-                              widget.element.data,
-                            ).toColorMatrix()
-                          : null,
-                      highlights: _photoAdjustmentsFromData(
-                        widget.element.data,
-                      ).highlights,
-                      shadows: _photoAdjustmentsFromData(
-                        widget.element.data,
-                      ).shadows,
-                      hdrView: widget.hdrViewEnabled,
-                    )
-                  : _maybeColorFiltered(
-                      widget.element.data,
-                      _CroppedImageFile(
-                        path: src,
-                        frameWidth: width,
-                        frameHeight: height,
-                        sourceAspectRatio:
-                            (widget.element.data['originalAspectRatio'] as num?)
-                                ?.toDouble() ??
-                            (widget.element.data['aspectRatio'] as num?)
-                                ?.toDouble() ??
-                            (width / height),
-                        cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                        cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                        cropScale: _cropScaleFromData(widget.element.data),
-                        cacheWidth: _previewImageCacheExtent(
-                          context,
-                          width,
-                          height,
-                        ),
-                      ),
-                    ),
-            ),
-            if (widget.element.data['isUltraHdr'] == true)
-              const Positioned(left: 6, top: 6, child: _HdrBadge()),
-            _DeleteConfirmOverlay(
-              visible: widget.isDeleteArmed,
-              onConfirm: widget.onConfirmDelete,
-            ),
-            Positioned(
-              left: -2,
-              top: -2,
-              child: IgnorePointer(
-                child: AnimatedOpacity(
-                  opacity: widget.isSelected ? 1 : 0,
-                  duration: const Duration(milliseconds: 120),
-                  curve: Curves.easeInOut,
-                  child: Container(
-                    width: width + 4,
-                    height: height + 4,
-                    decoration: BoxDecoration(
-                      border: Border.all(color: selectionColor, width: 4),
-                      borderRadius: BorderRadius.circular(
-                        (() {
-                          final rRatio =
-                              (widget.element.data['borderRadiusRatio'] as num?)
-                                  ?.toDouble() ??
-                              0.0;
-                          final rVal =
-                              rRatio * (width < height ? width : height);
-                          return rVal > 0 ? rVal + 2 : 0.0;
-                        })(),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              right: 0,
-              bottom: 0,
-              child: IgnorePointer(
-                ignoring: !widget.isSelected || widget.isDeleteArmed,
-                child: AnimatedOpacity(
-                  opacity: widget.isSelected && !widget.isDeleteArmed ? 1 : 0,
-                  duration: const Duration(milliseconds: 120),
-                  curve: Curves.easeInOut,
-                  child: AnimatedScale(
-                    scale: widget.isSelected ? 1 : 0.82,
-                    duration: const Duration(milliseconds: 120),
-                    curve: Curves.easeInOut,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onPanStart: (details) {
-                        _isResizing = true;
-                        if (widget.isCropMode) {
-                          _resizeStartCropScale = _cropScaleFromData(
-                            widget.element.data,
-                          );
-                          _currentCropScale = _resizeStartCropScale;
-                        } else {
-                          _resizeStartWidth = widget.element.width;
-                          _currentWidth = widget.element.width;
-                        }
-                        _resizeStartGlobalPosition = details.globalPosition;
-                      },
-                      onPanUpdate: (details) {
-                        final totalDx =
-                            details.globalPosition.dx -
-                            _resizeStartGlobalPosition.dx;
-                        final totalDy =
-                            details.globalPosition.dy -
-                            _resizeStartGlobalPosition.dy;
-                        final aspectRatio =
-                            (widget.element.data['aspectRatio'] as num?)
-                                ?.toDouble() ??
-                            (widget.element.width / widget.element.height);
-                        if (widget.isCropMode) {
-                          final scaleDelta =
-                              (totalDx / width) + (totalDy / height);
-                          _currentCropScale =
-                              _resizeStartCropScale + (scaleDelta * 0.8);
-                          widget.onCropScale(_currentCropScale, false);
-                          return;
-                        }
-                        final scaleDelta =
-                            (totalDx / widget.canvasWidth) +
-                            ((totalDy / widget.canvasHeight) * aspectRatio);
-                        _currentWidth = _resizeStartWidth + (scaleDelta * 0.5);
-                        widget.onResize(_currentWidth, false);
-                      },
-                      onPanEnd: (_) {
-                        _isResizing = false;
-                        if (widget.isCropMode) {
-                          widget.onCropScale(_currentCropScale, true);
-                          return;
-                        }
-                        widget.onResize(_currentWidth, true);
-                      },
-                      onPanCancel: () {
-                        _isResizing = false;
-                      },
-                      child: SizedBox(
-                        width: handleHitSize,
-                        height: handleHitSize,
-                        child: Align(
-                          alignment: Alignment.bottomRight,
-                          child: Transform.translate(
-                            offset: const Offset(
-                              handleVisualOffset,
-                              handleVisualOffset,
-                            ),
-                            child: Container(
-                              width: handleVisualSize,
-                              height: handleVisualSize,
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: _selectionChromeColor,
-                                  width: 2,
-                                ),
-                              ),
-                              child: const Icon(
-                                Icons.open_in_full_rounded,
-                                size: 15,
-                                color: _selectionChromeColor,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            if (widget.isCropMode) ...[
-              Positioned(
-                top: -12,
-                left: width / 2 - 24,
-                child: _buildEdgeHandle(width: 48, height: 24, edge: 'top'),
-              ),
-              Positioned(
-                bottom: -12,
-                left: width / 2 - 24,
-                child: _buildEdgeHandle(width: 48, height: 24, edge: 'bottom'),
-              ),
-              Positioned(
-                left: -12,
-                top: height / 2 - 24,
-                child: _buildEdgeHandle(width: 24, height: 48, edge: 'left'),
-              ),
-              Positioned(
-                right: -12,
-                top: height / 2 - 24,
-                child: _buildEdgeHandle(width: 24, height: 48, edge: 'right'),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PreviewImageElementWidget extends StatefulWidget {
-  const _PreviewImageElementWidget({
-    super.key,
-    required this.element,
-    required this.isSelected,
-    required this.isDeleteArmed,
-    required this.isCropMode,
-    required this.pageWidth,
-    required this.pageHeight,
-    required this.pageOffsetX,
-    required this.pageOffsetY,
-    required this.hdrViewEnabled,
-    required this.onTap,
-    required this.onDoubleTap,
-    required this.onMove,
-    required this.onResize,
-    required this.onCropMove,
-    required this.onCropScale,
-    required this.onDelete,
-    required this.onConfirmDelete,
-    required this.onCancelDelete,
-  });
-
-  final CanvasElement element;
-  final bool isSelected;
-  final bool isDeleteArmed;
-  final bool isCropMode;
-  final double pageWidth;
-  final double pageHeight;
-  final double pageOffsetX;
-  final double pageOffsetY;
-  final bool hdrViewEnabled;
-  final VoidCallback onTap;
-  final VoidCallback onDoubleTap;
-  final void Function(double x, double y, bool persist) onMove;
-  final void Function(double width, bool persist) onResize;
-  final void Function(double x, double y, bool persist) onCropMove;
-  final void Function(double scale, bool persist) onCropScale;
-  final VoidCallback onDelete;
-  final VoidCallback onConfirmDelete;
-  final VoidCallback onCancelDelete;
-
-  @override
-  State<_PreviewImageElementWidget> createState() =>
-      _PreviewImageElementWidgetState();
-}
-
-class _PreviewImageElementWidgetState
-    extends State<_PreviewImageElementWidget> {
-  late double _currentX;
-  late double _currentY;
-  late double _currentWidth;
-  late double _currentCropOffsetX;
-  late double _currentCropOffsetY;
-  late double _currentCropScale;
-  late double _resizeStartCropScale;
-  bool _isResizing = false;
-  late double _resizeStartWidth;
-  late Offset _resizeStartGlobalPosition;
 
   @override
   Widget build(BuildContext context) {
@@ -8624,97 +8282,107 @@ class _PreviewImageElementWidgetState
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            Container(
-              width: width,
-              height: height,
-              decoration: BoxDecoration(
-                color: src.isEmpty
-                    ? const Color(0xFFF6F6F6)
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(
-                  ((widget.element.data['borderRadiusRatio'] as num?)
-                              ?.toDouble() ??
-                          0.0) *
-                      (width < height ? width : height),
+            _clipElementContentToPage(
+              clipRect: widget.contentClipRect,
+              left: left,
+              top: top,
+              child: Container(
+                width: width,
+                height: height,
+                decoration: BoxDecoration(
+                  color: src.isEmpty
+                      ? const Color(0xFFF6F6F6)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(
+                    ((widget.element.data['borderRadiusRatio'] as num?)
+                                ?.toDouble() ??
+                            0.0) *
+                        (width < height ? width : height),
+                  ),
                 ),
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: src.isEmpty
-                  ? const Center(
-                      child: Icon(
-                        Icons.image_outlined,
-                        color: Color(0xFF8A8A8A),
-                        size: 24,
-                      ),
-                    )
-                  : ((widget.element.data['isUltraHdr'] == true ||
-                            _hdrBrightnessFromData(widget.element.data) >
-                                1.0) &&
-                        !widget.isCropMode &&
-                        !kIsWeb &&
-                        defaultTargetPlatform == TargetPlatform.android &&
-                        AppSettingsController.instance.hdrEnabled)
-                  ? HdrImageView(
-                      // Key by path + crop only: adjust/brightness/view
-                      // changes flow over the live channel, so the platform
-                      // view is not recreated (which used to flicker).
-                      key: ValueKey(
-                        'hdr_${src}_'
-                        '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
-                        '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
-                        '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
-                      ),
-                      path: src,
-                      sourceAspectRatio:
-                          (widget.element.data['originalAspectRatio'] as num?)
-                              ?.toDouble() ??
-                          (widget.element.data['aspectRatio'] as num?)
-                              ?.toDouble() ??
-                          0.0,
-                      cropOffsetX: _cropOffsetXFromData(widget.element.data),
-                      cropOffsetY: _cropOffsetYFromData(widget.element.data),
-                      cropScale: _cropScaleFromData(widget.element.data),
-                      hdrBrightness: _hdrBrightnessFromData(
-                        widget.element.data,
-                      ),
-                      colorMatrix:
-                          _photoAdjustmentsFromData(
-                            widget.element.data,
-                          ).hasMatrix
-                          ? _photoAdjustmentsFromData(
-                              widget.element.data,
-                            ).toColorMatrix()
-                          : null,
-                      highlights: _photoAdjustmentsFromData(
-                        widget.element.data,
-                      ).highlights,
-                      shadows: _photoAdjustmentsFromData(
-                        widget.element.data,
-                      ).shadows,
-                      hdrView: widget.hdrViewEnabled,
-                    )
-                  : _maybeColorFiltered(
-                      widget.element.data,
-                      _CroppedImageFile(
+                clipBehavior: Clip.antiAlias,
+                child: src.isEmpty
+                    ? const Center(
+                        child: Icon(
+                          Icons.image_outlined,
+                          color: Color(0xFF8A8A8A),
+                          size: 24,
+                        ),
+                      )
+                    : ((widget.element.data['isUltraHdr'] == true ||
+                              _hdrBrightnessFromData(widget.element.data) >
+                                  1.0) &&
+                          !widget.isCropMode &&
+                          !kIsWeb &&
+                          defaultTargetPlatform == TargetPlatform.android &&
+                          AppSettingsController.instance.hdrEnabled)
+                    ? HdrImageView(
+                        // Key by path + crop only: adjust/brightness/view
+                        // changes flow over the live channel, so the platform
+                        // view is not recreated (which used to flicker).
+                        key: ValueKey(
+                          'hdr_${src}_'
+                          '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
+                          '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
+                          '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
+                        ),
                         path: src,
-                        frameWidth: width,
-                        frameHeight: height,
                         sourceAspectRatio:
                             (widget.element.data['originalAspectRatio'] as num?)
                                 ?.toDouble() ??
                             (widget.element.data['aspectRatio'] as num?)
                                 ?.toDouble() ??
-                            (width / height),
+                            0.0,
                         cropOffsetX: _cropOffsetXFromData(widget.element.data),
                         cropOffsetY: _cropOffsetYFromData(widget.element.data),
                         cropScale: _cropScaleFromData(widget.element.data),
-                        cacheWidth: _previewImageCacheExtent(
-                          context,
-                          width,
-                          height,
+                        hdrBrightness: _hdrBrightnessFromData(
+                          widget.element.data,
+                        ),
+                        colorMatrix:
+                            _photoAdjustmentsFromData(
+                              widget.element.data,
+                            ).hasMatrix
+                            ? _photoAdjustmentsFromData(
+                                widget.element.data,
+                              ).toColorMatrix()
+                            : null,
+                        highlights: _photoAdjustmentsFromData(
+                          widget.element.data,
+                        ).highlights,
+                        shadows: _photoAdjustmentsFromData(
+                          widget.element.data,
+                        ).shadows,
+                        hdrView: widget.hdrViewEnabled,
+                      )
+                    : _maybeColorFiltered(
+                        widget.element.data,
+                        _CroppedImageFile(
+                          path: src,
+                          frameWidth: width,
+                          frameHeight: height,
+                          sourceAspectRatio:
+                              (widget.element.data['originalAspectRatio']
+                                      as num?)
+                                  ?.toDouble() ??
+                              (widget.element.data['aspectRatio'] as num?)
+                                  ?.toDouble() ??
+                              (width / height),
+                          cropOffsetX: _cropOffsetXFromData(
+                            widget.element.data,
+                          ),
+                          cropOffsetY: _cropOffsetYFromData(
+                            widget.element.data,
+                          ),
+                          cropScale: _cropScaleFromData(widget.element.data),
+                          cacheWidth: _previewImageCacheExtent(
+                            context,
+                            width,
+                            height,
+                          ),
                         ),
                       ),
-                    ),
+              ),
             ),
             if (widget.element.data['isUltraHdr'] == true)
               const Positioned(left: 6, top: 6, child: _HdrBadge()),
@@ -8850,6 +8518,28 @@ class _PreviewImageElementWidgetState
                 ),
               ),
             ),
+            if (widget.isCropMode) ...[
+              Positioned(
+                top: -12,
+                left: width / 2 - 24,
+                child: _buildEdgeHandle(width: 48, height: 24, edge: 'top'),
+              ),
+              Positioned(
+                bottom: -12,
+                left: width / 2 - 24,
+                child: _buildEdgeHandle(width: 48, height: 24, edge: 'bottom'),
+              ),
+              Positioned(
+                left: -12,
+                top: height / 2 - 24,
+                child: _buildEdgeHandle(width: 24, height: 48, edge: 'left'),
+              ),
+              Positioned(
+                right: -12,
+                top: height / 2 - 24,
+                child: _buildEdgeHandle(width: 24, height: 48, edge: 'right'),
+              ),
+            ],
           ],
         ),
       ),
@@ -8867,6 +8557,7 @@ class _TextElementWidget extends StatefulWidget {
     required this.pageHeight,
     required this.pageOffsetX,
     required this.pageOffsetY,
+    this.contentClipRect,
     required this.onTap,
     required this.onDoubleTap,
     required this.onMove,
@@ -8882,6 +8573,10 @@ class _TextElementWidget extends StatefulWidget {
   final double pageHeight;
   final double pageOffsetX;
   final double pageOffsetY;
+
+  /// See [_ImageElementWidget.contentClipRect].
+  final Rect? contentClipRect;
+
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
   final void Function(double x, double y, bool persist) onMove;
@@ -8949,21 +8644,26 @@ class _TextElementWidgetState extends State<_TextElementWidget> {
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            Container(
-              width: width,
-              height: height,
-              alignment: Alignment.centerLeft,
-              clipBehavior: Clip.hardEdge,
-              decoration: const BoxDecoration(color: Colors.transparent),
-              child: Text(
-                text,
-                maxLines: lineCount,
-                overflow: TextOverflow.clip,
-                style: TextStyle(
-                  color: color,
-                  fontSize: fontSize,
-                  height: 1.12,
-                  fontWeight: FontWeight.w700,
+            _clipElementContentToPage(
+              clipRect: widget.contentClipRect,
+              left: left,
+              top: top,
+              child: Container(
+                width: width,
+                height: height,
+                alignment: Alignment.centerLeft,
+                clipBehavior: Clip.hardEdge,
+                decoration: const BoxDecoration(color: Colors.transparent),
+                child: Text(
+                  text,
+                  maxLines: lineCount,
+                  overflow: TextOverflow.clip,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: fontSize,
+                    height: 1.12,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ),
@@ -9211,11 +8911,16 @@ class _ExportSelectionSummary extends StatelessWidget {
 class _ExportPageSelectionStrip extends StatelessWidget {
   const _ExportPageSelectionStrip({
     required this.pages,
+    required this.elements,
     required this.selectedIndexes,
     required this.onToggle,
   });
 
   final List<ProjectPage> pages;
+
+  /// Every element in the project; each tile takes the slice that shows on it.
+  final List<CanvasElement> elements;
+
   final Set<int> selectedIndexes;
   final ValueChanged<int> onToggle;
 
@@ -9231,6 +8936,11 @@ class _ExportPageSelectionStrip extends StatelessWidget {
           return _ExportPageSelectionTile(
             page: pages[index],
             pageNumber: index + 1,
+            elements: visibleElementsOnPage(
+              pages: pages,
+              elements: elements,
+              pageIndex: index,
+            ),
             selected: selectedIndexes.contains(index),
             onTap: () => onToggle(index),
           );
@@ -9244,12 +8954,14 @@ class _ExportPageSelectionTile extends StatelessWidget {
   const _ExportPageSelectionTile({
     required this.page,
     required this.pageNumber,
+    required this.elements,
     required this.selected,
     required this.onTap,
   });
 
   final ProjectPage page;
   final int pageNumber;
+  final List<CanvasElement> elements;
   final bool selected;
   final VoidCallback onTap;
 
@@ -9286,6 +8998,8 @@ class _ExportPageSelectionTile extends StatelessWidget {
                 children: [
                   _MiniPagePreview(
                     page: page,
+                    pageIndex: pageNumber - 1,
+                    elements: elements,
                     width: previewWidth,
                     height: previewHeight,
                   ),
@@ -9770,6 +9484,7 @@ class _PageIndicatorButton extends StatelessWidget {
 class _PageSorterView extends StatelessWidget {
   const _PageSorterView({
     required this.pages,
+    required this.elements,
     required this.selectedPageId,
     required this.onTapPage,
     required this.onReorder,
@@ -9777,6 +9492,10 @@ class _PageSorterView extends StatelessWidget {
   });
 
   final List<ProjectPage> pages;
+
+  /// Every element in the project; each thumbnail takes the slice on its page.
+  final List<CanvasElement> elements;
+
   final String? selectedPageId;
   final ValueChanged<int> onTapPage;
   final void Function(int oldIndex, int newIndex) onReorder;
@@ -9827,6 +9546,11 @@ class _PageSorterView extends StatelessWidget {
                               key: ValueKey('page_sorter_${pages[index].id}'),
                               page: pages[index],
                               pageNumber: index + 1,
+                              elements: visibleElementsOnPage(
+                                pages: pages,
+                                elements: elements,
+                                pageIndex: index,
+                              ),
                               selected: pages[index].id == selectedPageId,
                               onTap: () => onTapPage(index),
                             ),
@@ -9953,12 +9677,14 @@ class _PageThumbnailCard extends StatelessWidget {
     super.key,
     required this.page,
     required this.pageNumber,
+    required this.elements,
     required this.selected,
     required this.onTap,
   });
 
   final ProjectPage page;
   final int pageNumber;
+  final List<CanvasElement> elements;
   final bool selected;
   final VoidCallback onTap;
 
@@ -9973,6 +9699,7 @@ class _PageThumbnailCard extends StatelessWidget {
     final card = _PageThumbnailContent(
       page: page,
       pageNumber: pageNumber,
+      elements: elements,
       selected: selected,
       previewWidth: previewWidth,
       previewHeight: previewHeight,
@@ -9998,6 +9725,7 @@ class _PageThumbnailContent extends StatelessWidget {
   const _PageThumbnailContent({
     required this.page,
     required this.pageNumber,
+    required this.elements,
     required this.selected,
     required this.previewWidth,
     required this.previewHeight,
@@ -10006,6 +9734,7 @@ class _PageThumbnailContent extends StatelessWidget {
 
   final ProjectPage page;
   final int pageNumber;
+  final List<CanvasElement> elements;
   final bool selected;
   final double previewWidth;
   final double previewHeight;
@@ -10031,6 +9760,8 @@ class _PageThumbnailContent extends StatelessWidget {
             ),
             child: _MiniPagePreview(
               page: page,
+              pageIndex: pageNumber - 1,
+              elements: elements,
               width: previewWidth,
               height: previewHeight,
             ),
@@ -10054,11 +9785,22 @@ class _PageThumbnailContent extends StatelessWidget {
 class _MiniPagePreview extends StatelessWidget {
   const _MiniPagePreview({
     required this.page,
+    required this.pageIndex,
+    required this.elements,
     required this.width,
     required this.height,
   });
 
   final ProjectPage page;
+
+  /// Needed because element x is in document space: the thumbnail draws one
+  /// page, so it has to shift that window back to the origin.
+  final int pageIndex;
+
+  /// Everything visible on this page, back to front — including whatever
+  /// bleeds in from a neighbour.
+  final List<CanvasElement> elements;
+
   final double width;
   final double height;
 
@@ -10075,18 +9817,20 @@ class _MiniPagePreview extends StatelessWidget {
       child: Stack(
         clipBehavior: Clip.hardEdge,
         children: [
-          for (final element in page.elements)
+          for (final element in elements)
             if (element.type == 'image')
               _MiniImageElement(
                 element: element,
                 pageWidth: width,
                 pageHeight: height,
+                pageOffsetX: -pageIndex * width,
               )
             else if (element.type == 'text')
               _MiniTextElement(
                 element: element,
                 pageWidth: width,
                 pageHeight: height,
+                pageOffsetX: -pageIndex * width,
               ),
         ],
       ),
@@ -10099,17 +9843,19 @@ class _MiniImageElement extends StatelessWidget {
     required this.element,
     required this.pageWidth,
     required this.pageHeight,
+    required this.pageOffsetX,
   });
 
   final CanvasElement element;
   final double pageWidth;
   final double pageHeight;
+  final double pageOffsetX;
 
   @override
   Widget build(BuildContext context) {
     final src = element.data['src'] as String? ?? '';
     final aspectRatio = (element.data['aspectRatio'] as num?)?.toDouble();
-    final left = element.x * pageWidth;
+    final left = element.x * pageWidth + pageOffsetX;
     final top = element.y * pageHeight;
     final width = element.width * pageWidth;
     final height = aspectRatio != null && aspectRatio > 0
@@ -10153,16 +9899,18 @@ class _MiniTextElement extends StatelessWidget {
     required this.element,
     required this.pageWidth,
     required this.pageHeight,
+    required this.pageOffsetX,
   });
 
   final CanvasElement element;
   final double pageWidth;
   final double pageHeight;
+  final double pageOffsetX;
 
   @override
   Widget build(BuildContext context) {
     final text = _textContentFromData(element.data);
-    final left = element.x * pageWidth;
+    final left = element.x * pageWidth + pageOffsetX;
     final top = element.y * pageHeight;
     final width = element.width * pageWidth;
     final fontSize = (_textFontSizeRatioFromData(element.data) * pageWidth)
@@ -10424,6 +10172,7 @@ class _BottomTab extends StatelessWidget {
 class _PageTabPage extends StatelessWidget {
   const _PageTabPage({
     required this.page,
+    required this.elements,
     required this.onAspectSelected,
     required this.onColorSelected,
     required this.onCustomColorTap,
@@ -10432,6 +10181,11 @@ class _PageTabPage extends StatelessWidget {
   });
 
   final ProjectPage page;
+
+  /// Everything visible on this page — the background sits behind all of it,
+  /// so a photo bleeding in from a neighbour counts for the HDR check too.
+  final List<CanvasElement> elements;
+
   final void Function(double aspectWidth, double aspectHeight) onAspectSelected;
   final void Function(Color color, String preset) onColorSelected;
   final Future<void> Function() onCustomColorTap;
@@ -10466,7 +10220,7 @@ class _PageTabPage extends StatelessWidget {
     // Only offer "HDR白" when the page actually has an HDR element (or it is
     // already selected, so the user can still change away from it).
     final showHdrWhite =
-        isHdrWhiteSelected || page.elements.any(_elementHasHdrContent);
+        isHdrWhiteSelected || elements.any(_elementHasHdrContent);
     final isWhiteSelected =
         selectedPreset == _pageBackgroundColorPresetWhite ||
         (!isKnownPreset &&
@@ -10622,6 +10376,8 @@ class _PageTabPage extends StatelessWidget {
 class _TemplateTabPage extends StatelessWidget {
   const _TemplateTabPage({
     required this.page,
+    required this.pageIndex,
+    required this.elements,
     required this.onApplyTemplate,
     required this.marginEnabled,
     required this.marginSize,
@@ -10631,6 +10387,14 @@ class _TemplateTabPage extends StatelessWidget {
   });
 
   final ProjectPage page;
+
+  /// Templates lay out one page in page-local coordinates; element x is in
+  /// document space, and this is what converts between the two.
+  final int pageIndex;
+
+  /// Elements anchored to this page — the ones applying a template rewrites.
+  final List<CanvasElement> elements;
+
   final ValueChanged<TemplateOption> onApplyTemplate;
   final bool marginEnabled;
   final String marginSize;
@@ -10872,7 +10636,12 @@ class _TemplateTabPage extends StatelessWidget {
                     option: templates[i],
                     page: page,
                     marginRatio: marginRatio,
-                    selected: templates[i].matchesLayout(page, marginRatio),
+                    selected: templates[i].matchesLayout(
+                      page,
+                      elements,
+                      pageIndex,
+                      marginRatio,
+                    ),
                     onTap: () => onApplyTemplate(templates[i]),
                   ),
                   if (i != templates.length - 1) const SizedBox(width: 12),
@@ -12243,13 +12012,22 @@ class _HdrBadge extends StatelessWidget {
 
 class _LayersTabPage extends StatelessWidget {
   const _LayersTabPage({
-    required this.page,
+    required this.elements,
     required this.selectedElementId,
     required this.onSelectElement,
     required this.onReorderElement,
   });
 
-  final ProjectPage page;
+  /// Every element visible on the current page, back to front.
+  ///
+  /// This listed the page's own elements before, which is what made the panel
+  /// lie about cross-page photos: one straddling a seam appeared on the page it
+  /// happened to be filed under and nowhere else, so on the other page it could
+  /// be neither selected nor restacked. Reordering here moves the element
+  /// within the project's single z-order, so a photo anchored to one page can
+  /// now be raised above one anchored to another.
+  final List<CanvasElement> elements;
+
   final String? selectedElementId;
   final ValueChanged<String> onSelectElement;
   final void Function(int oldIndex, int newIndex) onReorderElement;
@@ -12257,7 +12035,6 @@ class _LayersTabPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
-    final elements = page.elements;
 
     if (elements.isEmpty) {
       return Container(

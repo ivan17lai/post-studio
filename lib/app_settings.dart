@@ -4,7 +4,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'hdr/ultra_hdr.dart';
 
-const String kAppDisplayVersion = '1.8.0';
+/// Shown in the UI only. The update check reads the version from
+/// [PackageInfo] instead, so a channel suffix here cannot reach
+/// `_isVersionNewer`, which parses its input as three integers and would read
+/// "Beta" as a zero.
+const String kAppDisplayVersion = '1.9.0 Beta';
 const String kGeminiSortModel = 'gemini-3.5-flash';
 const Color kDefaultPrimaryAccentColor = Color(0xFFC3AEFF);
 

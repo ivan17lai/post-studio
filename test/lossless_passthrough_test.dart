@@ -3,7 +3,6 @@ import 'package:igapp/hdr/lossless_passthrough.dart';
 import 'package:igapp/project_record.dart';
 
 CanvasElement _fullBleedImage({
-  String pageId = 'p1',
   double x = 0,
   double y = 0,
   double width = 1,
@@ -20,7 +19,6 @@ CanvasElement _fullBleedImage({
   return CanvasElement(
     id: 'e1',
     type: 'image',
-    pageId: pageId,
     x: x,
     y: y,
     width: width,
@@ -41,26 +39,38 @@ CanvasElement _fullBleedImage({
   );
 }
 
-ProjectPage _page(String id, List<CanvasElement> elements) {
-  // 4:5 page → page aspect 0.8, matching the default test element.
-  return ProjectPage(
-    id: id,
-    title: id,
-    type: 'page',
-    aspectWidth: 4,
-    aspectHeight: 5,
+/// A page together with the elements filed under it. Cases read most naturally
+/// that way, and [_project] flattens them into the single document-space list
+/// the record actually stores, offsetting each page's x by its index.
+typedef _PageSpec = ({ProjectPage page, List<CanvasElement> elements});
+
+_PageSpec _page(String id, List<CanvasElement> elements) {
+  // 4:5 page -> page aspect 0.8, matching the default test element.
+  return (
+    page: ProjectPage(
+      id: id,
+      title: id,
+      type: 'page',
+      aspectWidth: 4,
+      aspectHeight: 5,
+      extras: const <String, dynamic>{},
+    ),
     elements: elements,
-    extras: const <String, dynamic>{},
   );
 }
 
-ProjectRecord _project(List<ProjectPage> pages) {
+ProjectRecord _project(List<_PageSpec> specs) {
   return ProjectRecord(
     id: 'test',
     name: 'test',
     createdAt: DateTime(2026, 1, 1),
-    pageCount: pages.length,
-    pages: pages,
+    pageCount: specs.length,
+    pages: <ProjectPage>[for (final spec in specs) spec.page],
+    elements: <CanvasElement>[
+      for (var index = 0; index < specs.length; index++)
+        for (final element in specs[index].elements)
+          element.copyWith(x: element.x + index),
+    ],
     extras: const <String, dynamic>{},
   );
 }
@@ -152,7 +162,7 @@ void main() {
     final project = _project([
       _page('p1', [
         _fullBleedImage(),
-        CanvasElement.text(pageId: 'p1'),
+        CanvasElement.text(),
       ]),
     ]);
     expect(
@@ -165,7 +175,6 @@ void main() {
     final crossPageElement = CanvasElement(
       id: 'bleed',
       type: 'image',
-      pageId: 'p1',
       // Starts on page 1 and extends well into page 2.
       x: 0.7,
       y: 0.2,
@@ -179,7 +188,7 @@ void main() {
     );
     final project = _project([
       _page('p1', [crossPageElement]),
-      _page('p2', [_fullBleedImage(pageId: 'p2')]),
+      _page('p2', [_fullBleedImage()]),
     ]);
     expect(
       evaluateLosslessExport(project: project, pageIndex: 1).eligible,
@@ -191,7 +200,6 @@ void main() {
     final localElement = CanvasElement(
       id: 'local',
       type: 'image',
-      pageId: 'p1',
       x: 0.7,
       y: 0.2,
       width: 0.6,
@@ -204,7 +212,7 @@ void main() {
     );
     final project = _project([
       _page('p1', [localElement]),
-      _page('p2', [_fullBleedImage(pageId: 'p2')]),
+      _page('p2', [_fullBleedImage()]),
     ]);
     expect(
       evaluateLosslessExport(project: project, pageIndex: 1).eligible,
