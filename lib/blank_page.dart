@@ -623,6 +623,9 @@ enum _SnapGuideAxis { vertical, horizontal }
 const Color _selectionChromeColor = Color(0xFFBDBDBD);
 const double _canvasControlChromePadding = 9.0;
 
+/// Cross-fade between the single-page and preview canvases.
+const Duration _displayModeSwitchDuration = Duration(milliseconds: 240);
+
 /// Clips an element's own content to the page it is being drawn on.
 ///
 /// [clipRect] is in the parent Stack's coordinates while the element sits at
@@ -787,18 +790,12 @@ class _BlankPageState extends State<BlankPage> {
   String? _deleteArmedElementId;
   String? _selectedSorterPageId;
   late PageController _pageController;
+  late final PageController _bottomTabPageController;
   final ScrollController _previewScrollController = ScrollController();
   final ImagePicker _imagePicker = ImagePicker();
   final Map<String, Uint8List> _exportImageBytesCache = <String, Uint8List>{};
   final Map<String, Color> _customPageColorDrafts = <String, Color>{};
-  late final ValueNotifier<ProjectRecord> _projectNotifier;
-  final ValueNotifier<List<_SnapGuide>> _snapGuidesNotifier =
-      ValueNotifier<List<_SnapGuide>>(const <_SnapGuide>[]);
-  late final Listenable _canvasListenable;
-
-  List<_SnapGuide> get _activeSnapGuides => _snapGuidesNotifier.value;
-  set _activeSnapGuides(List<_SnapGuide> value) =>
-      _snapGuidesNotifier.value = value;
+  List<_SnapGuide> _activeSnapGuides = const <_SnapGuide>[];
   bool _showSinglePageDivider = false;
   bool _singlePageDividerUpdateScheduled = false;
   bool? _pendingSinglePageDividerVisible;
@@ -815,12 +812,8 @@ class _BlankPageState extends State<BlankPage> {
             pageCount: 1,
           )
         : widget.project.copyWith(pageCount: widget.project.pages.length);
-    _projectNotifier = ValueNotifier<ProjectRecord>(_project);
-    _canvasListenable = Listenable.merge(<Listenable>[
-      _projectNotifier,
-      _snapGuidesNotifier,
-    ]);
     _pageController = _buildPageController();
+    _bottomTabPageController = PageController();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
@@ -898,8 +891,30 @@ class _BlankPageState extends State<BlankPage> {
   PageController _buildPageController() {
     return PageController(
       initialPage: _currentPageIndex,
-      viewportFraction: _singlePagePeekViewportFraction,
+      viewportFraction: _pageControllerViewportFractionForState(),
     );
+  }
+
+  bool _hasTwoOptionRows(String tab) =>
+      tab == _tabPage || tab == _tabImage || tab == _tabTextSettings;
+
+  double _bottomPanelHeightForTab(String tab) {
+    if (tab == _tabPage) {
+      return 270.0;
+    }
+    if (tab == _tabImagePosition || tab == _tabTextPosition) {
+      return 130.0;
+    }
+    if (tab == _tabImageSettings) {
+      return 139.0;
+    }
+    if (tab == _tabTextSettings) {
+      return 165.0;
+    }
+    if (tab == _tabLayers) {
+      return 75.0;
+    }
+    return 75.0;
   }
 
   bool _isImageTab(String tab) => tab == _tabLayers || tab == _tabImage;
@@ -948,16 +963,44 @@ class _BlankPageState extends State<BlankPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _syncBottomTab());
   }
 
-  void _updateProjectModel(ProjectRecord updatedProject) {
-    final normalizedProject = updatedProject.copyWith(
-      pageCount: updatedProject.pages.length,
+  bool _shouldUseSinglePagePeek({int? pageIndex, String? selectedTab}) {
+    if (_displayMode != PageDisplayMode.single || _project.pages.isEmpty) {
+      return false;
+    }
+
+    final resolvedPageIndex = (pageIndex ?? _currentPageIndex)
+        .clamp(0, _project.pages.length - 1)
+        .toInt();
+    final page = _project.pages[resolvedPageIndex];
+    return page.aspectHeight > page.aspectWidth &&
+        _hasTwoOptionRows(selectedTab ?? _selectedBottomTab);
+  }
+
+  double _pageControllerViewportFractionForState() {
+    if (_displayMode != PageDisplayMode.single) {
+      return _previewPageWidthFraction;
+    }
+    return _shouldUseSinglePagePeek() ? _singlePagePeekViewportFraction : 1.0;
+  }
+
+  void _refreshPageControllerViewportIfNeeded() {
+    final viewportFraction = _pageControllerViewportFractionForState();
+    if ((_pageController.viewportFraction - viewportFraction).abs() < 0.001) {
+      return;
+    }
+
+    final oldController = _pageController;
+    _pageController = PageController(
+      initialPage: _currentPageIndex,
+      viewportFraction: viewportFraction,
     );
-    _project = normalizedProject;
-    _projectNotifier.value = normalizedProject;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      oldController.dispose();
+    });
   }
 
   Future<void> _persistProject(ProjectRecord updatedProject) async {
-    _updateProjectModel(updatedProject);
+    _project = updatedProject.copyWith(pageCount: updatedProject.pages.length);
     if (mounted) {
       setState(() {
         _savingRequestCount += 1;
@@ -1255,9 +1298,13 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
+    final oldController = _pageController;
+
     _lastSnapshot = null;
     _hasPendingElementUndoSnapshot = false;
-    _updateProjectModel(snapshot.project);
+    _project = snapshot.project.copyWith(
+      pageCount: snapshot.project.pages.length,
+    );
     _currentPageIndex = snapshot.currentPageIndex.clamp(
       0,
       _project.pages.length - 1,
@@ -1268,6 +1315,7 @@ class _BlankPageState extends State<BlankPage> {
     _deleteArmedElementId = null;
     _displayMode = snapshot.displayMode;
     _showPageBorder = snapshot.showPageBorder;
+    _pageController = _buildPageController();
 
     if (mounted) {
       setState(() {});
@@ -1283,6 +1331,7 @@ class _BlankPageState extends State<BlankPage> {
         _jumpPreviewToPage(_currentPageIndex);
       }
       _syncBottomTab();
+      oldController.dispose();
     });
   }
 
@@ -1344,13 +1393,19 @@ class _BlankPageState extends State<BlankPage> {
           if (nextTab == _tabImage) {
             _imageSubTab = _tabImageSource;
           }
+          _refreshPageControllerViewportIfNeeded();
         });
       } else {
         _selectedBottomTab = nextTab;
         if (nextTab == _tabImage) {
           _imageSubTab = _tabImageSource;
         }
+        _refreshPageControllerViewportIfNeeded();
       }
+    }
+    final targetIndex = tabs.indexOf(_selectedBottomTab);
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.jumpToPage(targetIndex);
     }
   }
 
@@ -1382,7 +1437,8 @@ class _BlankPageState extends State<BlankPage> {
 
   void _changeBottomTab(String tab) {
     final tabs = _bottomTabs;
-    if (!tabs.contains(tab)) {
+    final targetIndex = tabs.indexOf(tab);
+    if (targetIndex == -1) {
       return;
     }
 
@@ -1395,7 +1451,16 @@ class _BlankPageState extends State<BlankPage> {
       }
       _deleteArmedElementId = null;
       _selectedBottomTab = tab;
+      _refreshPageControllerViewportIfNeeded();
     });
+
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.animateToPage(
+        targetIndex,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeInOut,
+      );
+    }
   }
 
   void _clearSelectedElement() {
@@ -1410,7 +1475,13 @@ class _BlankPageState extends State<BlankPage> {
       if (shouldFallbackToElements) {
         _selectedBottomTab = _tabElements;
       }
+      _refreshPageControllerViewportIfNeeded();
     });
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.jumpToPage(
+        shouldFallbackToElements ? 2 : _bottomTabs.indexOf(_selectedBottomTab),
+      );
+    }
   }
 
   Future<void> _addPage() async {
@@ -1444,6 +1515,7 @@ class _BlankPageState extends State<BlankPage> {
       _croppingElementId = null;
       _deleteArmedElementId = null;
       _selectedBottomTab = _tabTemplate;
+      _refreshPageControllerViewportIfNeeded();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1603,6 +1675,7 @@ class _BlankPageState extends State<BlankPage> {
       }
       _selectedBottomTab = _tabTemplate;
       _showPageSorter = updatedPages.length > 1 && _showPageSorter;
+      _refreshPageControllerViewportIfNeeded();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1701,7 +1774,7 @@ class _BlankPageState extends State<BlankPage> {
     );
 
     setState(() {
-      _updateProjectModel(updatedProject);
+      _project = updatedProject;
       _currentPageIndex = nextCurrentIndex == -1
           ? targetIndex
           : nextCurrentIndex;
@@ -1709,6 +1782,7 @@ class _BlankPageState extends State<BlankPage> {
       _croppingElementId = null;
       _deleteArmedElementId = null;
       _activeSnapGuides = const <_SnapGuide>[];
+      _refreshPageControllerViewportIfNeeded();
     });
 
     unawaited(_saveProject(updatedProject));
@@ -1762,7 +1836,7 @@ class _BlankPageState extends State<BlankPage> {
 
     final updatedProject = _project.copyWith(elements: elements);
     setState(() {
-      _updateProjectModel(updatedProject);
+      _project = updatedProject;
     });
 
     unawaited(_saveProject(updatedProject));
@@ -2027,12 +2101,13 @@ class _BlankPageState extends State<BlankPage> {
 
     _storeUndoSnapshot();
     setState(() {
-      _updateProjectModel(updatedProject);
+      _project = updatedProject;
       _currentPageIndex = nextCurrentIndex == -1 ? 0 : nextCurrentIndex;
       _selectedElementId = null;
       _croppingElementId = null;
       _deleteArmedElementId = null;
       _activeSnapGuides = const <_SnapGuide>[];
+      _refreshPageControllerViewportIfNeeded();
     });
     unawaited(_saveProject(updatedProject));
   }
@@ -2161,6 +2236,12 @@ class _BlankPageState extends State<BlankPage> {
         _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
       ),
     );
+
+    if (mounted) {
+      setState(() {
+        _refreshPageControllerViewportIfNeeded();
+      });
+    }
   }
 
   Future<void> _updateCurrentPageColor(
@@ -2473,12 +2554,14 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
+    final oldController = _pageController;
     final currentPageIndex = _currentPageIndex;
 
     setState(() {
       _displayMode = mode;
       _showPageBorder = mode == PageDisplayMode.preview;
       _showSinglePageDivider = false;
+      _pageController = _buildPageController();
 
       // Going into single mode drops the selection.
       //
@@ -2504,6 +2587,13 @@ class _BlankPageState extends State<BlankPage> {
         _jumpPreviewToPage(currentPageIndex);
       }
       _syncBottomTab();
+      // Not this frame: the canvas cross-fades between modes, so the outgoing
+      // tree — and the controller it is still driving — stays mounted until
+      // the fade ends. Disposing here would tear it out mid-animation.
+      Future<void>.delayed(
+        _displayModeSwitchDuration + const Duration(milliseconds: 40),
+        oldController.dispose,
+      );
     });
   }
 
@@ -2527,6 +2617,9 @@ class _BlankPageState extends State<BlankPage> {
       _selectedBottomTab = _tabImage;
       _imageSubTab = _tabImageSource;
     });
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabImage));
+    }
   }
 
   Future<void> _addTextElement() async {
@@ -2548,6 +2641,11 @@ class _BlankPageState extends State<BlankPage> {
       _deleteArmedElementId = null;
       _selectedBottomTab = _tabTextSettings;
     });
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.jumpToPage(
+        _bottomTabs.indexOf(_tabTextSettings),
+      );
+    }
   }
 
   Future<void> _addImageElementFromPath(String path) async {
@@ -2599,6 +2697,9 @@ class _BlankPageState extends State<BlankPage> {
       _selectedBottomTab = _tabImage;
       _imageSubTab = _tabImageSource;
     });
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabImage));
+    }
   }
 
   Future<void> _importSourcePaths(List<String> sourcePaths) async {
@@ -2793,6 +2894,9 @@ class _BlankPageState extends State<BlankPage> {
       _selectedBottomTab = _tabImage;
       _imageSubTab = _tabImageSource;
     });
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabImage));
+    }
   }
 
   Future<ui.Size?> _decodeImageSize(String path) async {
@@ -2923,12 +3027,18 @@ class _BlankPageState extends State<BlankPage> {
         _selectedBottomTab = _tabImage;
         _imageSubTab = _tabImageSource;
       }
+      _refreshPageControllerViewportIfNeeded();
     });
     if (selectedElement != null &&
         _elementCrossesPageBoundary(selectedElement)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _jumpPreviewToPage(_currentPageIndex);
       });
+    }
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.jumpToPage(
+        _bottomTabs.indexOf(_selectedBottomTab),
+      );
     }
   }
 
@@ -2996,7 +3106,9 @@ class _BlankPageState extends State<BlankPage> {
 
     final updatedProject = _project.copyWith(elements: updatedElements);
 
-    _updateProjectModel(updatedProject);
+    setState(() {
+      _project = updatedProject;
+    });
 
     if (persist) {
       _hasPendingElementUndoSnapshot = false;
@@ -3137,12 +3249,12 @@ class _BlankPageState extends State<BlankPage> {
     );
 
     final nextGuides = persist ? const <_SnapGuide>[] : snappedPosition.guides;
-    if (_activeSnapGuides != nextGuides) {
-      _activeSnapGuides = nextGuides;
-    }
-    if (_deleteArmedElementId == elementId) {
+    if (_activeSnapGuides != nextGuides || _deleteArmedElementId == elementId) {
       setState(() {
-        _deleteArmedElementId = null;
+        _activeSnapGuides = nextGuides;
+        if (_deleteArmedElementId == elementId) {
+          _deleteArmedElementId = null;
+        }
       });
     }
 
@@ -3447,12 +3559,12 @@ class _BlankPageState extends State<BlankPage> {
     final nextGuides = persist || snapWasClamped
         ? const <_SnapGuide>[]
         : snapResult.guides;
-    if (_activeSnapGuides != nextGuides) {
-      _activeSnapGuides = nextGuides;
-    }
-    if (_deleteArmedElementId == elementId) {
+    if (_activeSnapGuides != nextGuides || _deleteArmedElementId == elementId) {
       setState(() {
-        _deleteArmedElementId = null;
+        _activeSnapGuides = nextGuides;
+        if (_deleteArmedElementId == elementId) {
+          _deleteArmedElementId = null;
+        }
       });
     }
 
@@ -3915,6 +4027,9 @@ class _BlankPageState extends State<BlankPage> {
       _selectedBottomTab = _tabImage;
       _imageSubTab = _tabImageSettings;
     });
+    if (_bottomTabPageController.hasClients) {
+      _bottomTabPageController.jumpToPage(_bottomTabs.indexOf(_tabImage));
+    }
   }
 
   void _finishCroppingSelectedImage() {
@@ -4493,6 +4608,13 @@ class _BlankPageState extends State<BlankPage> {
       }
       _activeSnapGuides = const <_SnapGuide>[];
     });
+
+    if (_bottomTabPageController.hasClients) {
+      final targetIndex = _bottomTabs.indexOf(_selectedBottomTab);
+      if (targetIndex != -1) {
+        _bottomTabPageController.jumpToPage(targetIndex);
+      }
+    }
   }
 
   Future<void> _confirmDeleteElement({required String elementId}) async {
@@ -4543,6 +4665,7 @@ class _BlankPageState extends State<BlankPage> {
       _deleteArmedElementId = null;
       _selectedSorterPageId = null;
       _showPageSorter = false;
+      _refreshPageControllerViewportIfNeeded();
     });
 
     if (_displayMode == PageDisplayMode.single) {
@@ -5787,9 +5910,8 @@ class _BlankPageState extends State<BlankPage> {
   @override
   void dispose() {
     AppSettingsController.instance.removeListener(_handleSettingsChanged);
-    _projectNotifier.dispose();
-    _snapGuidesNotifier.dispose();
     _pageController.dispose();
+    _bottomTabPageController.dispose();
     _previewScrollController.dispose();
     super.dispose();
   }
@@ -5797,12 +5919,15 @@ class _BlankPageState extends State<BlankPage> {
   @override
   Widget build(BuildContext context) {
     final pages = _project.pages;
+    final currentPage = pages[_currentPageIndex];
     final strings = AppStrings.of(context);
-    final mediaQuery = MediaQuery.of(context);
-    final screenWidth = mediaQuery.size.width;
-    const singlePageGap = _singlePagePeekGap;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final shouldUseSinglePagePeek = _shouldUseSinglePagePeek();
+    final singlePageGap = shouldUseSinglePagePeek ? _singlePagePeekGap : 0.0;
     final singleCanvasWidth =
-        (screenWidth * _singlePagePeekViewportFraction) - (singlePageGap * 2);
+        (screenWidth *
+            (shouldUseSinglePagePeek ? _singlePagePeekViewportFraction : 1.0)) -
+        (singlePageGap * 2);
     final previewCanvasWidth = _previewPageWidth(context);
 
     // How tall the canvas actually needs to be: the tallest page it can show,
@@ -5839,10 +5964,10 @@ class _BlankPageState extends State<BlankPage> {
     const canvasScale = 1.0;
     const bottomTabRowHeight = 30.0;
     const bottomTabPanelGap = 10.0;
+    final bottomSafePadding = MediaQuery.of(context).padding.bottom;
+    final bottomPadding = (32.0 + bottomSafePadding) * 0.5;
     final bottomTabs = _bottomTabs;
-    final bottomPanelViewportHeight = (mediaQuery.size.height * 0.34)
-        .clamp(220.0, 300.0)
-        .toDouble();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncBottomTab());
 
     return PopScope(
       canPop: false,
@@ -6024,55 +6149,64 @@ class _BlankPageState extends State<BlankPage> {
                 ),
                 const SizedBox(height: 4),
                 Expanded(
-                  child: AnimatedBuilder(
-                    animation: _canvasListenable,
-                    builder: (context, _) {
-                      final pages = _project.pages;
-                      return LayoutBuilder(
-                        key: const ValueKey('editor-canvas-region'),
-                        builder: (context, constraints) {
-                          const canvasVerticalGap = 16.0;
-                          final availableCanvasHeight =
-                              (constraints.maxHeight - (canvasVerticalGap * 2))
-                                  .clamp(0.0, double.infinity)
-                                  .toDouble();
-                          // The scrollable takes the whole height it is offered,
-                          // never just the page's own. A page is shorter than the
-                          // area around it, and the leftover strip above and below
-                          // used to be dead: a swipe starting there hit nothing, so
-                          // the page would not turn. The page is still centred
-                          // inside, so nothing moves visually.
-                          final canvasViewportHeight =
-                              canvasHeight > availableCanvasHeight
-                              ? canvasHeight
-                              : availableCanvasHeight;
-                          final maxFittingScale = canvasViewportHeight <= 0
-                              ? canvasScale
-                              : (availableCanvasHeight / canvasViewportHeight)
-                                    .clamp(0.05, 1.0)
-                                    .toDouble();
-                          final fittedCanvasScale =
-                              canvasScale > maxFittingScale
-                              ? maxFittingScale
-                              : canvasScale;
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      const canvasVerticalGap = 16.0;
+                      final availableCanvasHeight =
+                          (constraints.maxHeight - (canvasVerticalGap * 2))
+                              .clamp(0.0, double.infinity)
+                              .toDouble();
+                      // The scrollable takes the whole height it is offered,
+                      // never just the page's own. A page is shorter than the
+                      // area around it, and the leftover strip above and below
+                      // used to be dead: a swipe starting there hit nothing, so
+                      // the page would not turn. The page is still centred
+                      // inside, so nothing moves visually.
+                      final canvasViewportHeight =
+                          canvasHeight > availableCanvasHeight
+                          ? canvasHeight
+                          : availableCanvasHeight;
+                      final maxFittingScale = canvasViewportHeight <= 0
+                          ? canvasScale
+                          : (availableCanvasHeight / canvasViewportHeight)
+                                .clamp(0.05, 1.0)
+                                .toDouble();
+                      final fittedCanvasScale = canvasScale > maxFittingScale
+                          ? maxFittingScale
+                          : canvasScale;
 
-                          final canvasView = Padding(
-                            padding: const EdgeInsets.symmetric(
-                              vertical: canvasVerticalGap,
-                            ),
-                            child: Center(
-                              child: SizedBox(
-                                height:
-                                    canvasViewportHeight * fittedCanvasScale,
-                                child: OverflowBox(
-                                  minHeight: 0,
-                                  maxHeight: canvasViewportHeight,
-                                  alignment: Alignment.center,
-                                  child: Transform.scale(
-                                    scale: fittedCanvasScale,
-                                    alignment: Alignment.center,
-                                    child: SizedBox(
-                                      height: canvasViewportHeight,
+                      final canvasView = Padding(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: canvasVerticalGap,
+                        ),
+                        child: Center(
+                          child: SizedBox(
+                            height: canvasViewportHeight * fittedCanvasScale,
+                            child: OverflowBox(
+                              minHeight: 0,
+                              maxHeight: canvasViewportHeight,
+                              alignment: Alignment.center,
+                              child: AnimatedScale(
+                                duration: const Duration(milliseconds: 240),
+                                curve: Curves.easeInOut,
+                                scale: fittedCanvasScale,
+                                alignment: Alignment.center,
+                                child: SizedBox(
+                                  height: canvasViewportHeight,
+                                  // Switching modes swaps one scrollable for a
+                                  // completely different one; without this it
+                                  // was a hard cut. Both trees are alive during
+                                  // the fade, which is only safe now that
+                                  // neither carries a GlobalKey -- a key in two
+                                  // places at once would throw.
+                                  child: AnimatedSwitcher(
+                                    duration: _displayModeSwitchDuration,
+                                    switchInCurve: Curves.easeOut,
+                                    switchOutCurve: Curves.easeIn,
+                                    child: KeyedSubtree(
+                                      key: ValueKey<PageDisplayMode>(
+                                        _displayMode,
+                                      ),
                                       child:
                                           _displayMode == PageDisplayMode.single
                                           ? NotificationListener<
@@ -6105,7 +6239,8 @@ class _BlankPageState extends State<BlankPage> {
                                               },
                                               child: PageView.builder(
                                                 controller: _pageController,
-                                                padEnds: true,
+                                                padEnds:
+                                                    shouldUseSinglePagePeek,
                                                 // Always scrollable. Locking it
                                                 // while something was selected meant
                                                 // the only way off a page was to
@@ -6121,6 +6256,7 @@ class _BlankPageState extends State<BlankPage> {
                                                     _croppingElementId = null;
                                                     _deleteArmedElementId =
                                                         null;
+                                                    _refreshPageControllerViewportIfNeeded();
                                                   });
                                                   WidgetsBinding.instance
                                                       .addPostFrameCallback(
@@ -6422,617 +6558,582 @@ class _BlankPageState extends State<BlankPage> {
                                 ),
                               ),
                             ),
-                          );
+                          ),
+                        ),
+                      );
 
-                          return Stack(
-                            children: [
-                              IgnorePointer(
-                                ignoring: _showPageSorter,
-                                child: canvasView,
+                      return Stack(
+                        children: [
+                          IgnorePointer(
+                            ignoring: _showPageSorter,
+                            child: canvasView,
+                          ),
+                          if (_showPageSorter)
+                            Positioned.fill(
+                              child: _PageSorterView(
+                                pages: pages,
+                                elements: _project.elements,
+                                selectedPageId: _selectedSorterPageId,
+                                onTapPage: _toggleSorterPageSelection,
+                                onReorder: _reorderPages,
+                                onMoveSelectedPage: _moveSelectedSorterPage,
                               ),
-                              if (_showPageSorter)
-                                Positioned.fill(
-                                  child: _PageSorterView(
-                                    pages: pages,
-                                    elements: _project.elements,
-                                    selectedPageId: _selectedSorterPageId,
-                                    onTapPage: _toggleSorterPageSelection,
-                                    onReorder: _reorderPages,
-                                    onMoveSelectedPage: _moveSelectedSorterPage,
-                                  ),
-                                ),
-                            ],
-                          );
-                        },
+                            ),
+                        ],
                       );
                     },
                   ),
                 ),
                 Container(
-                  key: const ValueKey('editor-bottom-dock'),
                   color: const Color(0xFFEAEAEA),
-                  child: SafeArea(
-                    top: false,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        SizedBox(
-                          height: bottomTabRowHeight,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            child: Align(
-                              alignment: Alignment.centerLeft,
-                              child: SingleChildScrollView(
-                                scrollDirection: Axis.horizontal,
-                                physics: const BouncingScrollPhysics(),
-                                child: Row(
-                                  children: [
-                                    for (
-                                      var i = 0;
-                                      i < bottomTabs.length;
-                                      i++
-                                    ) ...[
-                                      _BottomTab(
-                                        key: ValueKey(
-                                          'editor-tab-${bottomTabs[i]}',
-                                        ),
-                                        label: _tabLabel(
-                                          context,
-                                          bottomTabs[i],
-                                        ),
-                                        selected:
-                                            _selectedBottomTab == bottomTabs[i],
-                                        onTap: () =>
-                                            _changeBottomTab(bottomTabs[i]),
-                                      ),
-                                      if (i != bottomTabs.length - 1)
-                                        const SizedBox(width: 18),
-                                    ],
-                                  ],
-                                ),
-                              ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        height: bottomTabRowHeight,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Row(
+                              children: [
+                                for (var i = 0; i < bottomTabs.length; i++) ...[
+                                  _BottomTab(
+                                    label: _tabLabel(context, bottomTabs[i]),
+                                    selected:
+                                        _selectedBottomTab == bottomTabs[i],
+                                    onTap: () =>
+                                        _changeBottomTab(bottomTabs[i]),
+                                  ),
+                                  if (i != bottomTabs.length - 1)
+                                    const SizedBox(width: 18),
+                                ],
+                              ],
                             ),
                           ),
                         ),
-                        const SizedBox(height: bottomTabPanelGap),
-                        SizedBox(
-                          key: const ValueKey('editor-bottom-panel'),
-                          height: bottomPanelViewportHeight,
-                          child: SingleChildScrollView(
+                      ),
+                      const SizedBox(height: bottomTabPanelGap),
+                      AnimatedSize(
+                        duration: const Duration(milliseconds: 220),
+                        curve: Curves.easeInOut,
+                        alignment: Alignment.topCenter,
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 220),
+                          child: Builder(
                             key: ValueKey(_selectedBottomTab),
-                            physics: const ClampingScrollPhysics(),
-                            child: ValueListenableBuilder<ProjectRecord>(
-                              valueListenable: _projectNotifier,
-                              builder: (context, project, _) {
-                                final currentPage =
-                                    project.pages[_currentPageIndex];
-                                final pages = _selectedImageElement != null
-                                    ? <Widget>[
-                                        _PageTabPage(
-                                          page: currentPage,
-                                          elements:
-                                              _visibleElementsOnCurrentPage,
-                                          onAspectSelected: (width, height) {
-                                            _updateCurrentPageAspect(
-                                              aspectWidth: width,
-                                              aspectHeight: height,
-                                            );
-                                          },
-                                          onColorSelected: (color, preset) {
-                                            _updateCurrentPageColor(
-                                              color,
-                                              preset: preset,
-                                            );
-                                          },
-                                          onCustomColorTap:
-                                              _showCustomPageColorDialog,
-                                          savedColors: AppSettingsController
-                                              .instance
-                                              .savedColors,
-                                          onSavedColorDelete: _deleteSavedColor,
+                            builder: (context) {
+                              final pages = _selectedImageElement != null
+                                  ? <Widget>[
+                                      _PageTabPage(
+                                        page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
+                                        onAspectSelected: (width, height) {
+                                          _updateCurrentPageAspect(
+                                            aspectWidth: width,
+                                            aspectHeight: height,
+                                          );
+                                        },
+                                        onColorSelected: (color, preset) {
+                                          _updateCurrentPageColor(
+                                            color,
+                                            preset: preset,
+                                          );
+                                        },
+                                        onCustomColorTap:
+                                            _showCustomPageColorDialog,
+                                        savedColors: AppSettingsController
+                                            .instance
+                                            .savedColors,
+                                        onSavedColorDelete: _deleteSavedColor,
+                                      ),
+                                      _TemplateTabPage(
+                                        page: currentPage,
+                                        pageIndex: _currentPageIndex,
+                                        elements: elementsAnchoredToPage(
+                                          _project,
+                                          _currentPageIndex,
                                         ),
-                                        _TemplateTabPage(
-                                          page: currentPage,
-                                          pageIndex: _currentPageIndex,
-                                          elements: elementsAnchoredToPage(
-                                            _project,
-                                            _currentPageIndex,
+                                        onApplyTemplate: _applyTemplate,
+                                        marginEnabled: AppSettingsController
+                                            .instance
+                                            .templateMarginEnabled,
+                                        marginSize: AppSettingsController
+                                            .instance
+                                            .templateMarginSize,
+                                        marginRatio: AppSettingsController
+                                            .instance
+                                            .templateMarginRatio,
+                                        onMarginEnabledChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginEnabled,
+                                        onMarginSizeChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginSize,
+                                      ),
+                                      Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          SingleChildScrollView(
+                                            scrollDirection: Axis.horizontal,
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 16,
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                _BottomTab(
+                                                  label: AppStrings.of(
+                                                    context,
+                                                  ).t('replaceImage'),
+                                                  selected:
+                                                      _imageSubTab ==
+                                                      _tabImageSource,
+                                                  onTap: () => setState(() {
+                                                    _imageSubTab =
+                                                        _tabImageSource;
+                                                  }),
+                                                ),
+                                                const SizedBox(width: 18),
+                                                _BottomTab(
+                                                  label: AppStrings.of(
+                                                    context,
+                                                  ).t('tabPosition'),
+                                                  selected:
+                                                      _imageSubTab ==
+                                                      _tabImagePosition,
+                                                  onTap: () => setState(() {
+                                                    _imageSubTab =
+                                                        _tabImagePosition;
+                                                  }),
+                                                ),
+                                                const SizedBox(width: 18),
+                                                _BottomTab(
+                                                  label: AppStrings.of(
+                                                    context,
+                                                  ).t('tabSettings'),
+                                                  selected:
+                                                      _imageSubTab ==
+                                                      _tabImageSettings,
+                                                  onTap: () => setState(() {
+                                                    _imageSubTab =
+                                                        _tabImageSettings;
+                                                  }),
+                                                ),
+                                                const SizedBox(width: 18),
+                                                _BottomTab(
+                                                  label: AppStrings.of(
+                                                    context,
+                                                  ).t('tabColor'),
+                                                  selected:
+                                                      _imageSubTab ==
+                                                      _tabImageAdjust,
+                                                  onTap: () => setState(() {
+                                                    _imageSubTab =
+                                                        _tabImageAdjust;
+                                                  }),
+                                                ),
+                                              ],
+                                            ),
                                           ),
-                                          onApplyTemplate: _applyTemplate,
-                                          marginEnabled: AppSettingsController
-                                              .instance
-                                              .templateMarginEnabled,
-                                          marginSize: AppSettingsController
-                                              .instance
-                                              .templateMarginSize,
-                                          marginRatio: AppSettingsController
-                                              .instance
-                                              .templateMarginRatio,
-                                          onMarginEnabledChanged:
-                                              AppSettingsController
-                                                  .instance
-                                                  .setTemplateMarginEnabled,
-                                          onMarginSizeChanged:
-                                              AppSettingsController
-                                                  .instance
-                                                  .setTemplateMarginSize,
-                                        ),
-                                        Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            SingleChildScrollView(
-                                              scrollDirection: Axis.horizontal,
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 16,
-                                                  ),
-                                              child: Row(
-                                                children: [
-                                                  _BottomTab(
-                                                    label: AppStrings.of(
-                                                      context,
-                                                    ).t('replaceImage'),
-                                                    selected:
-                                                        _imageSubTab ==
-                                                        _tabImageSource,
-                                                    onTap: () => setState(() {
-                                                      _imageSubTab =
-                                                          _tabImageSource;
-                                                    }),
-                                                  ),
-                                                  const SizedBox(width: 18),
-                                                  _BottomTab(
-                                                    label: AppStrings.of(
-                                                      context,
-                                                    ).t('tabPosition'),
-                                                    selected:
-                                                        _imageSubTab ==
-                                                        _tabImagePosition,
-                                                    onTap: () => setState(() {
-                                                      _imageSubTab =
-                                                          _tabImagePosition;
-                                                    }),
-                                                  ),
-                                                  const SizedBox(width: 18),
-                                                  _BottomTab(
-                                                    label: AppStrings.of(
-                                                      context,
-                                                    ).t('tabSettings'),
-                                                    selected:
-                                                        _imageSubTab ==
-                                                        _tabImageSettings,
-                                                    onTap: () => setState(() {
-                                                      _imageSubTab =
-                                                          _tabImageSettings;
-                                                    }),
-                                                  ),
-                                                  const SizedBox(width: 18),
-                                                  _BottomTab(
-                                                    label: AppStrings.of(
-                                                      context,
-                                                    ).t('tabColor'),
-                                                    selected:
-                                                        _imageSubTab ==
-                                                        _tabImageAdjust,
-                                                    onTap: () => setState(() {
-                                                      _imageSubTab =
-                                                          _tabImageAdjust;
-                                                    }),
-                                                  ),
-                                                ],
-                                              ),
+                                          const SizedBox(
+                                            height: bottomTabPanelGap,
+                                          ),
+                                          switch (_imageSubTab) {
+                                            _tabImageSource => _ElementTabPage(
+                                              showTextOption: false,
+                                              onAddText: _addTextElement,
+                                              onImportImages: _importImages,
+                                              importedImagePaths:
+                                                  _importedImagePaths,
+                                              onTapImportedImage:
+                                                  _addImageElementFromPath,
+                                              onLongPressImportedImage:
+                                                  _showImportedImagePreview,
                                             ),
-                                            const SizedBox(
-                                              height: bottomTabPanelGap,
-                                            ),
-                                            switch (_imageSubTab) {
-                                              _tabImageSource =>
-                                                _ElementTabPage(
-                                                  showTextOption: false,
-                                                  onAddText: _addTextElement,
-                                                  onImportImages: _importImages,
-                                                  importedImagePaths:
-                                                      _importedImagePaths,
-                                                  onTapImportedImage:
-                                                      _addImageElementFromPath,
-                                                  onLongPressImportedImage:
-                                                      _showImportedImagePreview,
-                                                ),
-                                              _tabImagePosition =>
-                                                _ElementPositionTabPage(
-                                                  range: _elementPositionSliderRange(
-                                                    _selectedImageElement!,
-                                                    pagePixelSize:
-                                                        _elementPositionPagePixelSize(
-                                                          _selectedImageElement!,
-                                                          singleCanvasWidth:
-                                                              singleCanvasWidth,
-                                                          previewCanvasWidth:
-                                                              previewCanvasWidth,
-                                                        ),
-                                                  ),
-                                                  onNudge: _nudgeSelectedImage,
-                                                  onPositionChanged: (x, y) {
-                                                    _updateSelectedImagePositionFromSlider(
-                                                      x: x,
-                                                      y: y,
-                                                      persist: false,
-                                                    );
-                                                  },
-                                                  onPositionChangeEnd: (x, y) {
-                                                    _updateSelectedImagePositionFromSlider(
-                                                      x: x,
-                                                      y: y,
-                                                      persist: true,
-                                                    );
-                                                  },
-                                                ),
-                                              _tabImageSettings => _ImageSettingsTabPage(
-                                                selectedElement:
-                                                    _selectedImageElement!,
-                                                sizeRange:
-                                                    _croppingElementId ==
-                                                        _selectedImageElement!
-                                                            .id
-                                                    ? (
-                                                        value: _cropScaleToSliderValue(
-                                                          _cropScaleFromData(
-                                                            _selectedImageElement!
-                                                                .data,
-                                                          ),
-                                                        ),
-                                                        min: 0.0,
-                                                        max: 1.0,
-                                                      )
-                                                    : _imageSizeSliderRange(
+                                            _tabImagePosition =>
+                                              _ElementPositionTabPage(
+                                                range: _elementPositionSliderRange(
+                                                  _selectedImageElement!,
+                                                  pagePixelSize:
+                                                      _elementPositionPagePixelSize(
                                                         _selectedImageElement!,
+                                                        singleCanvasWidth:
+                                                            singleCanvasWidth,
+                                                        previewCanvasWidth:
+                                                            previewCanvasWidth,
                                                       ),
-                                                isCropping:
-                                                    _croppingElementId ==
-                                                    _selectedImageElement!.id,
-                                                onStartCrop:
-                                                    _startCroppingSelectedImage,
-                                                onFinishCrop:
-                                                    _finishCroppingSelectedImage,
-                                                onAspectSelected:
-                                                    _updateSelectedImageAspect,
-                                                onSizeChanged: (value) {
-                                                  if (_croppingElementId ==
-                                                      _selectedImageElement!
-                                                          .id) {
-                                                    _updateImageCropScale(
-                                                      elementId:
-                                                          _selectedImageElement!
-                                                              .id,
-                                                      scale:
-                                                          _cropScaleFromSliderValue(
-                                                            value,
-                                                          ),
-                                                      persist: false,
-                                                    );
-                                                  } else {
-                                                    _updateSelectedImageSizeFromSlider(
-                                                      value,
-                                                      persist: false,
-                                                    );
-                                                  }
-                                                },
-                                                onSizeChangeEnd: (value) {
-                                                  if (_croppingElementId ==
-                                                      _selectedImageElement!
-                                                          .id) {
-                                                    _updateImageCropScale(
-                                                      elementId:
-                                                          _selectedImageElement!
-                                                              .id,
-                                                      scale:
-                                                          _cropScaleFromSliderValue(
-                                                            value,
-                                                          ),
-                                                      persist: true,
-                                                    );
-                                                  } else {
-                                                    _updateSelectedImageSizeFromSlider(
-                                                      value,
-                                                      persist: true,
-                                                    );
-                                                  }
-                                                },
-                                                onBorderRadiusChanged: (value) {
-                                                  _updateSelectedImageBorderRadius(
-                                                    value,
-                                                    persist: false,
-                                                  );
-                                                },
-                                                onBorderRadiusChangeEnd: (value) {
-                                                  _updateSelectedImageBorderRadius(
-                                                    value,
-                                                    persist: true,
-                                                  );
-                                                },
-                                              ),
-                                              _tabImageAdjust => _AdjustTabPage(
-                                                selectedElement:
-                                                    _selectedImageElement!,
-                                                hdrEnabled:
-                                                    AppSettingsController
-                                                        .instance
-                                                        .hdrEnabled,
-                                                onHdrBrightnessChanged: (value) {
-                                                  _updateSelectedImageHdrBrightness(
-                                                    value,
-                                                    persist: false,
-                                                  );
-                                                },
-                                                onHdrBrightnessChangeEnd: (value) {
-                                                  _updateSelectedImageHdrBrightness(
-                                                    value,
-                                                    persist: true,
-                                                  );
-                                                },
-                                                onAdjustmentChanged:
-                                                    (field, value) {
-                                                      _updateSelectedImageAdjustment(
-                                                        field,
-                                                        value,
-                                                        persist: false,
-                                                      );
-                                                    },
-                                                onAdjustmentChangeEnd:
-                                                    (field, value) {
-                                                      _updateSelectedImageAdjustment(
-                                                        field,
-                                                        value,
-                                                        persist: true,
-                                                      );
-                                                    },
-                                              ),
-                                              _ => const SizedBox.shrink(),
-                                            },
-                                          ],
-                                        ),
-                                        _LayersTabPage(
-                                          elements:
-                                              _visibleElementsOnCurrentPage,
-                                          selectedElementId: _selectedElementId,
-                                          onSelectElement: (elementId) {
-                                            if (_selectedElementId !=
-                                                elementId) {
-                                              setState(() {
-                                                _selectedElementId = elementId;
-                                                _croppingElementId = null;
-                                                _deleteArmedElementId = null;
-                                              });
-                                            }
-                                          },
-                                          onReorderElement: _reorderElements,
-                                        ),
-                                      ]
-                                    : _selectedTextElement != null
-                                    ? <Widget>[
-                                        _PageTabPage(
-                                          page: currentPage,
-                                          elements:
-                                              _visibleElementsOnCurrentPage,
-                                          onAspectSelected: (width, height) {
-                                            _updateCurrentPageAspect(
-                                              aspectWidth: width,
-                                              aspectHeight: height,
-                                            );
-                                          },
-                                          onColorSelected: (color, preset) {
-                                            _updateCurrentPageColor(
-                                              color,
-                                              preset: preset,
-                                            );
-                                          },
-                                          onCustomColorTap:
-                                              _showCustomPageColorDialog,
-                                          savedColors: AppSettingsController
-                                              .instance
-                                              .savedColors,
-                                          onSavedColorDelete: _deleteSavedColor,
-                                        ),
-                                        _TemplateTabPage(
-                                          page: currentPage,
-                                          pageIndex: _currentPageIndex,
-                                          elements: elementsAnchoredToPage(
-                                            _project,
-                                            _currentPageIndex,
-                                          ),
-                                          onApplyTemplate: _applyTemplate,
-                                          marginEnabled: AppSettingsController
-                                              .instance
-                                              .templateMarginEnabled,
-                                          marginSize: AppSettingsController
-                                              .instance
-                                              .templateMarginSize,
-                                          marginRatio: AppSettingsController
-                                              .instance
-                                              .templateMarginRatio,
-                                          onMarginEnabledChanged:
-                                              AppSettingsController
-                                                  .instance
-                                                  .setTemplateMarginEnabled,
-                                          onMarginSizeChanged:
-                                              AppSettingsController
-                                                  .instance
-                                                  .setTemplateMarginSize,
-                                        ),
-                                        _ElementTabPage(
-                                          showTextOption: true,
-                                          onAddText: _addTextElement,
-                                          onImportImages: _importImages,
-                                          importedImagePaths:
-                                              _importedImagePaths,
-                                          onTapImportedImage:
-                                              _addImageElementFromPath,
-                                          onLongPressImportedImage:
-                                              _showImportedImagePreview,
-                                        ),
-                                        _ElementPositionTabPage(
-                                          range: _elementPositionSliderRange(
-                                            _selectedTextElement!,
-                                            pagePixelSize:
-                                                _elementPositionPagePixelSize(
-                                                  _selectedTextElement!,
-                                                  singleCanvasWidth:
-                                                      singleCanvasWidth,
-                                                  previewCanvasWidth:
-                                                      previewCanvasWidth,
                                                 ),
-                                          ),
-                                          onNudge: _nudgeSelectedText,
-                                          onPositionChanged: (x, y) {
-                                            _updateSelectedTextPositionFromSlider(
-                                              x: x,
-                                              y: y,
-                                              persist: false,
-                                            );
-                                          },
-                                          onPositionChangeEnd: (x, y) {
-                                            _updateSelectedTextPositionFromSlider(
-                                              x: x,
-                                              y: y,
-                                              persist: true,
-                                            );
-                                          },
-                                        ),
-                                        _TextSettingsTabPage(
-                                          selectedElement:
-                                              _selectedTextElement!,
-                                          onEditText: () {
-                                            _showTextEditor(
-                                              _selectedTextElement!.id,
-                                            );
-                                          },
-                                          onColorSelected:
-                                              _updateSelectedTextColor,
-                                          onSizeChanged: (value) {
-                                            _updateSelectedTextSize(
-                                              value,
-                                              persist: false,
-                                            );
-                                          },
-                                          onSizeChangeEnd: (value) {
-                                            _updateSelectedTextSize(
-                                              value,
-                                              persist: true,
-                                            );
-                                          },
-                                        ),
-                                        _LayersTabPage(
-                                          elements:
-                                              _visibleElementsOnCurrentPage,
-                                          selectedElementId: _selectedElementId,
-                                          onSelectElement: (elementId) {
-                                            if (_selectedElementId !=
-                                                elementId) {
-                                              setState(() {
-                                                _selectedElementId = elementId;
-                                                _croppingElementId = null;
-                                                _deleteArmedElementId = null;
-                                              });
-                                            }
-                                          },
-                                          onReorderElement: _reorderElements,
-                                        ),
-                                      ]
-                                    : <Widget>[
-                                        _PageTabPage(
-                                          page: currentPage,
-                                          elements:
-                                              _visibleElementsOnCurrentPage,
-                                          onAspectSelected: (width, height) {
-                                            _updateCurrentPageAspect(
-                                              aspectWidth: width,
-                                              aspectHeight: height,
-                                            );
-                                          },
-                                          onColorSelected: (color, preset) {
-                                            _updateCurrentPageColor(
-                                              color,
-                                              preset: preset,
-                                            );
-                                          },
-                                          onCustomColorTap:
-                                              _showCustomPageColorDialog,
-                                          savedColors: AppSettingsController
-                                              .instance
-                                              .savedColors,
-                                          onSavedColorDelete: _deleteSavedColor,
-                                        ),
-                                        _TemplateTabPage(
-                                          page: currentPage,
-                                          pageIndex: _currentPageIndex,
-                                          elements: elementsAnchoredToPage(
-                                            _project,
-                                            _currentPageIndex,
-                                          ),
-                                          onApplyTemplate: _applyTemplate,
-                                          marginEnabled: AppSettingsController
-                                              .instance
-                                              .templateMarginEnabled,
-                                          marginSize: AppSettingsController
-                                              .instance
-                                              .templateMarginSize,
-                                          marginRatio: AppSettingsController
-                                              .instance
-                                              .templateMarginRatio,
-                                          onMarginEnabledChanged:
-                                              AppSettingsController
+                                                onNudge: _nudgeSelectedImage,
+                                                onPositionChanged: (x, y) {
+                                                  _updateSelectedImagePositionFromSlider(
+                                                    x: x,
+                                                    y: y,
+                                                    persist: false,
+                                                  );
+                                                },
+                                                onPositionChangeEnd: (x, y) {
+                                                  _updateSelectedImagePositionFromSlider(
+                                                    x: x,
+                                                    y: y,
+                                                    persist: true,
+                                                  );
+                                                },
+                                              ),
+                                            _tabImageSettings => _ImageSettingsTabPage(
+                                              selectedElement:
+                                                  _selectedImageElement!,
+                                              sizeRange:
+                                                  _croppingElementId ==
+                                                      _selectedImageElement!.id
+                                                  ? (
+                                                      value: _cropScaleToSliderValue(
+                                                        _cropScaleFromData(
+                                                          _selectedImageElement!
+                                                              .data,
+                                                        ),
+                                                      ),
+                                                      min: 0.0,
+                                                      max: 1.0,
+                                                    )
+                                                  : _imageSizeSliderRange(
+                                                      _selectedImageElement!,
+                                                    ),
+                                              isCropping:
+                                                  _croppingElementId ==
+                                                  _selectedImageElement!.id,
+                                              onStartCrop:
+                                                  _startCroppingSelectedImage,
+                                              onFinishCrop:
+                                                  _finishCroppingSelectedImage,
+                                              onAspectSelected:
+                                                  _updateSelectedImageAspect,
+                                              onSizeChanged: (value) {
+                                                if (_croppingElementId ==
+                                                    _selectedImageElement!.id) {
+                                                  _updateImageCropScale(
+                                                    elementId:
+                                                        _selectedImageElement!
+                                                            .id,
+                                                    scale:
+                                                        _cropScaleFromSliderValue(
+                                                          value,
+                                                        ),
+                                                    persist: false,
+                                                  );
+                                                } else {
+                                                  _updateSelectedImageSizeFromSlider(
+                                                    value,
+                                                    persist: false,
+                                                  );
+                                                }
+                                              },
+                                              onSizeChangeEnd: (value) {
+                                                if (_croppingElementId ==
+                                                    _selectedImageElement!.id) {
+                                                  _updateImageCropScale(
+                                                    elementId:
+                                                        _selectedImageElement!
+                                                            .id,
+                                                    scale:
+                                                        _cropScaleFromSliderValue(
+                                                          value,
+                                                        ),
+                                                    persist: true,
+                                                  );
+                                                } else {
+                                                  _updateSelectedImageSizeFromSlider(
+                                                    value,
+                                                    persist: true,
+                                                  );
+                                                }
+                                              },
+                                              onBorderRadiusChanged: (value) {
+                                                _updateSelectedImageBorderRadius(
+                                                  value,
+                                                  persist: false,
+                                                );
+                                              },
+                                              onBorderRadiusChangeEnd: (value) {
+                                                _updateSelectedImageBorderRadius(
+                                                  value,
+                                                  persist: true,
+                                                );
+                                              },
+                                            ),
+                                            _tabImageAdjust => _AdjustTabPage(
+                                              selectedElement:
+                                                  _selectedImageElement!,
+                                              hdrEnabled: AppSettingsController
                                                   .instance
-                                                  .setTemplateMarginEnabled,
-                                          onMarginSizeChanged:
-                                              AppSettingsController
-                                                  .instance
-                                                  .setTemplateMarginSize,
-                                        ),
-                                        _ElementTabPage(
-                                          showTextOption: true,
-                                          onAddText: _addTextElement,
-                                          onImportImages: _importImages,
-                                          importedImagePaths:
-                                              _importedImagePaths,
-                                          onTapImportedImage:
-                                              _addImageElementFromPath,
-                                          onLongPressImportedImage:
-                                              _showImportedImagePreview,
-                                        ),
-                                        _LayersTabPage(
-                                          elements:
-                                              _visibleElementsOnCurrentPage,
-                                          selectedElementId: _selectedElementId,
-                                          onSelectElement: (elementId) {
-                                            if (_selectedElementId !=
-                                                elementId) {
-                                              setState(() {
-                                                _selectedElementId = elementId;
-                                                _croppingElementId = null;
-                                                _deleteArmedElementId = null;
-                                              });
-                                            }
+                                                  .hdrEnabled,
+                                              onHdrBrightnessChanged: (value) {
+                                                _updateSelectedImageHdrBrightness(
+                                                  value,
+                                                  persist: false,
+                                                );
+                                              },
+                                              onHdrBrightnessChangeEnd: (value) {
+                                                _updateSelectedImageHdrBrightness(
+                                                  value,
+                                                  persist: true,
+                                                );
+                                              },
+                                              onAdjustmentChanged: (field, value) {
+                                                _updateSelectedImageAdjustment(
+                                                  field,
+                                                  value,
+                                                  persist: false,
+                                                );
+                                              },
+                                              onAdjustmentChangeEnd:
+                                                  (field, value) {
+                                                    _updateSelectedImageAdjustment(
+                                                      field,
+                                                      value,
+                                                      persist: true,
+                                                    );
+                                                  },
+                                            ),
+                                            _ => const SizedBox.shrink(),
                                           },
-                                          onReorderElement: _reorderElements,
+                                        ],
+                                      ),
+                                      _LayersTabPage(
+                                        elements: _visibleElementsOnCurrentPage,
+                                        selectedElementId: _selectedElementId,
+                                        onSelectElement: (elementId) {
+                                          if (_selectedElementId != elementId) {
+                                            setState(() {
+                                              _selectedElementId = elementId;
+                                              _croppingElementId = null;
+                                              _deleteArmedElementId = null;
+                                            });
+                                          }
+                                        },
+                                        onReorderElement: _reorderElements,
+                                      ),
+                                    ]
+                                  : _selectedTextElement != null
+                                  ? <Widget>[
+                                      _PageTabPage(
+                                        page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
+                                        onAspectSelected: (width, height) {
+                                          _updateCurrentPageAspect(
+                                            aspectWidth: width,
+                                            aspectHeight: height,
+                                          );
+                                        },
+                                        onColorSelected: (color, preset) {
+                                          _updateCurrentPageColor(
+                                            color,
+                                            preset: preset,
+                                          );
+                                        },
+                                        onCustomColorTap:
+                                            _showCustomPageColorDialog,
+                                        savedColors: AppSettingsController
+                                            .instance
+                                            .savedColors,
+                                        onSavedColorDelete: _deleteSavedColor,
+                                      ),
+                                      _TemplateTabPage(
+                                        page: currentPage,
+                                        pageIndex: _currentPageIndex,
+                                        elements: elementsAnchoredToPage(
+                                          _project,
+                                          _currentPageIndex,
                                         ),
-                                      ];
-                                final index = bottomTabs.indexOf(
-                                  _selectedBottomTab,
-                                );
-                                if (index == -1 || index >= pages.length) {
-                                  return const SizedBox.shrink();
-                                }
-                                return SizedBox(
-                                  width: double.infinity,
-                                  child: pages[index],
-                                );
-                              },
-                            ),
+                                        onApplyTemplate: _applyTemplate,
+                                        marginEnabled: AppSettingsController
+                                            .instance
+                                            .templateMarginEnabled,
+                                        marginSize: AppSettingsController
+                                            .instance
+                                            .templateMarginSize,
+                                        marginRatio: AppSettingsController
+                                            .instance
+                                            .templateMarginRatio,
+                                        onMarginEnabledChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginEnabled,
+                                        onMarginSizeChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginSize,
+                                      ),
+                                      _ElementTabPage(
+                                        showTextOption: true,
+                                        onAddText: _addTextElement,
+                                        onImportImages: _importImages,
+                                        importedImagePaths: _importedImagePaths,
+                                        onTapImportedImage:
+                                            _addImageElementFromPath,
+                                        onLongPressImportedImage:
+                                            _showImportedImagePreview,
+                                      ),
+                                      _ElementPositionTabPage(
+                                        range: _elementPositionSliderRange(
+                                          _selectedTextElement!,
+                                          pagePixelSize:
+                                              _elementPositionPagePixelSize(
+                                                _selectedTextElement!,
+                                                singleCanvasWidth:
+                                                    singleCanvasWidth,
+                                                previewCanvasWidth:
+                                                    previewCanvasWidth,
+                                              ),
+                                        ),
+                                        onNudge: _nudgeSelectedText,
+                                        onPositionChanged: (x, y) {
+                                          _updateSelectedTextPositionFromSlider(
+                                            x: x,
+                                            y: y,
+                                            persist: false,
+                                          );
+                                        },
+                                        onPositionChangeEnd: (x, y) {
+                                          _updateSelectedTextPositionFromSlider(
+                                            x: x,
+                                            y: y,
+                                            persist: true,
+                                          );
+                                        },
+                                      ),
+                                      _TextSettingsTabPage(
+                                        selectedElement: _selectedTextElement!,
+                                        onEditText: () {
+                                          _showTextEditor(
+                                            _selectedTextElement!.id,
+                                          );
+                                        },
+                                        onColorSelected:
+                                            _updateSelectedTextColor,
+                                        onSizeChanged: (value) {
+                                          _updateSelectedTextSize(
+                                            value,
+                                            persist: false,
+                                          );
+                                        },
+                                        onSizeChangeEnd: (value) {
+                                          _updateSelectedTextSize(
+                                            value,
+                                            persist: true,
+                                          );
+                                        },
+                                      ),
+                                      _LayersTabPage(
+                                        elements: _visibleElementsOnCurrentPage,
+                                        selectedElementId: _selectedElementId,
+                                        onSelectElement: (elementId) {
+                                          if (_selectedElementId != elementId) {
+                                            setState(() {
+                                              _selectedElementId = elementId;
+                                              _croppingElementId = null;
+                                              _deleteArmedElementId = null;
+                                            });
+                                          }
+                                        },
+                                        onReorderElement: _reorderElements,
+                                      ),
+                                    ]
+                                  : <Widget>[
+                                      _PageTabPage(
+                                        page: currentPage,
+                                        elements: _visibleElementsOnCurrentPage,
+                                        onAspectSelected: (width, height) {
+                                          _updateCurrentPageAspect(
+                                            aspectWidth: width,
+                                            aspectHeight: height,
+                                          );
+                                        },
+                                        onColorSelected: (color, preset) {
+                                          _updateCurrentPageColor(
+                                            color,
+                                            preset: preset,
+                                          );
+                                        },
+                                        onCustomColorTap:
+                                            _showCustomPageColorDialog,
+                                        savedColors: AppSettingsController
+                                            .instance
+                                            .savedColors,
+                                        onSavedColorDelete: _deleteSavedColor,
+                                      ),
+                                      _TemplateTabPage(
+                                        page: currentPage,
+                                        pageIndex: _currentPageIndex,
+                                        elements: elementsAnchoredToPage(
+                                          _project,
+                                          _currentPageIndex,
+                                        ),
+                                        onApplyTemplate: _applyTemplate,
+                                        marginEnabled: AppSettingsController
+                                            .instance
+                                            .templateMarginEnabled,
+                                        marginSize: AppSettingsController
+                                            .instance
+                                            .templateMarginSize,
+                                        marginRatio: AppSettingsController
+                                            .instance
+                                            .templateMarginRatio,
+                                        onMarginEnabledChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginEnabled,
+                                        onMarginSizeChanged:
+                                            AppSettingsController
+                                                .instance
+                                                .setTemplateMarginSize,
+                                      ),
+                                      _ElementTabPage(
+                                        showTextOption: true,
+                                        onAddText: _addTextElement,
+                                        onImportImages: _importImages,
+                                        importedImagePaths: _importedImagePaths,
+                                        onTapImportedImage:
+                                            _addImageElementFromPath,
+                                        onLongPressImportedImage:
+                                            _showImportedImagePreview,
+                                      ),
+                                      _LayersTabPage(
+                                        elements: _visibleElementsOnCurrentPage,
+                                        selectedElementId: _selectedElementId,
+                                        onSelectElement: (elementId) {
+                                          if (_selectedElementId != elementId) {
+                                            setState(() {
+                                              _selectedElementId = elementId;
+                                              _croppingElementId = null;
+                                              _deleteArmedElementId = null;
+                                            });
+                                          }
+                                        },
+                                        onReorderElement: _reorderElements,
+                                      ),
+                                    ];
+                              final index = bottomTabs.indexOf(
+                                _selectedBottomTab,
+                              );
+                              if (index == -1 || index >= pages.length) {
+                                return const SizedBox.shrink();
+                              }
+                              return SizedBox(
+                                width: double.infinity,
+                                child: pages[index],
+                              );
+                            },
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                      SizedBox(
+                        height: bottomPadding,
+                        child: const SizedBox.shrink(),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -10092,7 +10193,6 @@ class _ExportQualityButton extends StatelessWidget {
 
 class _BottomTab extends StatelessWidget {
   const _BottomTab({
-    super.key,
     required this.label,
     required this.selected,
     required this.onTap,
@@ -11514,9 +11614,6 @@ class _TemplateCard extends StatelessWidget {
             const Spacer(),
             Text(
               strings.t(option.label),
-              maxLines: 1,
-              softWrap: false,
-              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
@@ -11882,9 +11979,6 @@ class _ElementOptionCard extends StatelessWidget {
             const Spacer(),
             Text(
               strings.t(label),
-              maxLines: 1,
-              softWrap: false,
-              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 fontSize: 15,
                 fontWeight: FontWeight.w600,
