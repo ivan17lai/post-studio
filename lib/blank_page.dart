@@ -4369,6 +4369,46 @@ class _BlankPageState extends State<BlankPage> {
     return shouldApply == true;
   }
 
+  /// The template the current page is laid out as, if it is laid out as one.
+  ///
+  /// Derived by comparison rather than remembered, the same way the template
+  /// picker decides which card to highlight — so moving or deleting a slot by
+  /// hand stops the page matching, and nothing has to be kept in step.
+  TemplateOption? _matchedTemplateForCurrentPage(double marginRatio) {
+    final page = _project.pages[_currentPageIndex];
+    final pageElements = elementsAnchoredToPage(_project, _currentPageIndex);
+    for (final option in _TemplateTabPage.allTemplates) {
+      if (option.matchesPage(page) &&
+          option.matchesLayout(
+            page,
+            pageElements,
+            _currentPageIndex,
+            marginRatio,
+          )) {
+        return option;
+      }
+    }
+    return null;
+  }
+
+  /// Applies a margin setting change and re-flows the page if it is currently
+  /// laid out as a template.
+  ///
+  /// Changing the margin used to move only the icons: the elements kept the
+  /// positions the old margin gave them, so the page silently stopped matching
+  /// any template and the highlight went out with it.
+  Future<void> _changeTemplateMargin(VoidCallback applyChange) async {
+    // Read the layout against the margin still in force. Afterwards the
+    // positions are measured against the new one and nothing matches.
+    final matched = _matchedTemplateForCurrentPage(
+      AppSettingsController.instance.templateMarginRatio,
+    );
+    applyChange();
+    if (matched != null) {
+      await _applyTemplate(matched);
+    }
+  }
+
   Future<void> _applyTemplate(TemplateOption option) async {
     final currentPage = _project.pages[_currentPageIndex];
     final shouldApply = await _confirmApplyTemplateIfNeeded(
@@ -6555,14 +6595,26 @@ class _BlankPageState extends State<BlankPage> {
                                         marginRatio: AppSettingsController
                                             .instance
                                             .templateMarginRatio,
-                                        onMarginEnabledChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginEnabled,
-                                        onMarginSizeChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginSize,
+                                        onMarginEnabledChanged: (enabled) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginEnabled(
+                                                    enabled,
+                                                  ),
+                                            ),
+                                          );
+                                        },
+                                        onMarginSizeChanged: (size) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginSize(size),
+                                            ),
+                                          );
+                                        },
                                       ),
                                       Column(
                                         crossAxisAlignment:
@@ -6848,14 +6900,26 @@ class _BlankPageState extends State<BlankPage> {
                                         marginRatio: AppSettingsController
                                             .instance
                                             .templateMarginRatio,
-                                        onMarginEnabledChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginEnabled,
-                                        onMarginSizeChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginSize,
+                                        onMarginEnabledChanged: (enabled) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginEnabled(
+                                                    enabled,
+                                                  ),
+                                            ),
+                                          );
+                                        },
+                                        onMarginSizeChanged: (size) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginSize(size),
+                                            ),
+                                          );
+                                        },
                                       ),
                                       _ElementTabPage(
                                         showTextOption: true,
@@ -6972,14 +7036,26 @@ class _BlankPageState extends State<BlankPage> {
                                         marginRatio: AppSettingsController
                                             .instance
                                             .templateMarginRatio,
-                                        onMarginEnabledChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginEnabled,
-                                        onMarginSizeChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginSize,
+                                        onMarginEnabledChanged: (enabled) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginEnabled(
+                                                    enabled,
+                                                  ),
+                                            ),
+                                          );
+                                        },
+                                        onMarginSizeChanged: (size) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginSize(size),
+                                            ),
+                                          );
+                                        },
                                       ),
                                       _ElementTabPage(
                                         showTextOption: true,
@@ -10414,7 +10490,7 @@ class _TemplateTabPage extends StatefulWidget {
   ];
   static const List<String> _wideAspects = <String>['3:2', '16:9'];
 
-  static const List<TemplateOption> _allTemplates = <TemplateOption>[
+  static const List<TemplateOption> allTemplates = <TemplateOption>[
     // --- Universal layouts, valid on every page aspect. ---
     TemplateOption(id: 'page_fill', label: 'fill', isContainFill: true),
     TemplateOption(
@@ -10600,7 +10676,7 @@ class _TemplateTabPageState extends State<_TemplateTabPage> {
     final page = widget.page;
     final marginRatio = widget.marginRatio;
 
-    final forThisPage = _TemplateTabPage._allTemplates
+    final forThisPage = _TemplateTabPage.allTemplates
         .where((template) => template.matchesPage(page))
         .toList();
 
