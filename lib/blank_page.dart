@@ -11603,6 +11603,11 @@ class _TemplateCard extends StatelessWidget {
             const Spacer(),
             Text(
               strings.t(option.label),
+              // The card is a fixed 120x75. A label long enough to wrap pushed
+              // the column past that height and tripped the overflow stripes,
+              // so it is held to one line whatever a future template is called.
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
