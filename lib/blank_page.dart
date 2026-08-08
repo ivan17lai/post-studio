@@ -3712,9 +3712,7 @@ class _BlankPageState extends State<BlankPage> {
         ? _project.pages[_currentPageIndex]
         : _project.pages[pageIndex];
     final width = _displayMode == PageDisplayMode.single
-        ? (singleCanvasWidth - (_canvasControlChromePadding * 2))
-              .clamp(1.0, singleCanvasWidth)
-              .toDouble()
+        ? singleCanvasWidth.clamp(1.0, double.infinity).toDouble()
         : previewCanvasWidth.clamp(1.0, double.infinity).toDouble();
     return (
       width: width,
@@ -5827,9 +5825,7 @@ class _BlankPageState extends State<BlankPage> {
 
     final canvasHeight =
         (_displayMode == PageDisplayMode.single
-            ? tallestPageHeight(
-                singleCanvasWidth - (_canvasControlChromePadding * 2),
-              )
+            ? tallestPageHeight(singleCanvasWidth)
             : tallestPageHeight(previewCanvasWidth)) +
         (_canvasControlChromePadding * 2);
     // The canvas is only ever shrunk to fit the height the bottom panel leaves
@@ -6156,7 +6152,7 @@ class _BlankPageState extends State<BlankPage> {
                                                         ),
                                                     pageIndex: index,
                                                     pageCount: pages.length,
-                                                    showSelectionChrome:
+                                                    isCurrentPage:
                                                         index ==
                                                         _currentPageIndex,
                                                     page: page,
@@ -7053,7 +7049,7 @@ class _CanvasViewport extends StatelessWidget {
     required this.elements,
     required this.pageIndex,
     required this.pageCount,
-    required this.showSelectionChrome,
+    required this.isCurrentPage,
     required this.page,
     required this.viewportWidth,
     required this.viewportHeight,
@@ -7088,15 +7084,18 @@ class _CanvasViewport extends StatelessWidget {
   /// Only so the divider knows not to draw past the last page.
   final int pageCount;
 
-  /// Whether this page draws the selection chrome for the selected element.
+  /// Whether this is the page the user is on, as opposed to a neighbour the
+  /// PageView keeps built either side of it.
   ///
-  /// A cross-page element appears in every page's viewport, and while its
-  /// content is clipped to the page, its chrome deliberately is not — handles
-  /// have to be able to sit outside the page edge. So the neighbour drew a
-  /// second selection frame, positioned against an element starting off to the
-  /// left, leaving just the sliver that hugs the page edge visible. Only the
-  /// page being looked at draws chrome, so there is exactly one frame.
-  final bool showSelectionChrome;
+  /// Gates two things. Selection chrome, because a cross-page element appears
+  /// in every page's viewport and its chrome — unlike its content — is
+  /// deliberately not clipped to the page, so the neighbour drew a second
+  /// selection frame against an element starting off to its left, leaving just
+  /// the sliver hugging the page edge visible.
+  ///
+  /// And visibility: a neighbour is only ever on screen mid-swipe, so it stays
+  /// transparent until [showPageDivider] says a scroll is under way.
+  final bool isCurrentPage;
 
   final ProjectPage page;
   final double viewportWidth;
@@ -7138,187 +7137,206 @@ class _CanvasViewport extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final pageWidth = (viewportWidth - (_canvasControlChromePadding * 2))
-        .clamp(1.0, viewportWidth)
-        .toDouble();
+    // Flush: the page fills its slot, so consecutive pages meet with no gap
+    // when you swipe between them.
+    //
+    // The page used to be inset by _canvasControlChromePadding on each side to
+    // leave room for selection handles, which put 18dp of dead space between
+    // any two pages. It also meant element x — laid out against pageWidth —
+    // ran on a different pitch from the PageView, which steps by the full
+    // viewport, so a cross-page photo's two halves drifted 18dp apart for
+    // every page seam they crossed. One width fixes both.
+    final pageWidth = viewportWidth;
     final pageHeight = pageWidth * (page.aspectHeight / page.aspectWidth);
     final canvasTop = (viewportHeight - pageHeight) / 2;
 
-    return Align(
-      alignment: Alignment.center,
-      child: SizedBox(
-        width: viewportWidth,
-        height: viewportHeight,
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Center(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: onTapCanvas,
-                child: RepaintBoundary(
-                  child: Container(
-                    width: pageWidth,
-                    height: pageHeight,
-                    decoration: BoxDecoration(
-                      color: _pageBackgroundColorFromExtras(page.extras),
-                    ),
-                    // Foreground, not decoration: a full-bleed photo covers the
-                    // page edge to edge, so a border painted behind it is
-                    // invisible exactly when it is most needed.
-                    foregroundDecoration: showBorder
-                        ? BoxDecoration(
-                            border: Border.all(
-                              color: const Color(0xFF8F8F8F),
-                              width: 1,
-                            ),
-                          )
-                        : null,
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        return Stack(
-                          clipBehavior: Clip.none,
-                          children: [
-                            for (final element in elements) ...[
-                              if (element.type == 'image')
-                                _ImageElementWidget(
-                                  key: ValueKey('canvas_${element.id}'),
-                                  element: element,
-                                  isSelected:
-                                      showSelectionChrome &&
-                                      selectedElementId == element.id,
-                                  isDeleteArmed:
-                                      showSelectionChrome &&
-                                      deleteArmedElementId == element.id,
-                                  isCropMode:
-                                      showSelectionChrome &&
-                                      croppingElementId == element.id,
-                                  pageWidth: constraints.maxWidth,
-                                  pageHeight: constraints.maxHeight,
-                                  pageOffsetX:
-                                      -pageIndex * constraints.maxWidth,
-                                  contentClipRect: Rect.fromLTWH(
-                                    0,
-                                    0,
-                                    constraints.maxWidth,
-                                    constraints.maxHeight,
+    return AnimatedOpacity(
+      // Neighbours only exist while you are moving between pages. At rest a
+      // page is the only thing on screen, so the ones on either side stay
+      // invisible and fade up as the swipe reveals them.
+      opacity: isCurrentPage || showPageDivider ? 1 : 0,
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOut,
+      child: Align(
+        alignment: Alignment.center,
+        child: SizedBox(
+          width: viewportWidth,
+          height: viewportHeight,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Center(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: onTapCanvas,
+                  child: RepaintBoundary(
+                    child: Container(
+                      width: pageWidth,
+                      height: pageHeight,
+                      decoration: BoxDecoration(
+                        color: _pageBackgroundColorFromExtras(page.extras),
+                      ),
+                      // Foreground, not decoration: a full-bleed photo covers the
+                      // page edge to edge, so a border painted behind it is
+                      // invisible exactly when it is most needed.
+                      foregroundDecoration: showBorder
+                          ? BoxDecoration(
+                              border: Border.all(
+                                color: const Color(0xFF8F8F8F),
+                                width: 1,
+                              ),
+                            )
+                          : null,
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          return Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              for (final element in elements) ...[
+                                if (element.type == 'image')
+                                  _ImageElementWidget(
+                                    key: ValueKey('canvas_${element.id}'),
+                                    element: element,
+                                    isSelected:
+                                        isCurrentPage &&
+                                        selectedElementId == element.id,
+                                    isDeleteArmed:
+                                        isCurrentPage &&
+                                        deleteArmedElementId == element.id,
+                                    isCropMode:
+                                        isCurrentPage &&
+                                        croppingElementId == element.id,
+                                    pageWidth: constraints.maxWidth,
+                                    pageHeight: constraints.maxHeight,
+                                    pageOffsetX:
+                                        -pageIndex * constraints.maxWidth,
+                                    contentClipRect: Rect.fromLTWH(
+                                      0,
+                                      0,
+                                      constraints.maxWidth,
+                                      constraints.maxHeight,
+                                    ),
+                                    hdrViewEnabled: hdrViewEnabled,
+                                    onTap: () => onTapElement(element.id),
+                                    onDoubleTap: () =>
+                                        onDoubleTapElement(element.id),
+                                    onMove: (x, y, persist) {
+                                      onMoveElement(element.id, x, y, persist);
+                                    },
+                                    onResize: (width, persist) {
+                                      onResizeElement(
+                                        element.id,
+                                        width,
+                                        persist,
+                                      );
+                                    },
+                                    onCropMove: (x, y, persist) {
+                                      onCropMove(element.id, x, y, persist);
+                                    },
+                                    onCropScale: (scale, persist) {
+                                      onCropScale(element.id, scale, persist);
+                                    },
+                                    onCropBoundsChanged:
+                                        (x, y, w, h, cx, cy, cs, persist) {
+                                          onCropBoundsChanged(
+                                            element.id,
+                                            x,
+                                            y,
+                                            w,
+                                            h,
+                                            cx,
+                                            cy,
+                                            cs,
+                                            persist,
+                                          );
+                                        },
+                                    onDelete: () => onDeleteElement(element.id),
+                                    onConfirmDelete: () =>
+                                        onConfirmDeleteElement(element.id),
+                                    onCancelDelete: () =>
+                                        onCancelDeleteElement(element.id),
                                   ),
-                                  hdrViewEnabled: hdrViewEnabled,
-                                  onTap: () => onTapElement(element.id),
-                                  onDoubleTap: () =>
-                                      onDoubleTapElement(element.id),
-                                  onMove: (x, y, persist) {
-                                    onMoveElement(element.id, x, y, persist);
-                                  },
-                                  onResize: (width, persist) {
-                                    onResizeElement(element.id, width, persist);
-                                  },
-                                  onCropMove: (x, y, persist) {
-                                    onCropMove(element.id, x, y, persist);
-                                  },
-                                  onCropScale: (scale, persist) {
-                                    onCropScale(element.id, scale, persist);
-                                  },
-                                  onCropBoundsChanged:
-                                      (x, y, w, h, cx, cy, cs, persist) {
-                                        onCropBoundsChanged(
-                                          element.id,
-                                          x,
-                                          y,
-                                          w,
-                                          h,
-                                          cx,
-                                          cy,
-                                          cs,
-                                          persist,
-                                        );
-                                      },
-                                  onDelete: () => onDeleteElement(element.id),
-                                  onConfirmDelete: () =>
-                                      onConfirmDeleteElement(element.id),
-                                  onCancelDelete: () =>
-                                      onCancelDeleteElement(element.id),
-                                ),
-                              if (element.type == 'text')
-                                _TextElementWidget(
-                                  key: ValueKey('canvas_text_${element.id}'),
-                                  element: element,
-                                  isSelected:
-                                      showSelectionChrome &&
-                                      selectedElementId == element.id,
-                                  isDeleteArmed:
-                                      showSelectionChrome &&
-                                      deleteArmedElementId == element.id,
-                                  pageWidth: constraints.maxWidth,
-                                  pageHeight: constraints.maxHeight,
-                                  pageOffsetX:
-                                      -pageIndex * constraints.maxWidth,
-                                  contentClipRect: Rect.fromLTWH(
-                                    0,
-                                    0,
-                                    constraints.maxWidth,
-                                    constraints.maxHeight,
+                                if (element.type == 'text')
+                                  _TextElementWidget(
+                                    key: ValueKey('canvas_text_${element.id}'),
+                                    element: element,
+                                    isSelected:
+                                        isCurrentPage &&
+                                        selectedElementId == element.id,
+                                    isDeleteArmed:
+                                        isCurrentPage &&
+                                        deleteArmedElementId == element.id,
+                                    pageWidth: constraints.maxWidth,
+                                    pageHeight: constraints.maxHeight,
+                                    pageOffsetX:
+                                        -pageIndex * constraints.maxWidth,
+                                    contentClipRect: Rect.fromLTWH(
+                                      0,
+                                      0,
+                                      constraints.maxWidth,
+                                      constraints.maxHeight,
+                                    ),
+                                    pageOffsetY: 0,
+                                    onTap: () => onTapElement(element.id),
+                                    onDoubleTap: () =>
+                                        onDoubleTapElement(element.id),
+                                    onMove: (x, y, persist) {
+                                      onMoveElement(element.id, x, y, persist);
+                                    },
+                                    onDelete: () => onDeleteElement(element.id),
+                                    onConfirmDelete: () =>
+                                        onConfirmDeleteElement(element.id),
+                                    onCancelDelete: () =>
+                                        onCancelDeleteElement(element.id),
                                   ),
-                                  pageOffsetY: 0,
-                                  onTap: () => onTapElement(element.id),
-                                  onDoubleTap: () =>
-                                      onDoubleTapElement(element.id),
-                                  onMove: (x, y, persist) {
-                                    onMoveElement(element.id, x, y, persist);
-                                  },
-                                  onDelete: () => onDeleteElement(element.id),
-                                  onConfirmDelete: () =>
-                                      onConfirmDeleteElement(element.id),
-                                  onCancelDelete: () =>
-                                      onCancelDeleteElement(element.id),
-                                ),
+                              ],
+                              _SnapGuideOverlay(
+                                guides: snapGuides,
+                                pageIndex: pageIndex,
+                                pageWidth: constraints.maxWidth,
+                                pageHeight: constraints.maxHeight,
+                                pageOffsetX: 0,
+                                pageOffsetY: 0,
+                              ),
                             ],
-                            _SnapGuideOverlay(
-                              guides: snapGuides,
-                              pageIndex: pageIndex,
-                              pageWidth: constraints.maxWidth,
-                              pageHeight: constraints.maxHeight,
-                              pageOffsetX: 0,
-                              pageOffsetY: 0,
-                            ),
-                          ],
-                        );
-                      },
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-            if (page.extras['aiCaption'] != null &&
-                (page.extras['aiCaption'] as String).isNotEmpty)
-              Positioned(
-                left: (viewportWidth - pageWidth) / 2 + 8,
-                bottom: viewportHeight - canvasTop + 8,
-                width: pageWidth - 16,
-                child: Text(
-                  page.extras['aiCaption'] as String,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF6B6F75),
-                    height: 1.35,
+              if (page.extras['aiCaption'] != null &&
+                  (page.extras['aiCaption'] as String).isNotEmpty)
+                Positioned(
+                  left: (viewportWidth - pageWidth) / 2 + 8,
+                  bottom: viewportHeight - canvasTop + 8,
+                  width: pageWidth - 16,
+                  child: Text(
+                    page.extras['aiCaption'] as String,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF6B6F75),
+                      height: 1.35,
+                    ),
                   ),
                 ),
-              ),
-            if (showPageDivider && pageIndex < pageCount - 1)
-              Positioned(
-                right: -1,
-                top: canvasTop,
-                child: IgnorePointer(
-                  child: Container(
-                    width: 2,
-                    height: pageHeight,
-                    color: const Color(0xFFBDBDBD),
+              if (showPageDivider && pageIndex < pageCount - 1)
+                Positioned(
+                  right: -1,
+                  top: canvasTop,
+                  child: IgnorePointer(
+                    child: Container(
+                      width: 2,
+                      height: pageHeight,
+                      color: const Color(0xFFBDBDBD),
+                    ),
                   ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );
