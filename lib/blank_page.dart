@@ -2903,17 +2903,11 @@ class _BlankPageState extends State<BlankPage> {
 
     final selectedElement = _findElementById(elementId);
 
-    // Selecting an element that straddles a page boundary switches to preview
-    // so the whole thing is visible. This has to go through _changeDisplayMode:
-    // assigning _displayMode directly left the page controller built for the
-    // old mode's viewport fraction and never scrolled the preview strip into
-    // position, so the canvas ended up offset from the element just selected.
-    if (selectedElement != null &&
-        _elementTouchesMultiplePages(selectedElement) &&
-        _displayMode != PageDisplayMode.preview) {
-      _changeDisplayMode(PageDisplayMode.preview);
-    }
-
+    // Selecting never moves the canvas. Tapping a cross-page photo used to
+    // switch the editor to preview mode and scroll the strip, on the reasoning
+    // that you should be able to see the whole thing — but the mode and the
+    // scroll position are the user's, and having a tap take both away is worse
+    // than seeing half a photo. Switching modes is a deliberate act now.
     setState(() {
       _selectedElementId = elementId;
       if (_deleteArmedElementId != elementId) {
@@ -2948,12 +2942,6 @@ class _BlankPageState extends State<BlankPage> {
         _imageSubTab = _tabImageSource;
       }
     });
-    if (selectedElement != null &&
-        _elementTouchesMultiplePages(selectedElement)) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _jumpPreviewToPage(_currentPageIndex);
-      });
-    }
     if (_bottomTabPageController.hasClients) {
       _bottomTabPageController.jumpToPage(
         _bottomTabs.indexOf(_selectedBottomTab),
