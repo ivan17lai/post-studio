@@ -6156,6 +6156,9 @@ class _BlankPageState extends State<BlankPage> {
                                                         ),
                                                     pageIndex: index,
                                                     pageCount: pages.length,
+                                                    showSelectionChrome:
+                                                        index ==
+                                                        _currentPageIndex,
                                                     page: page,
                                                     viewportWidth:
                                                         singleCanvasWidth,
@@ -7050,6 +7053,7 @@ class _CanvasViewport extends StatelessWidget {
     required this.elements,
     required this.pageIndex,
     required this.pageCount,
+    required this.showSelectionChrome,
     required this.page,
     required this.viewportWidth,
     required this.viewportHeight,
@@ -7083,6 +7087,16 @@ class _CanvasViewport extends StatelessWidget {
 
   /// Only so the divider knows not to draw past the last page.
   final int pageCount;
+
+  /// Whether this page draws the selection chrome for the selected element.
+  ///
+  /// A cross-page element appears in every page's viewport, and while its
+  /// content is clipped to the page, its chrome deliberately is not — handles
+  /// have to be able to sit outside the page edge. So the neighbour drew a
+  /// second selection frame, positioned against an element starting off to the
+  /// left, leaving just the sliver that hugs the page edge visible. Only the
+  /// page being looked at draws chrome, so there is exactly one frame.
+  final bool showSelectionChrome;
 
   final ProjectPage page;
   final double viewportWidth;
@@ -7170,10 +7184,15 @@ class _CanvasViewport extends StatelessWidget {
                                 _ImageElementWidget(
                                   key: ValueKey('canvas_${element.id}'),
                                   element: element,
-                                  isSelected: selectedElementId == element.id,
+                                  isSelected:
+                                      showSelectionChrome &&
+                                      selectedElementId == element.id,
                                   isDeleteArmed:
+                                      showSelectionChrome &&
                                       deleteArmedElementId == element.id,
-                                  isCropMode: croppingElementId == element.id,
+                                  isCropMode:
+                                      showSelectionChrome &&
+                                      croppingElementId == element.id,
                                   pageWidth: constraints.maxWidth,
                                   pageHeight: constraints.maxHeight,
                                   pageOffsetX:
@@ -7224,8 +7243,11 @@ class _CanvasViewport extends StatelessWidget {
                                 _TextElementWidget(
                                   key: ValueKey('canvas_text_${element.id}'),
                                   element: element,
-                                  isSelected: selectedElementId == element.id,
+                                  isSelected:
+                                      showSelectionChrome &&
+                                      selectedElementId == element.id,
                                   isDeleteArmed:
+                                      showSelectionChrome &&
                                       deleteArmedElementId == element.id,
                                   pageWidth: constraints.maxWidth,
                                   pageHeight: constraints.maxHeight,
