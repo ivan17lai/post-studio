@@ -10689,7 +10689,6 @@ class _TemplateTabPageState extends State<_TemplateTabPage> {
                   _TemplateCard(
                     option: templates[i],
                     page: page,
-                    marginRatio: marginRatio,
                     selected: templates[i].matchesLayout(
                       page,
                       widget.elements,
@@ -11534,7 +11533,10 @@ class _TemplateMarginSizeChip extends StatelessWidget {
         duration: const Duration(milliseconds: 160),
         curve: Curves.easeInOut,
         height: 32,
-        width: 34,
+        // A capsule that grows with its label rather than a fixed near-circle.
+        // 34pt fits "小"; it clipped "全部" and "2 張".
+        constraints: const BoxConstraints(minWidth: 34),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: selected ? const Color(0xFFDCDCDC) : Colors.white,
@@ -11557,14 +11559,12 @@ class _TemplateCard extends StatelessWidget {
   const _TemplateCard({
     required this.option,
     required this.page,
-    required this.marginRatio,
     required this.selected,
     required this.onTap,
   });
 
   final TemplateOption option;
   final ProjectPage page;
-  final double marginRatio;
   final bool selected;
   final VoidCallback onTap;
 
@@ -11598,11 +11598,7 @@ class _TemplateCard extends StatelessWidget {
           children: [
             Align(
               alignment: Alignment.topRight,
-              child: _TemplatePreview(
-                option: option,
-                page: page,
-                marginRatio: marginRatio,
-              ),
+              child: _TemplatePreview(option: option, page: page),
             ),
             const Spacer(),
             Text(
@@ -11621,17 +11617,19 @@ class _TemplateCard extends StatelessWidget {
 }
 
 /// Draws the template's slots straight from its grid spec, so a new template
-/// needs no preview code of its own and the margin toggle is reflected live.
+/// needs no icon drawn by hand.
 class _TemplatePreview extends StatelessWidget {
-  const _TemplatePreview({
-    required this.option,
-    required this.page,
-    required this.marginRatio,
-  });
+  const _TemplatePreview({required this.option, required this.page});
 
   final TemplateOption option;
   final ProjectPage page;
-  final double marginRatio;
+
+  /// The icon always draws the medium margin, whatever the margin control is
+  /// set to. It is a picture of the layout, not of the current settings —
+  /// following them made every icon reflow when the margin changed, and turned
+  /// off it collapsed the gaps that tell one template from another.
+  static final double _previewMarginRatio =
+      kTemplateMarginRatios[kTemplateMarginSizeMedium]!;
 
   @override
   Widget build(BuildContext context) {
@@ -11653,7 +11651,7 @@ class _TemplatePreview extends StatelessWidget {
       innerHeight = innerWidth / previewAspectRatio;
     }
 
-    final rects = option.resolveRects(page, marginRatio);
+    final rects = option.resolveRects(page, _previewMarginRatio);
 
     return SizedBox(
       width: maxWidth,
@@ -11664,6 +11662,13 @@ class _TemplatePreview extends StatelessWidget {
           height: innerHeight,
           decoration: BoxDecoration(
             color: Colors.white,
+            borderRadius: BorderRadius.circular(2),
+          ),
+          // Foreground: a border in `decoration` insets the child by its width,
+          // but the slots below are positioned against the full innerWidth and
+          // innerHeight, so they overhung the right and bottom edges by 2px and
+          // the frame looked padded on the left and top only.
+          foregroundDecoration: BoxDecoration(
             borderRadius: BorderRadius.circular(2),
             border: Border.all(color: const Color(0xFFCFCFCF)),
           ),
