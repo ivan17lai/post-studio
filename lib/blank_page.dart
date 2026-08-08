@@ -10373,7 +10373,7 @@ class _PageTabPage extends StatelessWidget {
   }
 }
 
-class _TemplateTabPage extends StatelessWidget {
+class _TemplateTabPage extends StatefulWidget {
   const _TemplateTabPage({
     required this.page,
     required this.pageIndex,
@@ -10401,6 +10401,9 @@ class _TemplateTabPage extends StatelessWidget {
   final double marginRatio;
   final ValueChanged<bool> onMarginEnabledChanged;
   final ValueChanged<String> onMarginSizeChanged;
+
+  @override
+  State<_TemplateTabPage> createState() => _TemplateTabPageState();
 
   static const List<String> _portraitAspects = <String>['4:5', '3:4'];
   static const List<String> _landscapeAspects = <String>[
@@ -10585,17 +10588,39 @@ class _TemplateTabPage extends StatelessWidget {
       ],
     ),
   ];
+}
+
+class _TemplateTabPageState extends State<_TemplateTabPage> {
+  /// Photo count the list is filtered to, or null for all of them.
+  int? _photoCountFilter;
 
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
-    final templates = _allTemplates
+    final page = widget.page;
+    final marginRatio = widget.marginRatio;
+
+    final forThisPage = _TemplateTabPage._allTemplates
         .where((template) => template.matchesPage(page))
         .toList();
 
-    if (templates.isEmpty) {
+    if (forThisPage.isEmpty) {
       return const SizedBox.expand();
     }
+
+    // Counts are offered only where this page actually has templates for them,
+    // so a chip can never lead to an empty list.
+    final photoCounts =
+        forThisPage.map((template) => template.slots.length).toSet().toList()
+          ..sort();
+    final activeFilter = photoCounts.contains(_photoCountFilter)
+        ? _photoCountFilter
+        : null;
+    final templates = activeFilter == null
+        ? forThisPage
+        : forThisPage
+              .where((template) => template.slots.length == activeFilter)
+              .toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -10606,16 +10631,17 @@ class _TemplateTabPage extends StatelessWidget {
             children: [
               _TemplateMarginToggle(
                 label: strings.t('templateMargin'),
-                enabled: marginEnabled,
-                onTap: () => onMarginEnabledChanged(!marginEnabled),
+                enabled: widget.marginEnabled,
+                onTap: () =>
+                    widget.onMarginEnabledChanged(!widget.marginEnabled),
               ),
-              if (marginEnabled) ...[
+              if (widget.marginEnabled) ...[
                 const SizedBox(width: 10),
                 for (final size in kTemplateMarginSizes) ...[
                   _TemplateMarginSizeChip(
                     label: strings.t('templateMarginSize_$size'),
-                    selected: marginSize == size,
-                    onTap: () => onMarginSizeChanged(size),
+                    selected: widget.marginSize == size,
+                    onTap: () => widget.onMarginSizeChanged(size),
                   ),
                   if (size != kTemplateMarginSizes.last)
                     const SizedBox(width: 6),
@@ -10624,6 +10650,34 @@ class _TemplateTabPage extends StatelessWidget {
             ],
           ),
         ),
+        // Only worth a filter row when there is more than one count to pick.
+        if (photoCounts.length > 1)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _TemplateMarginSizeChip(
+                    label: strings.t('templatePhotoCountAll'),
+                    selected: activeFilter == null,
+                    onTap: () => setState(() => _photoCountFilter = null),
+                  ),
+                  for (final count in photoCounts) ...[
+                    const SizedBox(width: 6),
+                    _TemplateMarginSizeChip(
+                      label: strings.t(
+                        'templatePhotoCount',
+                        args: <String, String>{'count': '$count'},
+                      ),
+                      selected: activeFilter == count,
+                      onTap: () => setState(() => _photoCountFilter = count),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: SingleChildScrollView(
@@ -10638,11 +10692,11 @@ class _TemplateTabPage extends StatelessWidget {
                     marginRatio: marginRatio,
                     selected: templates[i].matchesLayout(
                       page,
-                      elements,
-                      pageIndex,
+                      widget.elements,
+                      widget.pageIndex,
                       marginRatio,
                     ),
-                    onTap: () => onApplyTemplate(templates[i]),
+                    onTap: () => widget.onApplyTemplate(templates[i]),
                   ),
                   if (i != templates.length - 1) const SizedBox(width: 12),
                 ],
@@ -11528,10 +11582,17 @@ class _TemplateCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(16),
-          border: selected
-              ? Border.all(color: kPrimaryAccentColor, width: 2)
-              : null,
         ),
+        // Foreground, so the border paints over the card instead of taking a
+        // bite out of it. Inside `decoration` it sat within the fixed 120x75
+        // box and pushed the padding in 2px on every side, so selecting a card
+        // visibly shrank and shifted everything in it.
+        foregroundDecoration: selected
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: kPrimaryAccentColor, width: 2),
+              )
+            : null,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -11574,36 +11635,40 @@ class _TemplatePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const outerWidth = 42.0;
-    const outerHeight = 32.0;
+    // The frame *is* the page, so its outline carries the aspect ratio.
+    //
+    // It used to be a fixed 42x32 rounded box with a correctly proportioned
+    // white page centred inside it. The proportions were right, but white on
+    // #F2F2F2 is nearly invisible, so what read as the icon was the outer box
+    // — identical for every page shape. 4:5 and 5:4 looked the same because
+    // the part that differed could not be seen.
+    const maxWidth = 42.0;
+    const maxHeight = 32.0;
     final previewAspectRatio = page.aspectWidth / page.aspectHeight;
 
-    double innerWidth = outerWidth - 10;
-    double innerHeight = innerWidth / previewAspectRatio;
-
-    if (innerHeight > outerHeight - 8) {
-      innerHeight = outerHeight - 8;
-      innerWidth = innerHeight * previewAspectRatio;
+    double innerHeight = maxHeight;
+    double innerWidth = innerHeight * previewAspectRatio;
+    if (innerWidth > maxWidth) {
+      innerWidth = maxWidth;
+      innerHeight = innerWidth / previewAspectRatio;
     }
 
     final rects = option.resolveRects(page, marginRatio);
 
-    return Container(
-      width: outerWidth,
-      height: outerHeight,
-      decoration: BoxDecoration(
-        color: const Color(0xFFF2F2F2),
-        borderRadius: BorderRadius.circular(6),
-      ),
+    return SizedBox(
+      width: maxWidth,
+      height: maxHeight,
       child: Center(
-        child: SizedBox(
+        child: Container(
           width: innerWidth,
           height: innerHeight,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(2),
+            border: Border.all(color: const Color(0xFFCFCFCF)),
+          ),
           child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(2),
-            ),
+            decoration: const BoxDecoration(),
             child: Stack(
               children: <Widget>[
                 for (final rect in rects)
