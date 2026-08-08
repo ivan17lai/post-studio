@@ -6175,13 +6175,19 @@ class _BlankPageState extends State<BlankPage> {
                                               },
                                               child: PageView.builder(
                                                 controller: _pageController,
-                                                // Always scrollable. Locking it
-                                                // while something was selected meant
-                                                // the only way off a page was to
-                                                // deselect first; now the swipe
-                                                // itself does that.
+                                                // Scrollable except while
+                                                // cropping. Selection alone no
+                                                // longer locks it — a swipe
+                                                // simply keeps the selection —
+                                                // but a crop is a drag inside
+                                                // the photo, and a drag that
+                                                // starts anywhere else would
+                                                // turn the page out from under
+                                                // it.
                                                 physics:
-                                                    const PageScrollPhysics(),
+                                                    _croppingElementId == null
+                                                    ? const PageScrollPhysics()
+                                                    : const NeverScrollableScrollPhysics(),
                                                 itemCount: pages.length,
                                                 onPageChanged: (index) {
                                                   setState(() {
@@ -6360,7 +6366,9 @@ class _BlankPageState extends State<BlankPage> {
                                                 scrollDirection:
                                                     Axis.horizontal,
                                                 physics:
-                                                    const BouncingScrollPhysics(),
+                                                    _croppingElementId == null
+                                                    ? const BouncingScrollPhysics()
+                                                    : const NeverScrollableScrollPhysics(),
                                                 child: _PreviewCanvasStrip(
                                                   pages: pages,
                                                   elements: _project.elements,
