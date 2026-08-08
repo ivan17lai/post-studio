@@ -440,6 +440,33 @@ void main() {
       );
     });
 
+    test('confineToAnchorPage holds a cross-page element inside its page', () {
+      // What single mode asks for once an element sits inside one page.
+      final range = allowedXRange(
+        _image(width: 0.3),
+        anchorPageIndex: 1,
+        pageCount: 3,
+        confineToAnchorPage: true,
+      );
+      expect(range.min, 1);
+      expect(range.max, closeTo(1.7, 1e-9));
+    });
+
+    test('confining is the caller opting in, never the default', () {
+      // The flag exists so single mode can ask for the page-bound range for an
+      // element already inside a page. Nothing may confine an element that is
+      // spanning a seam — that is the flattening P2 removed.
+      final spanning = _image(x: 0.6, width: 1.5);
+      expect(
+        allowedXRange(
+          spanning,
+          anchorPageIndex: 0,
+          pageCount: 3,
+        ).clamp(spanning.x),
+        closeTo(0.6, 1e-9),
+      );
+    });
+
     test('the span may not run off the end of the document', () {
       // Regression guard for the fixed-overhang model this replaced: it let an
       // element on page 0 of a two-page project reach x = 1.95, putting its

@@ -9,8 +9,10 @@
 ///
 /// Two rules keep the copies from coming back:
 ///   * height is always derived here, never read back from a stored field;
-///   * how far an element may travel depends on `allowCrossPage` alone, never
-///     on which display mode the editor happens to be in.
+///   * how far an element may travel is decided here, from the element, never
+///     from which display mode the editor happens to be in. A caller may ask
+///     for the page-bound range via `confineToAnchorPage`, but it is asking for
+///     a rule this file defines rather than applying one of its own.
 library;
 
 import 'dart:math' as math;
@@ -255,10 +257,16 @@ bool isPayloadVisibleOnPage({
 
 /// Range [element] may be dragged along x, in fractions of page width.
 ///
-/// Deliberately independent of the editor's display mode. The old code clamped
-/// to the page in single mode and to `-0.95..1.95` in preview mode, so a
+/// Never keyed on the editor's display mode directly. The old code clamped to
+/// the page in single mode and to `-0.95..1.95` in preview mode, so a
 /// cross-page layout built in preview was silently flattened the moment it was
 /// touched in single mode.
+///
+/// [confineToAnchorPage] is how a caller asks for the page-bound range without
+/// bringing that back. Single mode passes it for elements that are *already*
+/// inside one page, so nothing that currently spans a seam can be snapped shut
+/// by being touched — only by the user dragging it in, which is the one case
+/// where confining it is what they asked for.
 ///
 /// A cross-page element may go anywhere in the document: `[0, pageCount]` is
 /// the whole canvas, and its span must simply stay inside it. Past either end
@@ -275,10 +283,11 @@ CanvasXRange allowedXRange(
   required int anchorPageIndex,
   required int pageCount,
   double? width,
+  bool confineToAnchorPage = false,
 }) {
   final resolvedWidth = width ?? element.width;
 
-  if (!element.allowCrossPage) {
+  if (!element.allowCrossPage || confineToAnchorPage) {
     final min = anchorPageIndex.toDouble();
     return CanvasXRange(min, math.max(min, min + 1 - resolvedWidth));
   }
@@ -309,8 +318,9 @@ double maxElementWidth({
   required double aspectRatio,
   required int anchorPageIndex,
   required int pageCount,
+  bool confineToAnchorPage = false,
 }) {
-  if (element.allowCrossPage) {
+  if (element.allowCrossPage && !confineToAnchorPage) {
     // A spread may cover the whole document but no more; allowedXRange then
     // pins where it has to start.
     return pageCount.toDouble();
@@ -321,13 +331,12 @@ double maxElementWidth({
       .clamp(kMinElementWidth, 1.0)
       .toDouble();
   final maxHeightByBottom = (1 - element.y).clamp(0.0, 1.0).toDouble();
-  final maxWidthByBottom =
-      imageWidthForHeightRatio(
-        height: maxHeightByBottom,
-        aspectRatio: aspectRatio,
-        pageAspectWidth: page.aspectWidth,
-        pageAspectHeight: page.aspectHeight,
-      ).clamp(kMinElementWidth, 1.0).toDouble();
+  final maxWidthByBottom = imageWidthForHeightRatio(
+    height: maxHeightByBottom,
+    aspectRatio: aspectRatio,
+    pageAspectWidth: page.aspectWidth,
+    pageAspectHeight: page.aspectHeight,
+  ).clamp(kMinElementWidth, 1.0).toDouble();
 
   final maxWidth = maxWidthByRight < maxWidthByBottom
       ? maxWidthByRight

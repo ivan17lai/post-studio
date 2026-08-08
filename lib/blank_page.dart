@@ -2943,6 +2943,20 @@ class _BlankPageState extends State<BlankPage> {
     unawaited(_fitElementToCanvas(elementId: elementId));
   }
 
+  /// Whether editing [element] right now should hold it inside its own page.
+  ///
+  /// Single mode shows one page, so an element is kept on it. Not one that is
+  /// already spanning a seam, though: that stays free to move, or selecting a
+  /// cross-page photo in single mode would snap it shut — the exact data loss
+  /// P2 removed display-mode-keyed constraints to fix. Drag it back inside a
+  /// single page and it locks there, because then it is a single-page photo.
+  ///
+  /// Nothing is written to the element. The rule is read off where it sits, so
+  /// preview mode still moves it freely and no state can go stale.
+  bool _confineToPage(CanvasElement element) =>
+      _displayMode == PageDisplayMode.single &&
+      !_elementTouchesMultiplePages(element);
+
   bool _elementTouchesMultiplePages(CanvasElement element) {
     if (!element.allowCrossPage) {
       return false;
@@ -3109,6 +3123,7 @@ class _BlankPageState extends State<BlankPage> {
       element,
       anchorPageIndex: pageIndex,
       pageCount: _project.pages.length,
+      confineToAnchorPage: _confineToPage(element),
     );
     final yRange = allowedYRange(element, page);
     final rawX = xRange.clamp(x);
@@ -3432,6 +3447,7 @@ class _BlankPageState extends State<BlankPage> {
         anchorPageIndex: pageIndex,
         pageCount: _project.pages.length,
         width: snappedWidth,
+        confineToAnchorPage: _confineToPage(element),
       ).clamp(element.x),
       y: element.y.clamp(0.0, maxY),
       data: <String, dynamic>{...element.data, 'aspectRatio': aspectRatio},
@@ -3463,6 +3479,7 @@ class _BlankPageState extends State<BlankPage> {
       aspectRatio: aspectRatio,
       anchorPageIndex: _anchorIndexOf(element),
       pageCount: _project.pages.length,
+      confineToAnchorPage: _confineToPage(element),
     );
   }
 
@@ -3739,6 +3756,7 @@ class _BlankPageState extends State<BlankPage> {
       element,
       anchorPageIndex: pageIndex == -1 ? _currentPageIndex : pageIndex,
       pageCount: _project.pages.length,
+      confineToAnchorPage: _confineToPage(element),
     );
     final minX = xRange.min;
     var maxX = xRange.max;
@@ -4033,6 +4051,7 @@ class _BlankPageState extends State<BlankPage> {
       selectedImage,
       anchorPageIndex: pageIndex,
       pageCount: _project.pages.length,
+      confineToAnchorPage: _confineToPage(selectedImage),
     ).clamp(selectedImage.x + dx);
     final rawY = allowedYRange(selectedImage, page).clamp(selectedImage.y + dy);
 
@@ -4073,6 +4092,7 @@ class _BlankPageState extends State<BlankPage> {
       selectedText,
       anchorPageIndex: pageIndex,
       pageCount: _project.pages.length,
+      confineToAnchorPage: _confineToPage(selectedText),
     ).clamp(selectedText.x + dx);
     final rawY = allowedYRange(selectedText, page).clamp(selectedText.y + dy);
 
