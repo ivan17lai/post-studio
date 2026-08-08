@@ -2891,11 +2891,6 @@ class _BlankPageState extends State<BlankPage> {
     );
   }
 
-  bool _elementCrossesPageBoundary(CanvasElement element) {
-    return element.allowCrossPage &&
-        (element.x < 0 || (element.x + element.width) > 1);
-  }
-
   void _selectElement(String? elementId) {
     if (elementId == null) {
       _clearSelectedElement();
@@ -2914,7 +2909,7 @@ class _BlankPageState extends State<BlankPage> {
     // old mode's viewport fraction and never scrolled the preview strip into
     // position, so the canvas ended up offset from the element just selected.
     if (selectedElement != null &&
-        _elementCrossesPageBoundary(selectedElement) &&
+        _elementTouchesMultiplePages(selectedElement) &&
         _displayMode != PageDisplayMode.preview) {
       _changeDisplayMode(PageDisplayMode.preview);
     }
@@ -2954,7 +2949,7 @@ class _BlankPageState extends State<BlankPage> {
       }
     });
     if (selectedElement != null &&
-        _elementCrossesPageBoundary(selectedElement)) {
+        _elementTouchesMultiplePages(selectedElement)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _jumpPreviewToPage(_currentPageIndex);
       });
