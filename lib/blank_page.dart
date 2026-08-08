@@ -6109,7 +6109,8 @@ class _BlankPageState extends State<BlankPage> {
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          if (AppSettingsController.instance.aiSortEnabled) ...[
+                          if (kAiFeaturesEnabled &&
+                              AppSettingsController.instance.aiSortEnabled) ...[
                             _ToolbarIconButton(
                               icon: Icons.auto_awesome_rounded,
                               enabled: pages.length > 1,

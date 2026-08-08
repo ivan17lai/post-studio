@@ -1504,7 +1504,7 @@ class _StyledCreateProjectDialogState
                     onTap: () => Navigator.of(context).pop(),
                   ),
                 ),
-                if (hasSelectedPhotos) ...[
+                if (kAiFeaturesEnabled && hasSelectedPhotos) ...[
                   const SizedBox(width: 8),
                   Expanded(
                     child: _DialogActionButton(

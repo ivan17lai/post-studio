@@ -34,7 +34,6 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _apiKeyController;
   bool _isCheckingApi = false;
   bool _isCheckingUpdate = false;
-  final bool _showExtensions = false;
   HdrCapabilities _hdrCapabilities = HdrCapabilities.unsupported;
 
   @override
@@ -265,7 +264,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             const SizedBox(height: 22),
             // Keep the code preserved but hidden for later development
-            if (_showExtensions) ...[
+            if (kAiFeaturesEnabled) ...[
               _SettingsSectionTitle(title: strings.t('extensions')),
               const SizedBox(height: 10),
               _SettingsCard(

@@ -10,6 +10,17 @@ import 'hdr/ultra_hdr.dart';
 /// "Beta" as a zero.
 const String kAppDisplayVersion = '1.9.0 Beta';
 const String kGeminiSortModel = 'gemini-3.5-flash';
+
+/// Whether the AI features are offered anywhere in the UI.
+///
+/// Off while they are unfinished. Only the entry points disappear — the create
+/// flow, the page sorter and the settings section all stay in place — so
+/// flipping this back to true is the whole of re-enabling them.
+///
+/// This has to be one switch shared by every surface. `aiSortEnabled` is
+/// persisted, so hiding the settings toggle on its own left the editor's sort
+/// button showing for anyone who had turned it on before.
+const bool kAiFeaturesEnabled = false;
 const Color kDefaultPrimaryAccentColor = Color(0xFFC3AEFF);
 
 const List<Color> kPrimaryAccentPalette = <Color>[
