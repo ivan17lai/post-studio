@@ -2129,6 +2129,13 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     _storeUndoSnapshot();
+
+    // Which pages are laid out as a template, read before the aspect changes:
+    // afterwards their photos are being measured against the new page shape and
+    // none of them match anything.
+    final marginRatio = AppSettingsController.instance.templateMarginRatio;
+    final matchedTemplates = _matchedTemplates(marginRatio);
+
     final updatedPages = _project.pages
         .map(
           (page) => page.copyWith(
@@ -2141,11 +2148,29 @@ class _BlankPageState extends State<BlankPage> {
     // Element height is derived from the page aspect, so every element on
     // every page just went stale. normalizeProject recomputes them and pulls
     // anything that no longer fits back into range.
-    await _saveProject(
-      normalizeProject(
-        _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
-      ),
+    var reshaped = normalizeProject(
+      _project.copyWith(pages: updatedPages, pageCount: updatedPages.length),
     );
+
+    // A template's slots are a grid over the page, so a page that was laid out
+    // as one is re-flowed into the new shape — which re-crops each photo to the
+    // slot it lands in. Skipped where the template is not offered for the new
+    // aspect at all; there is nothing sensible to re-flow into.
+    for (final entry in matchedTemplates.entries) {
+      if (!entry.value.matchesPage(reshaped.pages[entry.key])) {
+        continue;
+      }
+      reshaped = reshaped.copyWith(
+        elements: _elementsWithTemplateApplied(
+          project: reshaped,
+          pageIndex: entry.key,
+          option: entry.value,
+          marginRatio: marginRatio,
+        ),
+      );
+    }
+
+    await _saveProject(reshaped);
 
     if (mounted) {
       setState(() {});
@@ -4369,6 +4394,68 @@ class _BlankPageState extends State<BlankPage> {
     return shouldApply == true;
   }
 
+  /// The template the current page is laid out as, if it is laid out as one.
+  ///
+  /// Derived by comparison rather than remembered, the same way the template
+  /// picker decides which card to highlight — so moving or deleting a slot by
+  /// hand stops the page matching, and nothing has to be kept in step.
+  TemplateOption? _matchedTemplateForPage(int pageIndex, double marginRatio) {
+    final page = _project.pages[pageIndex];
+    final pageElements = elementsAnchoredToPage(_project, pageIndex);
+    for (final option in _TemplateTabPage.allTemplates) {
+      if (option.matchesPage(page) &&
+          option.matchesLayout(page, pageElements, pageIndex, marginRatio)) {
+        return option;
+      }
+    }
+    return null;
+  }
+
+  /// Every page currently laid out as a template, by page index.
+  Map<int, TemplateOption> _matchedTemplates(double marginRatio) {
+    return <int, TemplateOption>{
+      for (var i = 0; i < _project.pages.length; i++)
+        if (_matchedTemplateForPage(i, marginRatio) case final option?)
+          i: option,
+    };
+  }
+
+  /// Applies a margin setting change and re-flows the page if it is currently
+  /// laid out as a template.
+  ///
+  /// Changing the margin used to move only the icons: the elements kept the
+  /// positions the old margin gave them, so the page silently stopped matching
+  /// any template and the highlight went out with it.
+  Future<void> _changeTemplateMargin(VoidCallback applyChange) async {
+    // Read the layout against the margin still in force. Afterwards the
+    // positions are measured against the new one and nothing matches.
+    final matched = _matchedTemplates(
+      AppSettingsController.instance.templateMarginRatio,
+    );
+    applyChange();
+    if (matched.isEmpty) {
+      return;
+    }
+
+    // The margin is a project-wide setting, so every templated page re-flows,
+    // not just the one on screen.
+    final nextMarginRatio = AppSettingsController.instance.templateMarginRatio;
+    var reflowed = _project;
+    for (final entry in matched.entries) {
+      reflowed = reflowed.copyWith(
+        elements: _elementsWithTemplateApplied(
+          project: reflowed,
+          pageIndex: entry.key,
+          option: entry.value,
+          marginRatio: nextMarginRatio,
+        ),
+      );
+    }
+
+    _storeUndoSnapshot();
+    await _saveProject(reflowed);
+  }
+
   Future<void> _applyTemplate(TemplateOption option) async {
     final currentPage = _project.pages[_currentPageIndex];
     final shouldApply = await _confirmApplyTemplateIfNeeded(
@@ -4380,8 +4467,45 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     _storeUndoSnapshot();
+    await _saveProject(
+      _project.copyWith(
+        elements: _elementsWithTemplateApplied(
+          project: _project,
+          pageIndex: _currentPageIndex,
+          option: option,
+          marginRatio: AppSettingsController.instance.templateMarginRatio,
+        ),
+      ),
+    );
 
-    final pageElements = elementsAnchoredToPage(_project, _currentPageIndex);
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _selectedElementId = null;
+      _deleteArmedElementId = null;
+      // Stay on the template picker: applying doubles as the preview, so the
+      // user can flip between layouts and see which card is highlighted.
+      _selectedBottomTab = _tabTemplate;
+    });
+    _syncBottomTab();
+  }
+
+  /// [project]'s elements with the page at [pageIndex] re-laid out as [option].
+  ///
+  /// Extracted so re-flowing a page is not tied to applying a template by hand.
+  /// A margin or page-aspect change re-flows every page that is currently laid
+  /// out as a template, and had to reach the same photo-into-slot mapping — a
+  /// second copy of it would have drifted the way the geometry copies did.
+  List<CanvasElement> _elementsWithTemplateApplied({
+    required ProjectRecord project,
+    required int pageIndex,
+    required TemplateOption option,
+    required double marginRatio,
+  }) {
+    final currentPage = project.pages[pageIndex];
+    final pageElements = elementsAnchoredToPage(project, pageIndex);
     final existingImages = pageElements
         .where(
           (e) =>
@@ -4392,9 +4516,8 @@ class _BlankPageState extends State<BlankPage> {
         .toList();
     final existingTexts = pageElements.where((e) => e.type == 'text').toList();
 
-    final marginRatio = AppSettingsController.instance.templateMarginRatio;
     final templateElements = option.buildElements(
-      _currentPageIndex,
+      pageIndex,
       currentPage,
       marginRatio,
     );
@@ -4460,26 +4583,11 @@ class _BlankPageState extends State<BlankPage> {
     updatedElements.addAll(existingTexts);
 
     final replacedIds = pageElements.map((element) => element.id).toSet();
-    final nextElements = <CanvasElement>[
-      for (final element in _project.elements)
+    return <CanvasElement>[
+      for (final element in project.elements)
         if (!replacedIds.contains(element.id)) element,
       ...updatedElements,
     ];
-
-    await _saveProject(_project.copyWith(elements: nextElements));
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _selectedElementId = null;
-      _deleteArmedElementId = null;
-      // Stay on the template picker: applying doubles as the preview, so the
-      // user can flip between layouts and see which card is highlighted.
-      _selectedBottomTab = _tabTemplate;
-    });
-    _syncBottomTab();
   }
 
   Future<void> _deleteElement({required String elementId}) async {
@@ -6135,13 +6243,19 @@ class _BlankPageState extends State<BlankPage> {
                                               },
                                               child: PageView.builder(
                                                 controller: _pageController,
-                                                // Always scrollable. Locking it
-                                                // while something was selected meant
-                                                // the only way off a page was to
-                                                // deselect first; now the swipe
-                                                // itself does that.
+                                                // Scrollable except while
+                                                // cropping. Selection alone no
+                                                // longer locks it — a swipe
+                                                // simply keeps the selection —
+                                                // but a crop is a drag inside
+                                                // the photo, and a drag that
+                                                // starts anywhere else would
+                                                // turn the page out from under
+                                                // it.
                                                 physics:
-                                                    const PageScrollPhysics(),
+                                                    _croppingElementId == null
+                                                    ? const PageScrollPhysics()
+                                                    : const NeverScrollableScrollPhysics(),
                                                 itemCount: pages.length,
                                                 onPageChanged: (index) {
                                                   setState(() {
@@ -6320,7 +6434,9 @@ class _BlankPageState extends State<BlankPage> {
                                                 scrollDirection:
                                                     Axis.horizontal,
                                                 physics:
-                                                    const BouncingScrollPhysics(),
+                                                    _croppingElementId == null
+                                                    ? const BouncingScrollPhysics()
+                                                    : const NeverScrollableScrollPhysics(),
                                                 child: _PreviewCanvasStrip(
                                                   pages: pages,
                                                   elements: _project.elements,
@@ -6555,14 +6671,26 @@ class _BlankPageState extends State<BlankPage> {
                                         marginRatio: AppSettingsController
                                             .instance
                                             .templateMarginRatio,
-                                        onMarginEnabledChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginEnabled,
-                                        onMarginSizeChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginSize,
+                                        onMarginEnabledChanged: (enabled) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginEnabled(
+                                                    enabled,
+                                                  ),
+                                            ),
+                                          );
+                                        },
+                                        onMarginSizeChanged: (size) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginSize(size),
+                                            ),
+                                          );
+                                        },
                                       ),
                                       Column(
                                         crossAxisAlignment:
@@ -6848,14 +6976,26 @@ class _BlankPageState extends State<BlankPage> {
                                         marginRatio: AppSettingsController
                                             .instance
                                             .templateMarginRatio,
-                                        onMarginEnabledChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginEnabled,
-                                        onMarginSizeChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginSize,
+                                        onMarginEnabledChanged: (enabled) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginEnabled(
+                                                    enabled,
+                                                  ),
+                                            ),
+                                          );
+                                        },
+                                        onMarginSizeChanged: (size) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginSize(size),
+                                            ),
+                                          );
+                                        },
                                       ),
                                       _ElementTabPage(
                                         showTextOption: true,
@@ -6972,14 +7112,26 @@ class _BlankPageState extends State<BlankPage> {
                                         marginRatio: AppSettingsController
                                             .instance
                                             .templateMarginRatio,
-                                        onMarginEnabledChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginEnabled,
-                                        onMarginSizeChanged:
-                                            AppSettingsController
-                                                .instance
-                                                .setTemplateMarginSize,
+                                        onMarginEnabledChanged: (enabled) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginEnabled(
+                                                    enabled,
+                                                  ),
+                                            ),
+                                          );
+                                        },
+                                        onMarginSizeChanged: (size) {
+                                          unawaited(
+                                            _changeTemplateMargin(
+                                              () => AppSettingsController
+                                                  .instance
+                                                  .setTemplateMarginSize(size),
+                                            ),
+                                          );
+                                        },
                                       ),
                                       _ElementTabPage(
                                         showTextOption: true,
@@ -10373,7 +10525,7 @@ class _PageTabPage extends StatelessWidget {
   }
 }
 
-class _TemplateTabPage extends StatelessWidget {
+class _TemplateTabPage extends StatefulWidget {
   const _TemplateTabPage({
     required this.page,
     required this.pageIndex,
@@ -10402,6 +10554,9 @@ class _TemplateTabPage extends StatelessWidget {
   final ValueChanged<bool> onMarginEnabledChanged;
   final ValueChanged<String> onMarginSizeChanged;
 
+  @override
+  State<_TemplateTabPage> createState() => _TemplateTabPageState();
+
   static const List<String> _portraitAspects = <String>['4:5', '3:4'];
   static const List<String> _landscapeAspects = <String>[
     '4:3',
@@ -10411,7 +10566,7 @@ class _TemplateTabPage extends StatelessWidget {
   ];
   static const List<String> _wideAspects = <String>['3:2', '16:9'];
 
-  static const List<TemplateOption> _allTemplates = <TemplateOption>[
+  static const List<TemplateOption> allTemplates = <TemplateOption>[
     // --- Universal layouts, valid on every page aspect. ---
     TemplateOption(id: 'page_fill', label: 'fill', isContainFill: true),
     TemplateOption(
@@ -10585,17 +10740,39 @@ class _TemplateTabPage extends StatelessWidget {
       ],
     ),
   ];
+}
+
+class _TemplateTabPageState extends State<_TemplateTabPage> {
+  /// Photo count the list is filtered to, or null for all of them.
+  int? _photoCountFilter;
 
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
-    final templates = _allTemplates
+    final page = widget.page;
+    final marginRatio = widget.marginRatio;
+
+    final forThisPage = _TemplateTabPage.allTemplates
         .where((template) => template.matchesPage(page))
         .toList();
 
-    if (templates.isEmpty) {
+    if (forThisPage.isEmpty) {
       return const SizedBox.expand();
     }
+
+    // Counts are offered only where this page actually has templates for them,
+    // so a chip can never lead to an empty list.
+    final photoCounts =
+        forThisPage.map((template) => template.slots.length).toSet().toList()
+          ..sort();
+    final activeFilter = photoCounts.contains(_photoCountFilter)
+        ? _photoCountFilter
+        : null;
+    final templates = activeFilter == null
+        ? forThisPage
+        : forThisPage
+              .where((template) => template.slots.length == activeFilter)
+              .toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -10606,16 +10783,17 @@ class _TemplateTabPage extends StatelessWidget {
             children: [
               _TemplateMarginToggle(
                 label: strings.t('templateMargin'),
-                enabled: marginEnabled,
-                onTap: () => onMarginEnabledChanged(!marginEnabled),
+                enabled: widget.marginEnabled,
+                onTap: () =>
+                    widget.onMarginEnabledChanged(!widget.marginEnabled),
               ),
-              if (marginEnabled) ...[
+              if (widget.marginEnabled) ...[
                 const SizedBox(width: 10),
                 for (final size in kTemplateMarginSizes) ...[
                   _TemplateMarginSizeChip(
                     label: strings.t('templateMarginSize_$size'),
-                    selected: marginSize == size,
-                    onTap: () => onMarginSizeChanged(size),
+                    selected: widget.marginSize == size,
+                    onTap: () => widget.onMarginSizeChanged(size),
                   ),
                   if (size != kTemplateMarginSizes.last)
                     const SizedBox(width: 6),
@@ -10624,6 +10802,34 @@ class _TemplateTabPage extends StatelessWidget {
             ],
           ),
         ),
+        // Only worth a filter row when there is more than one count to pick.
+        if (photoCounts.length > 1)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _TemplateMarginSizeChip(
+                    label: strings.t('templatePhotoCountAll'),
+                    selected: activeFilter == null,
+                    onTap: () => setState(() => _photoCountFilter = null),
+                  ),
+                  for (final count in photoCounts) ...[
+                    const SizedBox(width: 6),
+                    _TemplateMarginSizeChip(
+                      label: strings.t(
+                        'templatePhotoCount',
+                        args: <String, String>{'count': '$count'},
+                      ),
+                      selected: activeFilter == count,
+                      onTap: () => setState(() => _photoCountFilter = count),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: SingleChildScrollView(
@@ -10635,14 +10841,13 @@ class _TemplateTabPage extends StatelessWidget {
                   _TemplateCard(
                     option: templates[i],
                     page: page,
-                    marginRatio: marginRatio,
                     selected: templates[i].matchesLayout(
                       page,
-                      elements,
-                      pageIndex,
+                      widget.elements,
+                      widget.pageIndex,
                       marginRatio,
                     ),
-                    onTap: () => onApplyTemplate(templates[i]),
+                    onTap: () => widget.onApplyTemplate(templates[i]),
                   ),
                   if (i != templates.length - 1) const SizedBox(width: 12),
                 ],
@@ -11480,7 +11685,10 @@ class _TemplateMarginSizeChip extends StatelessWidget {
         duration: const Duration(milliseconds: 160),
         curve: Curves.easeInOut,
         height: 32,
-        width: 34,
+        // A capsule that grows with its label rather than a fixed near-circle.
+        // 34pt fits "小"; it clipped "全部" and "2 張".
+        constraints: const BoxConstraints(minWidth: 34),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: selected ? const Color(0xFFDCDCDC) : Colors.white,
@@ -11503,14 +11711,12 @@ class _TemplateCard extends StatelessWidget {
   const _TemplateCard({
     required this.option,
     required this.page,
-    required this.marginRatio,
     required this.selected,
     required this.onTap,
   });
 
   final TemplateOption option;
   final ProjectPage page;
-  final double marginRatio;
   final bool selected;
   final VoidCallback onTap;
 
@@ -11528,24 +11734,32 @@ class _TemplateCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(16),
-          border: selected
-              ? Border.all(color: kPrimaryAccentColor, width: 2)
-              : null,
         ),
+        // Foreground, so the border paints over the card instead of taking a
+        // bite out of it. Inside `decoration` it sat within the fixed 120x75
+        // box and pushed the padding in 2px on every side, so selecting a card
+        // visibly shrank and shifted everything in it.
+        foregroundDecoration: selected
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: kPrimaryAccentColor, width: 2),
+              )
+            : null,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Align(
               alignment: Alignment.topRight,
-              child: _TemplatePreview(
-                option: option,
-                page: page,
-                marginRatio: marginRatio,
-              ),
+              child: _TemplatePreview(option: option, page: page),
             ),
             const Spacer(),
             Text(
               strings.t(option.label),
+              // The card is a fixed 120x75. A label long enough to wrap pushed
+              // the column past that height and tripped the overflow stripes,
+              // so it is held to one line whatever a future template is called.
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
@@ -11560,50 +11774,63 @@ class _TemplateCard extends StatelessWidget {
 }
 
 /// Draws the template's slots straight from its grid spec, so a new template
-/// needs no preview code of its own and the margin toggle is reflected live.
+/// needs no icon drawn by hand.
 class _TemplatePreview extends StatelessWidget {
-  const _TemplatePreview({
-    required this.option,
-    required this.page,
-    required this.marginRatio,
-  });
+  const _TemplatePreview({required this.option, required this.page});
 
   final TemplateOption option;
   final ProjectPage page;
-  final double marginRatio;
+
+  /// The icon always draws the medium margin, whatever the margin control is
+  /// set to. It is a picture of the layout, not of the current settings —
+  /// following them made every icon reflow when the margin changed, and turned
+  /// off it collapsed the gaps that tell one template from another.
+  static final double _previewMarginRatio =
+      kTemplateMarginRatios[kTemplateMarginSizeMedium]!;
 
   @override
   Widget build(BuildContext context) {
-    const outerWidth = 42.0;
-    const outerHeight = 32.0;
+    // The frame *is* the page, so its outline carries the aspect ratio.
+    //
+    // It used to be a fixed 42x32 rounded box with a correctly proportioned
+    // white page centred inside it. The proportions were right, but white on
+    // #F2F2F2 is nearly invisible, so what read as the icon was the outer box
+    // — identical for every page shape. 4:5 and 5:4 looked the same because
+    // the part that differed could not be seen.
+    const maxWidth = 42.0;
+    const maxHeight = 32.0;
     final previewAspectRatio = page.aspectWidth / page.aspectHeight;
 
-    double innerWidth = outerWidth - 10;
-    double innerHeight = innerWidth / previewAspectRatio;
-
-    if (innerHeight > outerHeight - 8) {
-      innerHeight = outerHeight - 8;
-      innerWidth = innerHeight * previewAspectRatio;
+    double innerHeight = maxHeight;
+    double innerWidth = innerHeight * previewAspectRatio;
+    if (innerWidth > maxWidth) {
+      innerWidth = maxWidth;
+      innerHeight = innerWidth / previewAspectRatio;
     }
 
-    final rects = option.resolveRects(page, marginRatio);
+    final rects = option.resolveRects(page, _previewMarginRatio);
 
-    return Container(
-      width: outerWidth,
-      height: outerHeight,
-      decoration: BoxDecoration(
-        color: const Color(0xFFF2F2F2),
-        borderRadius: BorderRadius.circular(6),
-      ),
+    return SizedBox(
+      width: maxWidth,
+      height: maxHeight,
       child: Center(
-        child: SizedBox(
+        child: Container(
           width: innerWidth,
           height: innerHeight,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(2),
+          ),
+          // Foreground: a border in `decoration` insets the child by its width,
+          // but the slots below are positioned against the full innerWidth and
+          // innerHeight, so they overhung the right and bottom edges by 2px and
+          // the frame looked padded on the left and top only.
+          foregroundDecoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(2),
+            border: Border.all(color: const Color(0xFFCFCFCF)),
+          ),
           child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(2),
-            ),
+            decoration: const BoxDecoration(),
             child: Stack(
               children: <Widget>[
                 for (final rect in rects)
