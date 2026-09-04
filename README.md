@@ -1,5 +1,5 @@
 # igapp
-自製的 IG 貼文編輯 App，以簡潔操作為核心設計理念。
+IG 貼文編輯 App，以簡潔操作為核心設計理念。
 支援多頁貼文排版、自訂背景色彩，以及針對 IG 優化的匯出選項。
 
 <img width="3840" height="2160" alt="簡潔的製作IG貼文" src="https://github.com/user-attachments/assets/a44f09ff-3755-4700-bcd0-10c853921b19" />
