@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -11,7 +10,7 @@ import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 
-import 'package:path_provider/path_provider.dart';
+import 'platform/media.dart' as media;
 
 import 'app_settings.dart';
 import 'app_strings.dart';
@@ -473,7 +472,7 @@ void _compositeClippedImage({
   img.compositeImage(canvas, visibleImage, dstX: clippedLeft, dstY: clippedTop);
 }
 
-Uint8List _renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
+Uint8List renderSelectedPageJpgBytes(Map<String, dynamic> payload) {
   const defaultWidth = 2400;
   const maxWidth = 6000;
   final exportWidth =
@@ -1145,16 +1144,7 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     try {
-      final result =
-          await _galleryChannel.invokeMapMethod<String, dynamic>(
-            'prepareImageAsset',
-            <String, dynamic>{
-              'sourcePath': sourcePath,
-              'projectId': _project.id,
-              'maxPreviewSide': 720,
-            },
-          ) ??
-          <String, dynamic>{};
+      final result = await media.prepareImageAsset(_project.id, sourcePath);
 
       final displayPath =
           result['displayPath'] as String? ??
@@ -1179,11 +1169,7 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   Future<Uint8List?> _readImageBytesForExport(String path) async {
-    final file = File(path);
-    if (!await file.exists()) {
-      return null;
-    }
-    return file.readAsBytes();
+    return media.readImageBytesIfPresent(path);
   }
 
   void _setExportProgress({
@@ -1816,10 +1802,9 @@ class _BlankPageState extends State<BlankPage> {
 
     for (var listIndex = 0; listIndex < pageIndexes.length; listIndex++) {
       final pageNumber = pageIndexes[listIndex] + 1;
-      final bytes = await _renderProjectPageInSetBytesForGallery(
+      final bytes = await _renderProjectPageAtIndexBytesForGallery(
         exportWidth: 360,
-        pageIndexes: pageIndexes,
-        targetListIndex: listIndex,
+        targetOriginalIndex: pageIndexes[listIndex],
       );
       parts
         ..add(<String, String>{'text': 'Original page $pageNumber'})
@@ -2824,7 +2809,7 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   Future<ui.Size?> _decodeImageSize(String path) async {
-    final bytes = await File(path).readAsBytes();
+    final bytes = await media.readImageBytes(path);
     final completer = Completer<ui.Size?>();
     ui.decodeImageFromList(bytes, (image) {
       completer.complete(
@@ -2839,15 +2824,14 @@ class _BlankPageState extends State<BlankPage> {
   /// result before leaving the export flow.
   Future<void> _showExportedPageHdrPreview(_CompletedExportPage page) async {
     try {
-      final directory = await getTemporaryDirectory();
-      final file = File(
-        '${directory.path}/igapp_export_preview_${page.pageNumber}.jpg',
+      final path = await media.writePreviewImage(
+        page.bytes,
+        'igapp_export_preview_${page.pageNumber}.jpg',
       );
-      await file.writeAsBytes(page.bytes, flush: true);
       if (!mounted) {
         return;
       }
-      _showImportedImagePreview(file.path);
+      _showImportedImagePreview(path);
     } catch (_) {
       // Preview is best-effort; the export itself already succeeded.
     }
@@ -4717,12 +4701,8 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   Future<img.Image?> _loadExportSourceImage(String path) async {
-    final file = File(path);
-    if (!await file.exists()) {
-      return null;
-    }
-    final bytes = await file.readAsBytes();
-    return img.decodeImage(bytes);
+    final bytes = await media.readImageBytesIfPresent(path);
+    return bytes == null ? null : img.decodeImage(bytes);
   }
 
   Future<int> _computePageExportWidth(ProjectPage page) async {
@@ -4808,11 +4788,7 @@ class _BlankPageState extends State<BlankPage> {
     required Uint8List bytes,
     required String name,
   }) async {
-    final result = await _galleryChannel.invokeMethod<bool>(
-      'saveJpgToGallery',
-      <String, dynamic>{'bytes': bytes, 'name': name},
-    );
-    return result ?? false;
+    return media.saveImage(bytes, name);
   }
 
   /// Lossless passthrough: copies the original file into the gallery without
@@ -4821,6 +4797,7 @@ class _BlankPageState extends State<BlankPage> {
     required String path,
     required String name,
   }) async {
+    if (kIsWeb) return media.saveOriginal(path, name);
     if (defaultTargetPlatform != TargetPlatform.android) {
       return false;
     }
@@ -4918,10 +4895,9 @@ class _BlankPageState extends State<BlankPage> {
         : elementsVisibleOnPage(_project, pageIndex);
 
     if (visible.any((element) => element.type == 'text')) {
-      return _renderProjectPageInSetBytesWithFlutter(
+      return _renderProjectPageBytesWithFlutter(
         exportWidth: exportWidth,
-        pageIndexes: <int>[pageIndex],
-        targetListIndex: 0,
+        targetOriginalIndex: pageIndex,
       );
     }
 
@@ -4978,18 +4954,6 @@ class _BlankPageState extends State<BlankPage> {
     return compute(_renderPageJpgBytes, payload);
   }
 
-  bool _pageIndexesContainText(List<int> pageIndexes) {
-    for (final pageIndex in pageIndexes) {
-      if (elementsVisibleOnPage(
-        _project,
-        pageIndex,
-      ).any((element) => element.type == 'text')) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   Future<ui.Image?> _decodeUiImageForExport(Uint8List bytes) {
     final completer = Completer<ui.Image?>();
     try {
@@ -5000,12 +4964,10 @@ class _BlankPageState extends State<BlankPage> {
     return completer.future;
   }
 
-  Future<Uint8List> _renderProjectPageInSetBytesWithFlutter({
+  Future<Uint8List> _renderProjectPageBytesWithFlutter({
     required int exportWidth,
-    required List<int> pageIndexes,
-    required int targetListIndex,
+    required int targetOriginalIndex,
   }) async {
-    final targetOriginalIndex = pageIndexes[targetListIndex];
     final targetPage = _project.pages[targetOriginalIndex];
     final exportHeight =
         (exportWidth * (targetPage.aspectHeight / targetPage.aspectWidth))
@@ -5162,24 +5124,26 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
-  Future<Uint8List> _renderProjectPageInSetBytesForGallery({
+  Future<Uint8List> _renderProjectPageAtIndexBytesForGallery({
     required int exportWidth,
-    required List<int> pageIndexes,
-    required int targetListIndex,
+    required int targetOriginalIndex,
     HdrExportMode hdrMode = HdrExportMode.off,
   }) async {
-    final containsText = _pageIndexesContainText(pageIndexes);
+    final containsText = elementsVisibleOnPage(
+      _project,
+      targetOriginalIndex,
+    ).any((element) => element.type == 'text');
     // The native renderer draws text itself, so Android pages always take the
     // native path — that is the only way gain maps survive the export.
-    if (containsText && defaultTargetPlatform != TargetPlatform.android) {
-      return _renderProjectPageInSetBytesWithFlutter(
+    if (!kIsWeb &&
+        containsText &&
+        defaultTargetPlatform != TargetPlatform.android) {
+      return _renderProjectPageBytesWithFlutter(
         exportWidth: exportWidth,
-        pageIndexes: pageIndexes,
-        targetListIndex: targetListIndex,
+        targetOriginalIndex: targetOriginalIndex,
       );
     }
 
-    final targetOriginalIndex = pageIndexes[targetListIndex];
     final usedImagePaths = <String>{};
     for (final element in _project.elements) {
       if (element.type != 'image') {
@@ -5293,6 +5257,11 @@ class _BlankPageState extends State<BlankPage> {
       'elements': elementPayloads,
     };
 
+    if (kIsWeb) {
+      await _rasterizeExportText(elementPayloads, exportWidth);
+      return media.renderWebPage(payload);
+    }
+
     if (defaultTargetPlatform == TargetPlatform.android) {
       try {
         final result = await _galleryChannel.invokeMethod<Uint8List>(
@@ -5309,13 +5278,61 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     if (containsText) {
-      return _renderProjectPageInSetBytesWithFlutter(
+      return _renderProjectPageBytesWithFlutter(
         exportWidth: exportWidth,
-        pageIndexes: pageIndexes,
-        targetListIndex: targetListIndex,
+        targetOriginalIndex: targetOriginalIndex,
       );
     }
-    return compute(_renderSelectedPageJpgBytes, payload);
+    return compute(renderSelectedPageJpgBytes, payload);
+  }
+
+  /// Flutter rasterizes text so browser exports use the editor's font metrics.
+  /// The C++ compositor treats the glyph pixels as SDR when blending over HDR.
+  Future<void> _rasterizeExportText(
+    List<Map<String, dynamic>> elements,
+    int exportWidth,
+  ) async {
+    for (final element in elements) {
+      if (element['type'] != 'text') continue;
+      final width = ((element['width'] as num).toDouble() * exportWidth)
+          .round()
+          .clamp(1, 8192);
+      final painter = TextPainter(
+        text: TextSpan(
+          text: element['text'] as String,
+          style: TextStyle(
+            color: Color(element['colorValue'] as int),
+            fontSize:
+                (element['fontSizeRatio'] as num).toDouble() * exportWidth,
+            height: 1.12,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: element['maxLines'] as int,
+      )..layout(maxWidth: width.toDouble());
+      final height = painter.height.ceil().clamp(1, 8192);
+      final recorder = ui.PictureRecorder();
+      painter.paint(Canvas(recorder), Offset.zero);
+      final picture = recorder.endRecording();
+      final raster = await picture.toImage(width, height);
+      try {
+        final data = await raster.toByteData(
+          format: ui.ImageByteFormat.rawStraightRgba,
+        );
+        if (data == null) throw StateError('Text rasterization failed');
+        element['rgba'] = data.buffer.asUint8List(
+          data.offsetInBytes,
+          data.lengthInBytes,
+        );
+        element['rasterWidth'] = width;
+        element['rasterHeight'] = height;
+      } finally {
+        raster.dispose();
+        picture.dispose();
+        painter.dispose();
+      }
+    }
   }
 
   Future<void> _exportAllPagesToGallery({
@@ -5335,6 +5352,7 @@ class _BlankPageState extends State<BlankPage> {
     setState(() {
       _isExporting = true;
     });
+    media.beginExportBatch();
 
     try {
       await _primeExportImageCache(onProgress: onProgress);
@@ -5394,10 +5412,9 @@ class _BlankPageState extends State<BlankPage> {
         }
 
         if (!isSuccess) {
-          final jpgBytes = await _renderProjectPageInSetBytesForGallery(
+          final jpgBytes = await _renderProjectPageAtIndexBytesForGallery(
             exportWidth: exportWidth,
-            pageIndexes: pageIndexes,
-            targetListIndex: listIndex,
+            targetOriginalIndex: pageIndex,
             hdrMode: hdrMode,
           );
 
@@ -5450,10 +5467,16 @@ class _BlankPageState extends State<BlankPage> {
         return;
       }
 
+      await media.finishExportBatch(_project.name);
+      if (!mounted) return;
       if (successCount == pageIndexes.length) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(strings.t('exportedToGallery'))));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              strings.t(kIsWeb ? 'downloadPrepared' : 'exportedToGallery'),
+            ),
+          ),
+        );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(strings.t('partialExportFailed'))),
@@ -5481,6 +5504,7 @@ class _BlankPageState extends State<BlankPage> {
         SnackBar(content: Text(strings.t('exportFailedTryAgain'))),
       );
     } finally {
+      media.cancelExportBatch();
       if (mounted) {
         setState(() {
           _isExporting = false;
@@ -5597,153 +5621,244 @@ class _BlankPageState extends State<BlankPage> {
               canPop: !exportRunning,
               child: Dialog(
                 backgroundColor: Colors.transparent,
-                insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+                insetPadding: const EdgeInsets.symmetric(
+                  horizontal: 28,
+                  vertical: 24,
+                ),
                 child: Container(
+                  constraints: const BoxConstraints(maxWidth: 720),
                   padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF4F4F4),
                     borderRadius: BorderRadius.circular(24),
                   ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '匯出',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          color: Color(0xFF1F1F1F),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '匯出',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF1F1F1F),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 16),
-                      IgnorePointer(
-                        ignoring: exportStarted,
-                        child: AnimatedOpacity(
-                          duration: const Duration(milliseconds: 180),
-                          curve: Curves.easeInOut,
-                          opacity: exportStarted ? 0.54 : 1,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _ExportSelectionSummary(
-                                totalCount: _project.pages.length,
-                                selectedIndexes: selectedExportPageIndexes,
-                                reverseOrder: reverseOrder,
-                              ),
-                              const SizedBox(height: 10),
-                              _ExportPageSelectionStrip(
-                                pages: _project.pages,
-                                elements: _project.elements,
-                                selectedIndexes: selectedExportPageIndexes,
-                                onToggle: (pageIndex) {
-                                  setDialogState(() {
-                                    final next = Set<int>.from(
-                                      selectedExportPageIndexes,
-                                    );
-                                    if (next.contains(pageIndex)) {
-                                      next.remove(pageIndex);
-                                    } else {
-                                      next.add(pageIndex);
-                                    }
-                                    selectedExportPageIndexes = next;
-                                  });
-                                },
-                              ),
-                              const SizedBox(height: 16),
-                              const Text(
-                                '畫質',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w700,
-                                  color: Color(0xFF6A6A6A),
+                        const SizedBox(height: 16),
+                        IgnorePointer(
+                          ignoring: exportStarted,
+                          child: AnimatedOpacity(
+                            duration: const Duration(milliseconds: 180),
+                            curve: Curves.easeInOut,
+                            opacity: exportStarted ? 0.54 : 1,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _ExportSelectionSummary(
+                                  totalCount: _project.pages.length,
+                                  selectedIndexes: selectedExportPageIndexes,
+                                  reverseOrder: reverseOrder,
                                 ),
-                              ),
-                              const SizedBox(height: 10),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: _ExportQualityButton(
-                                      label: 'IG標準',
-                                      detail: '1080',
-                                      selected:
-                                          qualityMode ==
-                                          ExportQualityMode.igStandard1080,
-                                      onTap: () {
-                                        setDialogState(() {
-                                          qualityMode =
-                                              ExportQualityMode.igStandard1080;
-                                        });
-                                      },
-                                    ),
+                                const SizedBox(height: 10),
+                                _ExportPageSelectionStrip(
+                                  pages: _project.pages,
+                                  elements: _project.elements,
+                                  selectedIndexes: selectedExportPageIndexes,
+                                  onToggle: (pageIndex) {
+                                    setDialogState(() {
+                                      final next = Set<int>.from(
+                                        selectedExportPageIndexes,
+                                      );
+                                      if (next.contains(pageIndex)) {
+                                        next.remove(pageIndex);
+                                      } else {
+                                        next.add(pageIndex);
+                                      }
+                                      selectedExportPageIndexes = next;
+                                    });
+                                  },
+                                ),
+                                const SizedBox(height: 16),
+                                const Text(
+                                  '畫質',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFF6A6A6A),
                                   ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: _ExportQualityButton(
-                                      label: '高畫質',
-                                      detail: '2.4K',
-                                      selected:
-                                          qualityMode ==
-                                          ExportQualityMode.high2400,
-                                      onTap: () {
-                                        setDialogState(() {
-                                          qualityMode =
-                                              ExportQualityMode.high2400;
-                                        });
-                                      },
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: _ExportQualityButton(
-                                      label: strings.t('qualityOriginalLabel'),
-                                      detail: strings.t(
-                                        'qualityOriginalDetail',
+                                ),
+                                const SizedBox(height: 10),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: _ExportQualityButton(
+                                        label: 'IG標準',
+                                        detail: '1080',
+                                        selected:
+                                            qualityMode ==
+                                            ExportQualityMode.igStandard1080,
+                                        onTap: () {
+                                          setDialogState(() {
+                                            qualityMode = ExportQualityMode
+                                                .igStandard1080;
+                                          });
+                                        },
                                       ),
-                                      selected:
-                                          qualityMode ==
-                                          ExportQualityMode.originalLossless,
-                                      onTap: () {
-                                        setDialogState(() {
-                                          qualityMode = ExportQualityMode
-                                              .originalLossless;
-                                        });
-                                      },
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: _ExportQualityButton(
+                                        label: '高畫質',
+                                        detail: '2.4K',
+                                        selected:
+                                            qualityMode ==
+                                            ExportQualityMode.high2400,
+                                        onTap: () {
+                                          setDialogState(() {
+                                            qualityMode =
+                                                ExportQualityMode.high2400;
+                                          });
+                                        },
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: _ExportQualityButton(
+                                        label: strings.t(
+                                          'qualityOriginalLabel',
+                                        ),
+                                        detail: strings.t(
+                                          'qualityOriginalDetail',
+                                        ),
+                                        selected:
+                                            qualityMode ==
+                                            ExportQualityMode.originalLossless,
+                                        onTap: () {
+                                          setDialogState(() {
+                                            qualityMode = ExportQualityMode
+                                                .originalLossless;
+                                          });
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                if (qualityMode ==
+                                    ExportQualityMode.originalLossless) ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    strings.t('losslessQualityHint'),
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      height: 1.35,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF8A8A8A),
                                     ),
                                   ),
                                 ],
-                              ),
-                              if (qualityMode ==
-                                  ExportQualityMode.originalLossless) ...[
-                                const SizedBox(height: 8),
-                                Text(
-                                  strings.t('losslessQualityHint'),
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    height: 1.35,
-                                    fontWeight: FontWeight.w600,
-                                    color: Color(0xFF8A8A8A),
+                                if (hdrCapabilities.supportsGainmap &&
+                                    projectHasHdr) ...[
+                                  const SizedBox(height: 14),
+                                  Row(
+                                    children: [
+                                      _ExportReverseSwitch(
+                                        value: hdrExportOn,
+                                        onChanged: (value) {
+                                          setDialogState(() {
+                                            hdrExportOn = value;
+                                          });
+                                        },
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          strings.t('hdrExportToggle'),
+                                          style: const TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w600,
+                                            color: Color(0xFF1F1F1F),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ),
-                              ],
-                              if (hdrCapabilities.supportsGainmap &&
-                                  projectHasHdr) ...[
+                                  AnimatedSize(
+                                    duration: const Duration(milliseconds: 180),
+                                    curve: Curves.easeInOut,
+                                    child: hdrExportOn
+                                        ? Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              const SizedBox(height: 10),
+                                              Text(
+                                                strings.t('sdrTreatmentLabel'),
+                                                style: const TextStyle(
+                                                  fontSize: 13,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: Color(0xFF6A6A6A),
+                                                ),
+                                              ),
+                                              const SizedBox(height: 8),
+                                              Row(
+                                                children: [
+                                                  Expanded(
+                                                    child: _ExportQualityButton(
+                                                      label: strings.t(
+                                                        'sdrNeutralLabel',
+                                                      ),
+                                                      detail: strings.t(
+                                                        'sdrNeutralDetail',
+                                                      ),
+                                                      selected: !sdrEnhanced,
+                                                      onTap: () {
+                                                        setDialogState(() {
+                                                          sdrEnhanced = false;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: _ExportQualityButton(
+                                                      label: strings.t(
+                                                        'sdrEnhancedLabel',
+                                                      ),
+                                                      detail: strings.t(
+                                                        'sdrEnhancedDetail',
+                                                      ),
+                                                      selected: sdrEnhanced,
+                                                      onTap: () {
+                                                        setDialogState(() {
+                                                          sdrEnhanced = true;
+                                                        });
+                                                      },
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                          )
+                                        : const SizedBox.shrink(),
+                                  ),
+                                ],
                                 const SizedBox(height: 14),
                                 Row(
                                   children: [
                                     _ExportReverseSwitch(
-                                      value: hdrExportOn,
+                                      value: reverseOrder,
                                       onChanged: (value) {
                                         setDialogState(() {
-                                          hdrExportOn = value;
+                                          reverseOrder = value;
                                         });
                                       },
                                     ),
                                     const SizedBox(width: 8),
-                                    Expanded(
+                                    const Expanded(
                                       child: Text(
-                                        strings.t('hdrExportToggle'),
-                                        style: const TextStyle(
+                                        '從最後一頁反向輸出',
+                                        style: TextStyle(
                                           fontSize: 14,
                                           fontWeight: FontWeight.w600,
                                           color: Color(0xFF1F1F1F),
@@ -5752,157 +5867,74 @@ class _BlankPageState extends State<BlankPage> {
                                     ),
                                   ],
                                 ),
-                                AnimatedSize(
-                                  duration: const Duration(milliseconds: 180),
-                                  curve: Curves.easeInOut,
-                                  child: hdrExportOn
-                                      ? Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            const SizedBox(height: 10),
-                                            Text(
-                                              strings.t('sdrTreatmentLabel'),
-                                              style: const TextStyle(
-                                                fontSize: 13,
-                                                fontWeight: FontWeight.w700,
-                                                color: Color(0xFF6A6A6A),
-                                              ),
-                                            ),
-                                            const SizedBox(height: 8),
-                                            Row(
-                                              children: [
-                                                Expanded(
-                                                  child: _ExportQualityButton(
-                                                    label: strings.t(
-                                                      'sdrNeutralLabel',
-                                                    ),
-                                                    detail: strings.t(
-                                                      'sdrNeutralDetail',
-                                                    ),
-                                                    selected: !sdrEnhanced,
-                                                    onTap: () {
-                                                      setDialogState(() {
-                                                        sdrEnhanced = false;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                                const SizedBox(width: 8),
-                                                Expanded(
-                                                  child: _ExportQualityButton(
-                                                    label: strings.t(
-                                                      'sdrEnhancedLabel',
-                                                    ),
-                                                    detail: strings.t(
-                                                      'sdrEnhancedDetail',
-                                                    ),
-                                                    selected: sdrEnhanced,
-                                                    onTap: () {
-                                                      setDialogState(() {
-                                                        sdrEnhanced = true;
-                                                      });
-                                                    },
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ],
-                                        )
-                                      : const SizedBox.shrink(),
-                                ),
                               ],
-                              const SizedBox(height: 14),
-                              Row(
-                                children: [
-                                  _ExportReverseSwitch(
-                                    value: reverseOrder,
-                                    onChanged: (value) {
-                                      setDialogState(() {
-                                        reverseOrder = value;
-                                      });
-                                    },
-                                  ),
-                                  const SizedBox(width: 8),
-                                  const Expanded(
-                                    child: Text(
-                                      '從最後一頁反向輸出',
-                                      style: TextStyle(
-                                        fontSize: 14,
+                            ),
+                          ),
+                        ),
+                        AnimatedSize(
+                          duration: const Duration(milliseconds: 220),
+                          curve: Curves.easeInOut,
+                          child: exportStarted
+                              ? Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const SizedBox(height: 14),
+                                    Text(
+                                      dialogProgressLabel,
+                                      style: const TextStyle(
+                                        fontSize: 12,
                                         fontWeight: FontWeight.w600,
-                                        color: Color(0xFF1F1F1F),
+                                        color: Color(0xFF4A4A4A),
                                       ),
                                     ),
-                                  ),
-                                ],
+                                    const SizedBox(height: 10),
+                                    _ExportProgressPanel(
+                                      progress: dialogProgress,
+                                      completedPages: dialogCompletedPages,
+                                      onPreviewPage: (page) => unawaited(
+                                        _showExportedPageHdrPreview(page),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                        const SizedBox(height: 18),
+                        if (!exportStarted)
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _DialogActionButton(
+                                  label: '取消',
+                                  onTap: () => Navigator.of(context).pop(),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: _DialogIconActionButton(
+                                  icon: Icons.ios_share_rounded,
+                                  isPrimary: true,
+                                  enabled: selectedExportPageIndexes.isNotEmpty,
+                                  onTap: () {
+                                    unawaited(
+                                      startExport(setDialogState, context),
+                                    );
+                                  },
+                                ),
                               ),
                             ],
                           ),
-                        ),
-                      ),
-                      AnimatedSize(
-                        duration: const Duration(milliseconds: 220),
-                        curve: Curves.easeInOut,
-                        child: exportStarted
-                            ? Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const SizedBox(height: 14),
-                                  Text(
-                                    dialogProgressLabel,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                      color: Color(0xFF4A4A4A),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 10),
-                                  _ExportProgressPanel(
-                                    progress: dialogProgress,
-                                    completedPages: dialogCompletedPages,
-                                    onPreviewPage: (page) => unawaited(
-                                      _showExportedPageHdrPreview(page),
-                                    ),
-                                  ),
-                                ],
-                              )
-                            : const SizedBox.shrink(),
-                      ),
-                      const SizedBox(height: 18),
-                      if (!exportStarted)
-                        Row(
-                          children: [
-                            Expanded(
-                              child: _DialogActionButton(
-                                label: '取消',
-                                onTap: () => Navigator.of(context).pop(),
-                              ),
+                        if (exportStarted && exportDone && !exportRunning)
+                          SizedBox(
+                            width: double.infinity,
+                            child: _DialogActionButton(
+                              label: '完成',
+                              isPrimary: true,
+                              onTap: () => Navigator.of(context).pop(),
                             ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: _DialogIconActionButton(
-                                icon: Icons.ios_share_rounded,
-                                isPrimary: true,
-                                enabled: selectedExportPageIndexes.isNotEmpty,
-                                onTap: () {
-                                  unawaited(
-                                    startExport(setDialogState, context),
-                                  );
-                                },
-                              ),
-                            ),
-                          ],
-                        ),
-                      if (exportStarted && exportDone && !exportRunning)
-                        SizedBox(
-                          width: double.infinity,
-                          child: _DialogActionButton(
-                            label: '完成',
-                            isPrimary: true,
-                            onTap: () => Navigator.of(context).pop(),
                           ),
-                        ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -8006,8 +8038,8 @@ class _CroppedImageFile extends StatelessWidget {
           top: top,
           width: imageWidth,
           height: imageHeight,
-          child: Image.file(
-            File(path),
+          child: media.storedImage(
+            path,
             fit: BoxFit.fill,
             cacheWidth: cacheWidth,
             filterQuality: FilterQuality.low,
@@ -8466,18 +8498,21 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                               _hdrBrightnessFromData(widget.element.data) >
                                   1.0) &&
                           !widget.isCropMode &&
-                          !kIsWeb &&
-                          defaultTargetPlatform == TargetPlatform.android &&
+                          (kIsWeb ||
+                              defaultTargetPlatform ==
+                                  TargetPlatform.android) &&
                           AppSettingsController.instance.hdrEnabled)
                     ? HdrImageView(
                         // Key by path + crop only: adjust/brightness/view
                         // changes flow over the live channel, so the platform
                         // view is not recreated (which used to flicker).
                         key: ValueKey(
-                          'hdr_${src}_'
-                          '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
-                          '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
-                          '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
+                          kIsWeb
+                              ? 'hdr_$src'
+                              : 'hdr_${src}_'
+                                    '${_cropOffsetXFromData(widget.element.data).toStringAsFixed(3)}_'
+                                    '${_cropOffsetYFromData(widget.element.data).toStringAsFixed(3)}_'
+                                    '${_cropScaleFromData(widget.element.data).toStringAsFixed(3)}',
                         ),
                         path: src,
                         sourceAspectRatio:
@@ -10322,6 +10357,197 @@ class _BottomTab extends StatelessWidget {
   }
 }
 
+Future<Size?> showCustomPageAspectDialog(
+  BuildContext context,
+  ProjectPage page,
+) {
+  return showDialog<Size>(
+    context: context,
+    builder: (_) => _CustomPageAspectDialog(page: page),
+  );
+}
+
+class _CustomPageAspectDialog extends StatefulWidget {
+  const _CustomPageAspectDialog({required this.page});
+  final ProjectPage page;
+
+  @override
+  State<_CustomPageAspectDialog> createState() =>
+      _CustomPageAspectDialogState();
+}
+
+class _CustomPageAspectDialogState extends State<_CustomPageAspectDialog> {
+  late final _width = TextEditingController(
+    text: _format(widget.page.aspectWidth),
+  );
+  late final _height = TextEditingController(
+    text: _format(widget.page.aspectHeight),
+  );
+  String? _error;
+
+  static String _format(double value) => value == value.roundToDouble()
+      ? value.toInt().toString()
+      : value.toString();
+
+  @override
+  void dispose() {
+    _width.dispose();
+    _height.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final width = double.tryParse(_width.text.trim());
+    final height = double.tryParse(_height.text.trim());
+    if (width == null ||
+        height == null ||
+        !width.isFinite ||
+        !height.isFinite ||
+        width <= 0 ||
+        height <= 0) {
+      setState(() => _error = '請輸入大於 0 的寬與高');
+      return;
+    }
+    // Keep supported export sizes nonzero and within the renderer's limit.
+    final ratio = width / height;
+    if (!ratio.isFinite || ratio < 2400 / 20000 || ratio > 1080) {
+      setState(() => _error = '比例過於狹長，請調整寬與高');
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    Navigator.of(context).pop(Size(width, height));
+  }
+
+  Widget _field(String label, TextEditingController controller, bool first) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 2, bottom: 6),
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF7A7A7A),
+              ),
+            ),
+          ),
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: TextField(
+              controller: controller,
+              autofocus: first,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              textInputAction: first
+                  ? TextInputAction.next
+                  : TextInputAction.done,
+              onSubmitted: first
+                  ? (_) => FocusScope.of(context).nextFocus()
+                  : (_) => _submit(),
+              onChanged: (_) {
+                if (_error != null) setState(() => _error = null);
+              },
+              decoration: const InputDecoration(border: InputBorder.none),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF4F4F4),
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const Icon(
+                  Icons.aspect_ratio_rounded,
+                  size: 22,
+                  color: Color(0xFF6F6F6F),
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                '自訂頁面比例',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1F1F1F),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  _field('寬', _width, true),
+                  const SizedBox(width: 10),
+                  _field('高', _height, false),
+                ],
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _error!,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    height: 1.4,
+                    color: Color(0xFF6A6A6A),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: _DialogActionButton(
+                      label: strings.t('cancel'),
+                      onTap: () => Navigator.of(context).pop(),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _DialogActionButton(
+                      label: strings.t('done'),
+                      isPrimary: true,
+                      onTap: _submit,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _PageTabPage extends StatelessWidget {
   const _PageTabPage({
     required this.page,
@@ -10346,6 +10572,7 @@ class _PageTabPage extends StatelessWidget {
   final void Function(Color color) onSavedColorDelete;
 
   static const List<_PageAspectOption> _options = <_PageAspectOption>[
+    _PageAspectOption(label: '9:16', width: 9, height: 16),
     _PageAspectOption(label: '4:5', width: 4, height: 5),
     _PageAspectOption(label: '3:4', width: 3, height: 4),
     _PageAspectOption(label: '4:3', width: 4, height: 3),
@@ -10414,13 +10641,40 @@ class _PageTabPage extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                _PageAspectCard(
+                  option: const _PageAspectOption(
+                    label: '自訂',
+                    width: 1,
+                    height: 1,
+                  ),
+                  height: cardHeight,
+                  selected: !_options.any(
+                    (option) =>
+                        (page.aspectWidth / page.aspectHeight -
+                                option.width / option.height)
+                            .abs() <
+                        1e-9,
+                  ),
+                  onTap: () async {
+                    final ratio = await showCustomPageAspectDialog(
+                      context,
+                      page,
+                    );
+                    if (ratio != null && context.mounted) {
+                      onAspectSelected(ratio.width, ratio.height);
+                    }
+                  },
+                ),
+                const SizedBox(width: 12),
                 for (var i = 0; i < _options.length; i++) ...[
                   _PageAspectCard(
                     option: _options[i],
                     height: cardHeight,
                     selected:
-                        page.aspectWidth == _options[i].width &&
-                        page.aspectHeight == _options[i].height,
+                        (page.aspectWidth / page.aspectHeight -
+                                _options[i].width / _options[i].height)
+                            .abs() <
+                        1e-9,
                     onTap: () {
                       onAspectSelected(_options[i].width, _options[i].height);
                     },
@@ -11572,7 +11826,7 @@ class _ImageSourceTabPage extends StatelessWidget {
                   borderRadius: BorderRadius.circular(16),
                 ),
                 clipBehavior: Clip.antiAlias,
-                child: Image.file(File(imagePath), fit: BoxFit.contain),
+                child: media.storedImage(imagePath, fit: BoxFit.contain),
               ),
             ),
           ],
@@ -12185,8 +12439,8 @@ class _ImportedImageCard extends StatelessWidget {
           padding: const EdgeInsets.all(2),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(8),
-            child: Image.file(
-              File(imagePath),
+            child: media.storedImage(
+              imagePath,
               width: imageSize,
               height: imageSize,
               fit: BoxFit.cover,

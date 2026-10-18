@@ -1,12 +1,13 @@
 {
-    "name": "igapp",
-    "short_name": "igapp",
-    "start_url": ".",
+    "id": "./",
+    "name": "Post Studio",
+    "short_name": "Post Studio",
+    "start_url": "./",
+    "scope": "./",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "background_color": "#F1F2F4",
+    "theme_color": "#F1F2F4",
+    "description": "製作多頁貼文與 HDR 圖片",
     "prefer_related_applications": false,
     "icons": [
         {

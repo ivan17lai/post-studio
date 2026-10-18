@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
 import 'app_settings.dart';
 import 'app_strings.dart';
+import 'install_app_button.dart';
 import 'hdr/ultra_hdr.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -215,6 +217,19 @@ class _SettingsPageState extends State<SettingsPage> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(22, 22, 22, 28),
           children: [
+            if (kIsWeb) ...[
+              _SettingsCard(
+                primary: primary,
+                icon: Icons.add_to_home_screen_rounded,
+                title: strings.t('installWebApp'),
+                subtitle: strings.t('installWebAppHelp'),
+              ),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: InstallAppButton(),
+              ),
+              const SizedBox(height: 22),
+            ],
             _SettingsSectionTitle(title: strings.t('themeColor')),
             const SizedBox(height: 10),
             _ThemeColorGrid(primary: primary, settings: _settings),

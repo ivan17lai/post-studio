@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -17,7 +17,9 @@ import 'blank_page.dart';
 import 'canvas_geometry.dart';
 import 'project_record.dart';
 import 'settings_page.dart';
+import 'install_app_button.dart';
 import 'theme_constants.dart';
+import 'platform/media.dart' as media;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -60,7 +62,6 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> {
   static const String _projectsStorageKey = 'projects_v1';
   static const MethodChannel _shareChannel = MethodChannel('igapp/share');
-  static const MethodChannel _galleryChannel = MethodChannel('igapp/gallery');
 
   final List<ProjectRecord> _projects = <ProjectRecord>[];
   bool _isLoading = true;
@@ -250,6 +251,7 @@ class _MainPageState extends State<MainPage> {
   }
 
   Future<void> _consumePendingSharedImages() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
     final pending =
         await _shareChannel.invokeListMethod<dynamic>(
           'getPendingSharedImages',
@@ -372,7 +374,7 @@ class _MainPageState extends State<MainPage> {
       ];
 
       for (var i = 0; i < preparedPaths.length; i++) {
-        final bytes = await File(preparedPaths[i].displayPath).readAsBytes();
+        final bytes = await media.readImageBytes(preparedPaths[i].displayPath);
         parts
           ..add(<String, String>{'text': 'Image index $i'})
           ..add(<String, dynamic>{
@@ -612,16 +614,7 @@ class _MainPageState extends State<MainPage> {
   Future<({String displayPath, String originalPath, bool isUltraHdr})>
   _prepareImageAsset(String projectId, String sourcePath) async {
     try {
-      final result =
-          await _galleryChannel.invokeMapMethod<String, dynamic>(
-            'prepareImageAsset',
-            <String, dynamic>{
-              'sourcePath': sourcePath,
-              'projectId': projectId,
-              'maxPreviewSide': 720,
-            },
-          ) ??
-          <String, dynamic>{};
+      final result = await media.prepareImageAsset(projectId, sourcePath);
 
       final displayPath =
           result['displayPath'] as String? ??
@@ -647,7 +640,7 @@ class _MainPageState extends State<MainPage> {
 
   Future<double> _getImageAspectRatio(String path) async {
     try {
-      final bytes = await File(path).readAsBytes();
+      final bytes = await media.readImageBytes(path);
       final completer = Completer<double>();
       ui.decodeImageFromList(bytes, (image) {
         completer.complete(image.width / image.height);
@@ -982,6 +975,7 @@ class _MainPageState extends State<MainPage> {
               ),
             ],
           ),
+          if (kIsWeb) ...[const SizedBox(height: 12), const InstallAppButton()],
           const SizedBox(height: 26),
           Row(
             crossAxisAlignment: CrossAxisAlignment.center,
@@ -1006,7 +1000,8 @@ class _MainPageState extends State<MainPage> {
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w800,
-                    color: primary.toARGB32() == const Color(0xFFC3AEFF).toARGB32()
+                    color:
+                        primary.toARGB32() == const Color(0xFFC3AEFF).toARGB32()
                         ? const Color(0xFF6B4EE6)
                         : primary,
                   ),
@@ -1045,8 +1040,7 @@ class _MainPageState extends State<MainPage> {
                     : ListView.separated(
                         padding: const EdgeInsets.only(top: 16, bottom: 100),
                         itemCount: _projects.length,
-                        separatorBuilder: (_, _) =>
-                            const SizedBox(height: 12),
+                        separatorBuilder: (_, _) => const SizedBox(height: 12),
                         itemBuilder: (context, index) {
                           final project = _projects[index];
                           return _ProjectCard(
@@ -1059,7 +1053,6 @@ class _MainPageState extends State<MainPage> {
                         },
                       ),
               ),
-
             ],
           ),
         ),
@@ -1461,7 +1454,7 @@ class _StyledCreateProjectDialogState
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(12),
                             image: DecorationImage(
-                              image: FileImage(File(path)),
+                              image: media.storedImageProvider(path),
                               fit: BoxFit.cover,
                             ),
                             border: Border.all(color: const Color(0xFFE2E2E2)),

@@ -7,6 +7,15 @@ class AppStrings {
   const AppStrings._();
 
   static const Map<String, String> _zh = <String, String>{
+    'installAppButton': '安裝 App',
+    'appInstalled': '已在 App 模式',
+    'appInstalledHelp': '目前已從獨立 App 視窗開啟，無須再次安裝。',
+    'installGotIt': '知道了',
+    'installAppSteps':
+        'iPhone / iPad\n1. 用 Safari 開啟這個網站。\n2. 點「分享」→「加入主畫面」。\n3. 開啟「以網頁 App 開啟」（若有），再點「加入」。\n\nAndroid / 電腦\n在瀏覽器選單中選「安裝 App」或「加入主畫面」。若目前瀏覽器沒有這個選項，請改用 Chrome 或 Edge。\n\n首次請保持連線，讓必要檔案下載完成。',
+    'installWebApp': '安裝到主畫面',
+    'installWebAppHelp':
+        'iPhone / iPad：用 Safari 開啟網站，點「分享」→「加入主畫面」。若出現「以網頁 App 開啟」，請開啟它，再點「加入」。首次請保持連線，讓網站完成下載。照片與專案儲存在這台裝置，清除網站資料會一併移除。',
     'allProjects': '所有專案',
     'projectMeta': '建立時間 {date} ・ 總頁數 {count}',
     'createProject': '新增專案',
@@ -168,7 +177,8 @@ class AppStrings {
     'hdrSettingTitle': 'HDR 顯示與匯出',
     'hdrSettingSubtitle':
         '在支援的裝置上以 HDR 顯示與匯出 Ultra HDR 照片（Android 14+）。關閉後一律以 SDR 處理。',
-    'hdrUnsupported': '此裝置不支援 Ultra HDR（需 Android 14 以上）',
+    'hdrUnsupported': '此環境尚未提供 HDR 圖片處理功能',
+    'downloadPrepared': '下載已準備；多頁圖片會打包成 ZIP',
     'hdrExportToggle': 'Ultra HDR 匯出',
     'sdrTreatmentLabel': 'SDR 圖片處理',
     'sdrNeutralLabel': '中性',
@@ -184,6 +194,15 @@ class AppStrings {
   };
 
   static const Map<String, String> _en = <String, String>{
+    'installAppButton': 'Install app',
+    'appInstalled': 'Already in app mode',
+    'appInstalledHelp': 'You are already using the standalone app window.',
+    'installGotIt': 'Got it',
+    'installAppSteps':
+        'iPhone / iPad\n1. Open this site in Safari.\n2. Tap Share, then Add to Home Screen.\n3. Enable Open as Web App if offered, then tap Add.\n\nAndroid / desktop\nChoose Install app or Add to Home Screen in the browser menu. If unavailable, try Chrome or Edge.\n\nStay online on your first visit while the required files download.',
+    'installWebApp': 'Install on your Home Screen',
+    'installWebAppHelp':
+        'iPhone / iPad: open this site in Safari, tap Share, then Add to Home Screen. Enable Open as Web App if shown, then tap Add. Stay online during the first visit while the app downloads. Photos and projects stay on this device; clearing website data removes them.',
     'allProjects': 'All Projects',
     'projectMeta': 'Created {date} · {count} pages',
     'createProject': 'Create Project',
@@ -354,7 +373,9 @@ class AppStrings {
     'hdrSettingSubtitle':
         'Show and export Ultra HDR photos with real HDR on supported devices (Android 14+). When off, everything stays SDR.',
     'hdrUnsupported':
-        'This device does not support Ultra HDR (requires Android 14+).',
+        'HDR image processing is unavailable in this environment.',
+    'downloadPrepared':
+        'Download prepared; multiple pages are packaged as a ZIP.',
     'hdrExportToggle': 'Ultra HDR export',
     'sdrTreatmentLabel': 'SDR images',
     'sdrNeutralLabel': 'Neutral',

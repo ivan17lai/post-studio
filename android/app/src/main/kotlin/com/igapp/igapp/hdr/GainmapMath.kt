@@ -54,13 +54,7 @@ class CanonicalGainmapSpace private constructor(
      * brightness control.
      */
     fun lutFor(srcMin: Float, srcMax: Float, srcGamma: Float, brightness: Float = 1f): IntArray {
-        val srcLogMin = log2(max(srcMin, MIN_RATIO))
-        val srcLogMax = log2(max(srcMax, MIN_RATIO))
-        val gamma = if (srcGamma > 0f) srcGamma else 1f
-        return IntArray(256) { p ->
-            val t = (p / 255f).pow(gamma)
-            encodeLog2(brightness * (srcLogMin + t * (srcLogMax - srcLogMin)))
-        }
+        return SharedHdrCore.gainLut(canonMin, canonMax, srcMin, srcMax, srcGamma, brightness)
     }
 
     /**
@@ -119,11 +113,7 @@ class CanonicalGainmapSpace private constructor(
         if (small !== base) {
             small.recycle()
         }
-        val maxLog = log2(max(maxGain, 1f))
-        val lumaLut = IntArray(256)
-        for (v in 0..255) {
-            lumaLut[v] = encodeLog2(maxLog * smoothstep(SYNTHESIS_LUMA_START, 1f, v / 255f))
-        }
+        val lumaLut = SharedHdrCore.synthesisLut(canonMin, canonMax, maxGain)
         for (i in pixels.indices) {
             val c = pixels[i]
             val luma =

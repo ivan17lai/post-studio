@@ -32,6 +32,10 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+/web/hdr/poststudio_hdr.mjs
+/web/hdr/poststudio_hdr.wasm
+/work/toolchains/
+/android/app/.cxx/
 
 # Symbolication related
 app.*.symbols

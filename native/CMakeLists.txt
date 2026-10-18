@@ -1,0 +1,32 @@
+cmake_minimum_required(VERSION 3.18)
+project(poststudio_hdr LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+if(ANDROID)
+  add_library(poststudio_hdr SHARED gainmap_math.cpp android_bridge.cpp)
+  target_link_options(poststudio_hdr PRIVATE "-Wl,-z,max-page-size=16384")
+elseif(EMSCRIPTEN)
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  set(UHDR_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(UHDR_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(UHDR_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+  set(UHDR_ENABLE_INTRINSICS OFF CACHE BOOL "" FORCE)
+  set(UHDR_WRITE_XMP ON CACHE BOOL "" FORCE)
+  set(UHDR_WRITE_ISO ON CACHE BOOL "" FORCE)
+  add_subdirectory(third_party/libultrahdr-1.4.0)
+  add_executable(poststudio_hdr gainmap_math.cpp web_codec.cpp)
+  target_include_directories(poststudio_hdr PRIVATE third_party/libultrahdr-1.4.0)
+  target_link_libraries(poststudio_hdr PRIVATE uhdr)
+  target_compile_options(poststudio_hdr PRIVATE -O3 --use-port=libjpeg)
+  target_link_options(poststudio_hdr PRIVATE -O3 --use-port=libjpeg
+    "-sMODULARIZE=1" "-sEXPORT_ES6=1" "-sENVIRONMENT=web,worker,node"
+    "-sALLOW_MEMORY_GROWTH=1" "-sMAXIMUM_MEMORY=2147483648" "-sSTACK_SIZE=1048576"
+    "-sEXPORTED_RUNTIME_METHODS=['cwrap','UTF8ToString','HEAPU8','HEAPF32']"
+    "-sEXPORTED_FUNCTIONS=['_malloc','_free','_ps_error','_ps_is_hdr','_ps_decode','_ps_rgba','_ps_page','_ps_resize','_ps_adjust','_ps_draw','_ps_encode','_ps_encode_preview','_ps_clone','_ps_data','_ps_size','_ps_width','_ps_height','_ps_pixels','_ps_sample','_ps_destroy']")
+  set_target_properties(poststudio_hdr PROPERTIES SUFFIX ".mjs")
+else()
+  enable_testing()
+  add_executable(gainmap_test gainmap_math.cpp gainmap_test.cpp)
+  add_test(NAME gainmap_math COMMAND gainmap_test)
+endif()

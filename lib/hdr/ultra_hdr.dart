@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import '../platform/media.dart' as media;
 
 /// How exported pages treat HDR data.
 enum HdrExportMode {
@@ -59,6 +60,18 @@ class UltraHdr {
       return cached;
     }
     if (!_isAndroid) {
+      if (kIsWeb) {
+        try {
+          final result = await media.webHdrCapabilities();
+          return HdrCapabilities(
+            supportsGainmap: result['supportsGainmap'] == true,
+            apiLevel: 0,
+            windowColorModeHdr: result['hdrDisplay'] == true,
+          );
+        } catch (_) {
+          return HdrCapabilities.unsupported;
+        }
+      }
       return _cachedCapabilities = HdrCapabilities.unsupported;
     }
     try {
@@ -80,6 +93,7 @@ class UltraHdr {
 
   /// Whether [path] is an Ultra HDR image this device can actually use.
   static Future<bool> isUltraHdrFile(String path) async {
+    if (kIsWeb && path.isNotEmpty) return media.webIsHdr(path);
     if (!_isAndroid || path.isEmpty) {
       return false;
     }
