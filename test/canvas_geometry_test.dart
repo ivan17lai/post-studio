@@ -55,6 +55,42 @@ ProjectPage _page({double aspectWidth = 4, double aspectHeight = 5}) {
 }
 
 void main() {
+  group('centered image resize', () {
+    test('preserves center through enlargement, shrink and edge clamping', () {
+      final page = _page();
+      var image = _image(x: 0.3, y: 0.25, width: 0.4, allowCrossPage: false);
+      final cx = image.x + image.width / 2;
+      final cy = image.y + elementHeightRatio(image, page) / 2;
+      for (final width in [0.6, 0.2, 10.0, 0.001, 0.4]) {
+        image = resizeImageAroundCenter(
+          element: image,
+          page: page,
+          width: width,
+          anchorPageIndex: 0,
+          pageCount: 1,
+        );
+        expect(image.x + image.width / 2, closeTo(cx, 1e-10));
+        expect(image.y + image.height / 2, closeTo(cy, 1e-10));
+        expect(image.x, greaterThanOrEqualTo(-1e-10));
+        expect(image.y, greaterThanOrEqualTo(-1e-10));
+        expect(image.x + image.width, lessThanOrEqualTo(1 + 1e-10));
+        expect(image.y + image.height, lessThanOrEqualTo(1 + 1e-10));
+      }
+    });
+    test('cross-page center remains in document coordinates', () {
+      final page = _page();
+      final image = _image(x: 0.8, y: 0.25, width: 0.4);
+      final result = resizeImageAroundCenter(
+        element: image,
+        page: page,
+        width: 0.8,
+        anchorPageIndex: 0,
+        pageCount: 3,
+      );
+      expect(result.x + result.width / 2, closeTo(1, 1e-10));
+      expect(result.width, closeTo(0.8, 1e-10));
+    });
+  });
   group('imageHeightRatio', () {
     test('converts through page aspect, not just the element aspect', () {
       // A square image half the page wide, on a 4:5 page, is 0.4 of the page
@@ -356,8 +392,7 @@ void main() {
       // visibility test that decides whether to draw it at all.
       const pageWidthPx = 320.0;
       final page = _page();
-      final pageHeightPx =
-          pageWidthPx * (page.aspectHeight / page.aspectWidth);
+      final pageHeightPx = pageWidthPx * (page.aspectHeight / page.aspectWidth);
 
       for (final aspectRatio in <double>[0.5, 0.8, 1.0, 1.78]) {
         for (final width in <double>[0.25, 0.5, 1.0]) {
@@ -504,7 +539,10 @@ void main() {
 
   group('allowedYRange', () {
     test('holds every element inside the page vertically', () {
-      final range = allowedYRange(_image(width: 0.5, aspectRatio: 1.0), _page());
+      final range = allowedYRange(
+        _image(width: 0.5, aspectRatio: 1.0),
+        _page(),
+      );
       expect(range.min, 0);
       expect(range.max, closeTo(0.6, 1e-9));
     });
@@ -567,7 +605,10 @@ void main() {
   });
 
   group('touchedPageRange', () {
-    ({int first, int last}) rangeOf(CanvasElement element, {int pageCount = 3}) {
+    ({int first, int last}) rangeOf(
+      CanvasElement element, {
+      int pageCount = 3,
+    }) {
       return touchedPageRange(element: element, pageCount: pageCount);
     }
 
@@ -654,7 +695,10 @@ void main() {
         defaultAllowCrossPage('image'),
         CanvasElement.image().allowCrossPage,
       );
-      expect(defaultAllowCrossPage('text'), CanvasElement.text().allowCrossPage);
+      expect(
+        defaultAllowCrossPage('text'),
+        CanvasElement.text().allowCrossPage,
+      );
     });
 
     test('a legacy element with no stored flag takes the type default', () {
@@ -894,8 +938,12 @@ void main() {
     });
 
     test('returns the same instance when nothing needs repair', () {
-      final clean = _image(x: 0.1, y: 0.1, width: 0.5, aspectRatio: 1.0)
-          .copyWith(height: 0.4);
+      final clean = _image(
+        x: 0.1,
+        y: 0.1,
+        width: 0.5,
+        aspectRatio: 1.0,
+      ).copyWith(height: 0.4);
       final project = projectOf(<CanvasElement>[clean]);
       expect(identical(normalizeProject(project), project), isTrue);
     });

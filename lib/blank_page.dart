@@ -15,6 +15,8 @@ import 'platform/media.dart' as media;
 import 'app_settings.dart';
 import 'app_strings.dart';
 import 'canvas_geometry.dart';
+import 'canvas_corner_handle.dart';
+import 'photo_gesture_surface.dart';
 import 'hdr/hdr_image_view.dart';
 import 'hdr/lossless_passthrough.dart';
 import 'hdr/ultra_hdr.dart';
@@ -3407,6 +3409,7 @@ class _BlankPageState extends State<BlankPage> {
     required String elementId,
     required double width,
     required bool persist,
+    bool aroundCenter = false,
   }) {
     if (!persist && !_hasPendingElementUndoSnapshot) {
       _storeUndoSnapshot();
@@ -3422,6 +3425,21 @@ class _BlankPageState extends State<BlankPage> {
     // element used to clamp it back onto the page it no longer started on.
     final pageIndex = _anchorIndexOf(element);
     final page = _project.pages[pageIndex];
+    if (aroundCenter) {
+      final resized = resizeImageAroundCenter(
+        element: element,
+        page: page,
+        width: width,
+        anchorPageIndex: pageIndex,
+        pageCount: _project.pages.length,
+        confineToAnchorPage: _confineToPage(element),
+      );
+      if (_activeSnapGuides.isNotEmpty) {
+        setState(() => _activeSnapGuides = const []);
+      }
+      unawaited(_replaceElement(resized, persist: persist));
+      return;
+    }
     final aspectRatio =
         (element.data['aspectRatio'] as num?)?.toDouble() ??
         (element.width / element.height);
@@ -6373,6 +6391,7 @@ class _BlankPageState extends State<BlankPage> {
                                                           persist,
                                                         ) {
                                                           _updateElementSize(
+                                                            aroundCenter: true,
                                                             elementId:
                                                                 elementId,
                                                             width: width,
@@ -6519,6 +6538,7 @@ class _BlankPageState extends State<BlankPage> {
                                                         persist,
                                                       ) {
                                                         _updateElementSize(
+                                                          aroundCenter: true,
                                                           elementId: elementId,
                                                           width: width,
                                                           persist: persist,
@@ -6606,7 +6626,7 @@ class _BlankPageState extends State<BlankPage> {
                         children: [
                           IgnorePointer(
                             ignoring: _showPageSorter,
-                            child: canvasView,
+                            child: Overlay.wrap(child: canvasView),
                           ),
                           if (_showPageSorter)
                             Positioned.fill(
@@ -8192,7 +8212,6 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
   late double _resizeStartCropScale;
   bool _isResizing = false;
   late double _resizeStartWidth;
-  late Offset _resizeStartGlobalPosition;
 
   bool _isEdgeDragging = false;
   late CanvasElement _edgeDragStartElement;
@@ -8396,9 +8415,6 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
         ? width / aspectRatio
         : widget.element.height * widget.pageHeight;
     final src = widget.element.data['src'] as String? ?? '';
-    const handleHitSize = 52.0;
-    const handleVisualSize = 30.0;
-    const handleVisualOffset = 10.0;
     final selectionColor = widget.isDeleteArmed
         ? kDeleteConfirmColor
         : _selectionChromeColor;
@@ -8406,8 +8422,7 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
     return Positioned(
       left: left,
       top: top,
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
+      child: PhotoGestureSurface(
         onTap: widget.onTap,
         onDoubleTap: widget.isDeleteArmed
             ? widget.onCancelDelete
@@ -8415,54 +8430,57 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
             ? null
             : widget.onDoubleTap,
         onLongPress: () {
-          if (_isResizing || widget.isCropMode) {
-            return;
-          }
+          if (_isResizing || widget.isCropMode) return;
           widget.onTap();
           widget.onDelete();
         },
-        onPanStart: (_) {
-          if (_isResizing) {
-            return;
-          }
-          if (widget.isDeleteArmed) {
-            widget.onCancelDelete();
-            return;
-          }
-          if (widget.isCropMode) {
-            _currentCropOffsetX = _cropOffsetXFromData(widget.element.data);
-            _currentCropOffsetY = _cropOffsetYFromData(widget.element.data);
-            return;
-          }
+        onStart: () {
+          _isResizing = false;
           _currentX = widget.element.x;
           _currentY = widget.element.y;
-          if (!widget.isSelected) {
-            widget.onTap();
-          }
+          _currentWidth = _resizeStartWidth = widget.element.width;
+          _currentCropScale = _resizeStartCropScale = _cropScaleFromData(
+            widget.element.data,
+          );
+          _currentCropOffsetX = _cropOffsetXFromData(widget.element.data);
+          _currentCropOffsetY = _cropOffsetYFromData(widget.element.data);
+          if (widget.isDeleteArmed) widget.onCancelDelete();
+          if (!widget.isSelected) widget.onTap();
         },
-        onPanUpdate: (details) {
-          if (_isResizing) {
-            return;
-          }
+        onMove: (delta) {
           if (widget.isCropMode) {
-            _currentCropOffsetX += details.delta.dx / width;
-            _currentCropOffsetY += details.delta.dy / height;
+            _currentCropOffsetX += delta.dx / width;
+            _currentCropOffsetY += delta.dy / height;
             widget.onCropMove(_currentCropOffsetX, _currentCropOffsetY, false);
-            return;
+          } else {
+            _currentX += delta.dx / widget.pageWidth;
+            _currentY += delta.dy / widget.pageHeight;
+            widget.onMove(_currentX, _currentY, false);
           }
-          _currentX += details.delta.dx / widget.pageWidth;
-          _currentY += details.delta.dy / widget.pageHeight;
-          widget.onMove(_currentX, _currentY, false);
         },
-        onPanEnd: (_) {
-          if (_isResizing) {
-            return;
-          }
+        onPinch: (scale) {
+          _isResizing = true;
           if (widget.isCropMode) {
-            widget.onCropMove(_currentCropOffsetX, _currentCropOffsetY, true);
-            return;
+            _currentCropScale = _resizeStartCropScale * scale;
+            widget.onCropScale(_currentCropScale, false);
+          } else {
+            _currentWidth = _resizeStartWidth * scale;
+            widget.onResize(_currentWidth, false);
           }
-          widget.onMove(_currentX, _currentY, true);
+        },
+        onEnd: (pinched) {
+          _isResizing = false;
+          if (pinched) {
+            if (widget.isCropMode) {
+              widget.onCropScale(_currentCropScale, true);
+            } else {
+              widget.onResize(_currentWidth, true);
+            }
+          } else if (widget.isCropMode) {
+            widget.onCropMove(_currentCropOffsetX, _currentCropOffsetY, true);
+          } else {
+            widget.onMove(_currentX, _currentY, true);
+          }
         },
         child: Stack(
           clipBehavior: Clip.none,
@@ -8607,105 +8625,56 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                 ),
               ),
             ),
-            Positioned(
-              right: 0,
-              bottom: 0,
-              child: IgnorePointer(
-                ignoring: !widget.isSelected || widget.isDeleteArmed,
-                child: AnimatedOpacity(
-                  opacity: widget.isSelected && !widget.isDeleteArmed ? 1 : 0,
-                  duration: const Duration(milliseconds: 120),
-                  curve: Curves.easeInOut,
-                  child: AnimatedScale(
-                    scale: widget.isSelected ? 1 : 0.82,
-                    duration: const Duration(milliseconds: 120),
-                    curve: Curves.easeInOut,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onPanStart: (details) {
-                        _isResizing = true;
-                        if (widget.isCropMode) {
-                          _resizeStartCropScale = _cropScaleFromData(
-                            widget.element.data,
-                          );
-                          _currentCropScale = _resizeStartCropScale;
-                        } else {
-                          _resizeStartWidth = widget.element.width;
-                          _currentWidth = widget.element.width;
-                        }
-                        _resizeStartGlobalPosition = details.globalPosition;
-                      },
-                      onPanUpdate: (details) {
-                        final totalDx =
-                            details.globalPosition.dx -
-                            _resizeStartGlobalPosition.dx;
-                        final totalDy =
-                            details.globalPosition.dy -
-                            _resizeStartGlobalPosition.dy;
-                        final aspectRatio =
-                            (widget.element.data['aspectRatio'] as num?)
-                                ?.toDouble() ??
-                            (widget.element.width / widget.element.height);
-                        if (widget.isCropMode) {
-                          final scaleDelta =
-                              (totalDx / width) + (totalDy / height);
-                          _currentCropScale =
-                              _resizeStartCropScale + (scaleDelta * 0.8);
-                          widget.onCropScale(_currentCropScale, false);
-                          return;
-                        }
-                        final scaleDelta =
-                            (totalDx / widget.pageWidth) +
-                            ((totalDy / widget.pageHeight) * aspectRatio);
-                        _currentWidth = _resizeStartWidth + (scaleDelta * 0.5);
-                        widget.onResize(_currentWidth, false);
-                      },
-                      onPanEnd: (_) {
-                        _isResizing = false;
-                        if (widget.isCropMode) {
-                          widget.onCropScale(_currentCropScale, true);
-                          return;
-                        }
-                        widget.onResize(_currentWidth, true);
-                      },
-                      onPanCancel: () {
-                        _isResizing = false;
-                      },
-                      child: SizedBox(
-                        width: handleHitSize,
-                        height: handleHitSize,
-                        child: Align(
-                          alignment: Alignment.bottomRight,
-                          child: Transform.translate(
-                            offset: const Offset(
-                              handleVisualOffset,
-                              handleVisualOffset,
-                            ),
-                            child: Container(
-                              width: handleVisualSize,
-                              height: handleVisualSize,
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: _selectionChromeColor,
-                                  width: 2,
+            for (final direction in const [
+              Offset(-1, -1),
+              Offset(1, -1),
+              Offset(-1, 1),
+              Offset(1, 1),
+            ])
+              Positioned(
+                left: direction.dx < 0 ? 0 : width,
+                top: direction.dy < 0 ? 0 : height,
+                child: CanvasCornerHandle(
+                  visible:
+                      widget.isSelected &&
+                      !widget.isDeleteArmed &&
+                      (widget.contentClipRect == null ||
+                          widget.contentClipRect!
+                              .inflate(0.5)
+                              .contains(
+                                Offset(
+                                  left + (direction.dx < 0 ? 0 : width),
+                                  top + (direction.dy < 0 ? 0 : height),
                                 ),
-                              ),
-                              child: const Icon(
-                                Icons.open_in_full_rounded,
-                                size: 15,
-                                color: _selectionChromeColor,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+                              )),
+                  direction: direction,
+                  photoSize: Size(width, height),
+                  color: _selectionChromeColor,
+                  onStart: () {
+                    _isResizing = true;
+                    _currentWidth = _resizeStartWidth = widget.element.width;
+                    _currentCropScale = _resizeStartCropScale =
+                        _cropScaleFromData(widget.element.data);
+                  },
+                  onScale: (scale) {
+                    if (widget.isCropMode) {
+                      _currentCropScale = _resizeStartCropScale * scale;
+                      widget.onCropScale(_currentCropScale, false);
+                    } else {
+                      _currentWidth = _resizeStartWidth * scale;
+                      widget.onResize(_currentWidth, false);
+                    }
+                  },
+                  onEnd: () {
+                    _isResizing = false;
+                    if (widget.isCropMode) {
+                      widget.onCropScale(_currentCropScale, true);
+                    } else {
+                      widget.onResize(_currentWidth, true);
+                    }
+                  },
                 ),
               ),
-            ),
             if (widget.isCropMode) ...[
               Positioned(
                 top: -12,

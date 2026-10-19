@@ -22,6 +22,37 @@ import 'project_record.dart';
 /// Narrowest an element may get, as a fraction of its own page's width.
 const double kMinElementWidth = 0.08;
 
+/// Resize symmetrically, stopping at the nearest canvas edge rather than
+/// shifting the center to make room for the larger image.
+CanvasElement resizeImageAroundCenter({
+  required CanvasElement element,
+  required ProjectPage page,
+  required double width,
+  required int anchorPageIndex,
+  required int pageCount,
+  bool confineToAnchorPage = false,
+}) {
+  final height = elementHeightRatio(element, page);
+  final cx = element.x + element.width / 2;
+  final cy = element.y + height / 2;
+  final confined = !element.allowCrossPage || confineToAnchorPage;
+  final left = confined ? anchorPageIndex.toDouble() : 0.0;
+  final right = confined ? left + 1 : pageCount.toDouble();
+  final heightPerWidth = height / element.width;
+  final horizontal = 2 * math.min(cx - left, right - cx);
+  final vertical = 2 * math.min(cy, 1 - cy) / heightPerWidth;
+  final maximum = math.max(0.0, math.min(horizontal, vertical));
+  final minimum = math.min(kMinElementWidth, maximum);
+  final nextWidth = width.clamp(minimum, maximum).toDouble();
+  final nextHeight = nextWidth * heightPerWidth;
+  return element.copyWith(
+    x: cx - nextWidth / 2,
+    y: cy - nextHeight / 2,
+    width: nextWidth,
+    height: nextHeight,
+  );
+}
+
 /// Element box in the coordinate space of one target page, where `0` is that
 /// page's left/top edge and `1` its right/bottom edge. Values outside `0..1`
 /// mean the element spills onto a neighbouring page.
