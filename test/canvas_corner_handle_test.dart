@@ -63,7 +63,9 @@ void main() {
         await tester.pump();
         await gesture.moveBy(d * 30);
         await tester.pump();
-        expect(values[d], greaterThan(1));
+        // The moving corner travels the full diagonal, not half the diagonal
+        // as it would for a center-based resize. Include the initial slop move.
+        expect(values[d], closeTo(1 + 60 / (300 * scale), 1e-9));
         await gesture.moveBy(d * -100);
         await tester.pump();
         expect(values[d], lessThan(1));

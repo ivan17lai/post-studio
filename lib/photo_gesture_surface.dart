@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 
 class _PhotoScaleRecognizer extends ScaleGestureRecognizer {
-  final _touches = <int>{};
+  final _touches = <int, Offset>{};
 
   @override
   void addAllowedPointer(PointerDownEvent event) {
-    _touches.add(event.pointer);
+    _touches[event.pointer] = event.position;
     super.addAllowedPointer(event);
     // Claim a two-finger gesture before a horizontal page drag reaches slop.
     if (_touches.length >= 2) resolve(GestureDisposition.accepted);
@@ -14,6 +14,16 @@ class _PhotoScaleRecognizer extends ScaleGestureRecognizer {
 
   @override
   void handleEvent(PointerEvent event) {
+    final start = _touches[event.pointer];
+    if (event is PointerMoveEvent &&
+        start != null &&
+        (event.position - start).distance >
+            computeHitSlop(event.kind, gestureSettings)) {
+      // PageView accepts at touch slop, before ScaleGestureRecognizer's pan
+      // slop. Claim the photo's drag first, using screen coordinates even when
+      // the canvas is zoomed out. The hit-test path stays ours until release.
+      resolve(GestureDisposition.accepted);
+    }
     if (event is PointerUpEvent || event is PointerCancelEvent) {
       _touches.remove(event.pointer);
     }

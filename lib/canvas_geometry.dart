@@ -53,6 +53,40 @@ CanvasElement resizeImageAroundCenter({
   );
 }
 
+/// Resize from a dragged corner while keeping its opposite corner fixed.
+/// [element] and [page] are captured at gesture start so crossing a page seam
+/// cannot change the anchor or the photo's aspect during the gesture.
+CanvasElement resizeImageFromCorner({
+  required CanvasElement element,
+  required ProjectPage page,
+  required double width,
+  required bool fromLeft,
+  required bool fromTop,
+  required int anchorPageIndex,
+  required int pageCount,
+  bool confineToAnchorPage = false,
+}) {
+  final height = elementHeightRatio(element, page);
+  final fixedX = element.x + (fromLeft ? element.width : 0);
+  final fixedY = element.y + (fromTop ? height : 0);
+  final confined = !element.allowCrossPage || confineToAnchorPage;
+  final left = confined ? anchorPageIndex.toDouble() : 0.0;
+  final right = confined ? left + 1 : pageCount.toDouble();
+  final heightPerWidth = height / element.width;
+  final horizontal = fromLeft ? fixedX - left : right - fixedX;
+  final vertical = (fromTop ? fixedY : 1 - fixedY) / heightPerWidth;
+  final maximum = math.max(0.0, math.min(horizontal, vertical));
+  final minimum = math.min(kMinElementWidth, maximum);
+  final nextWidth = width.clamp(minimum, maximum).toDouble();
+  final nextHeight = nextWidth * heightPerWidth;
+  return element.copyWith(
+    x: fixedX - (fromLeft ? nextWidth : 0),
+    y: fixedY - (fromTop ? nextHeight : 0),
+    width: nextWidth,
+    height: nextHeight,
+  );
+}
+
 /// Element box in the coordinate space of one target page, where `0` is that
 /// page's left/top edge and `1` its right/bottom edge. Values outside `0..1`
 /// mean the element spills onto a neighbouring page.

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 
 /// A corner dot with an unscaled touch target in the canvas overlay.
 class CanvasCornerHandle extends StatefulWidget {
@@ -67,6 +68,7 @@ class _CanvasCornerHandleState extends State<CanvasCornerHandle> {
         height: 52,
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
+          dragStartBehavior: DragStartBehavior.down,
           onPanStart: (details) {
             _dragging = true;
             _start = details.globalPosition;
@@ -74,8 +76,8 @@ class _CanvasCornerHandleState extends State<CanvasCornerHandle> {
                 MatrixUtils.transformPoint(
                   info.childPaintTransform,
                   Offset(
-                    widget.direction.dx * widget.photoSize.width / 2,
-                    widget.direction.dy * widget.photoSize.height / 2,
+                    widget.direction.dx * widget.photoSize.width,
+                    widget.direction.dy * widget.photoSize.height,
                   ),
                 ) -
                 corner;

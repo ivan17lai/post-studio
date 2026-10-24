@@ -23,9 +23,16 @@ import 'hdr/ultra_hdr.dart';
 import 'photo_adjustments.dart';
 import 'template_layout.dart';
 import 'project_record.dart';
+import 'page_template_margin.dart';
 import 'theme_constants.dart';
 
 enum PageDisplayMode { single, preview }
+
+class _CornerResizeStart {
+  const _CornerResizeStart(this.element, this.direction);
+  final CanvasElement element;
+  final Offset direction;
+}
 
 enum ExportQualityMode { igStandard1080, high2400, originalLossless }
 
@@ -607,8 +614,9 @@ int _previewImageCacheExtent(
 bool _shouldBuildPreviewPage({
   required int pageIndex,
   required int currentPageIndex,
+  required int visiblePageRadius,
 }) {
-  return (pageIndex - currentPageIndex).abs() <= 2;
+  return (pageIndex - currentPageIndex).abs() <= visiblePageRadius;
 }
 
 bool _snapEnabledForElement(CanvasElement element) {
@@ -811,6 +819,11 @@ class _BlankPageState extends State<BlankPage> {
             pageCount: 1,
           )
         : widget.project.copyWith(pageCount: widget.project.pages.length);
+    _project = migratePageTemplateMargins(
+      _project,
+      enabled: AppSettingsController.instance.templateMarginEnabled,
+      size: AppSettingsController.instance.templateMarginSize,
+    );
     _pageController = _buildPageController();
     _bottomTabPageController = PageController();
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -887,16 +900,16 @@ class _BlankPageState extends State<BlankPage> {
     }
   }
 
-  /// Single mode shows exactly one page, always.
-  ///
-  /// It used to shrink to 0.78 and let the neighbours peek in whenever the
-  /// open bottom tab happened to have two rows of options — the same 0.78 the
-  /// preview strip uses, so tapping a photo silently turned the single-page
-  /// view into the preview one. Worse, `viewportFraction` is final, so every
-  /// flip had to throw the PageController away and build another, losing the
-  /// scroll position: that was the jump.
-  PageController _buildPageController() =>
-      PageController(initialPage: _currentPageIndex);
+  // A fixed three-slot viewport paints both neighbours into the side margins
+  // when the canvas is scaled down. Each slot still has singleCanvasWidth;
+  // neither the page size nor the distance between pages changes. Keeping the
+  // fraction fixed also avoids replacing the controller as panels resize.
+  static const _singlePageViewportFraction = 1 / 3;
+
+  PageController _buildPageController() => PageController(
+    initialPage: _currentPageIndex,
+    viewportFraction: _singlePageViewportFraction,
+  );
 
   bool _isImageTab(String tab) => tab == _tabLayers || tab == _tabImage;
 
@@ -919,7 +932,11 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   Future<void> _persistProject(ProjectRecord updatedProject) async {
-    _project = updatedProject.copyWith(pageCount: updatedProject.pages.length);
+    _project = migratePageTemplateMargins(
+      updatedProject.copyWith(pageCount: updatedProject.pages.length),
+      enabled: false,
+      size: kTemplateMarginSizeMedium,
+    );
     if (mounted) {
       setState(() {
         _savingRequestCount += 1;
@@ -1286,6 +1303,29 @@ class _BlankPageState extends State<BlankPage> {
     return element?.type == 'text' ? element : null;
   }
 
+  // A selection may survive paging only while that element is still visible.
+  // Otherwise choosing a photo on the new page would replace an off-page one.
+  // Called inside the page-change setState in both canvas modes.
+  void _clearSelectionOutsideCurrentPage() {
+    final element = _selectedElement;
+    if (element == null ||
+        isVisibleOnPage(
+          element: element,
+          anchorPage: _anchorPageOf(element),
+          anchorPageIndex: _anchorIndexOf(element),
+          targetPageIndex: _currentPageIndex,
+        )) {
+      return;
+    }
+    _selectedElementId = null;
+    _croppingElementId = null;
+    _deleteArmedElementId = null;
+    _activeSnapGuides = const [];
+    if (!_bottomTabs.contains(_selectedBottomTab)) {
+      _selectedBottomTab = _tabElements;
+    }
+  }
+
   void _syncBottomTab() {
     final tabs = _bottomTabs;
     if (!tabs.contains(_selectedBottomTab)) {
@@ -1337,6 +1377,7 @@ class _BlankPageState extends State<BlankPage> {
         _showSinglePageDivider = nextVisible;
       });
     });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _changeBottomTab(String tab) {
@@ -2120,8 +2161,7 @@ class _BlankPageState extends State<BlankPage> {
     // Which pages are laid out as a template, read before the aspect changes:
     // afterwards their photos are being measured against the new page shape and
     // none of them match anything.
-    final marginRatio = AppSettingsController.instance.templateMarginRatio;
-    final matchedTemplates = _matchedTemplates(marginRatio);
+    final matchedTemplates = _matchedTemplates();
 
     final updatedPages = _project.pages
         .map(
@@ -2152,7 +2192,7 @@ class _BlankPageState extends State<BlankPage> {
           project: reshaped,
           pageIndex: entry.key,
           option: entry.value,
-          marginRatio: marginRatio,
+          marginRatio: reshaped.pages[entry.key].templateMarginRatio,
         ),
       );
     }
@@ -2565,6 +2605,7 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
+    final targetPageId = _project.pages[_currentPageIndex].id;
     final existingImport = _importedImageForPath(path);
     final preparedImage =
         existingImport ??
@@ -2578,18 +2619,26 @@ class _BlankPageState extends State<BlankPage> {
       return;
     }
 
+    if (!mounted) {
+      return;
+    }
+    final targetPageIndex = _project.pages.indexWhere(
+      (page) => page.id == targetPageId,
+    );
+    if (targetPageIndex == -1) {
+      return;
+    }
     final aspectRatio = size.width / size.height;
-    final newElement = CanvasElement.image(x: _currentPageIndex + 0.12)
-        .copyWith(
-          height: 0.36 / aspectRatio,
-          data: <String, dynamic>{
-            'src': preparedImage.displayPath,
-            'originalSrc': preparedImage.originalPath,
-            'aspectRatio': aspectRatio,
-            'originalAspectRatio': aspectRatio,
-            'isUltraHdr': preparedImage.isUltraHdr,
-          },
-        );
+    final newElement = CanvasElement.image(x: targetPageIndex + 0.12).copyWith(
+      height: 0.36 / aspectRatio,
+      data: <String, dynamic>{
+        'src': preparedImage.displayPath,
+        'originalSrc': preparedImage.originalPath,
+        'aspectRatio': aspectRatio,
+        'originalAspectRatio': aspectRatio,
+        'isUltraHdr': preparedImage.isUltraHdr,
+      },
+    );
 
     await _saveProject(
       _project.copyWith(
@@ -2597,7 +2646,7 @@ class _BlankPageState extends State<BlankPage> {
       ),
     );
 
-    if (!mounted) {
+    if (!mounted || _project.pages[_currentPageIndex].id != targetPageId) {
       return;
     }
 
@@ -2751,8 +2800,9 @@ class _BlankPageState extends State<BlankPage> {
     var y = selectedImage.y;
 
     if (isFillSlot) {
+      final pageIndex = _anchorIndexOf(selectedImage);
       final fitted = containFillRect(
-        page: _project.pages[_currentPageIndex],
+        page: _project.pages[pageIndex],
         imageAspectRatio: aspectRatio,
         marginRatio:
             (selectedImage.data['templateMarginRatio'] as num?)?.toDouble() ??
@@ -2760,7 +2810,7 @@ class _BlankPageState extends State<BlankPage> {
       );
       width = fitted.width;
       height = fitted.height;
-      x = fitted.x;
+      x = pageIndex + fitted.x;
       y = fitted.y;
     } else if (!shouldKeepFrame) {
       width = selectedImage.width.clamp(0.12, 0.7);
@@ -3410,6 +3460,7 @@ class _BlankPageState extends State<BlankPage> {
     required double width,
     required bool persist,
     bool aroundCenter = false,
+    _CornerResizeStart? corner,
   }) {
     if (!persist && !_hasPendingElementUndoSnapshot) {
       _storeUndoSnapshot();
@@ -3425,6 +3476,25 @@ class _BlankPageState extends State<BlankPage> {
     // element used to clamp it back onto the page it no longer started on.
     final pageIndex = _anchorIndexOf(element);
     final page = _project.pages[pageIndex];
+    if (corner != null) {
+      final start = corner.element;
+      final startPageIndex = _anchorIndexOf(start);
+      final resized = resizeImageFromCorner(
+        element: start,
+        page: _project.pages[startPageIndex],
+        width: width,
+        fromLeft: corner.direction.dx < 0,
+        fromTop: corner.direction.dy < 0,
+        anchorPageIndex: startPageIndex,
+        pageCount: _project.pages.length,
+        confineToAnchorPage: _confineToPage(start),
+      );
+      if (_activeSnapGuides.isNotEmpty) {
+        setState(() => _activeSnapGuides = const []);
+      }
+      unawaited(_replaceElement(resized, persist: persist));
+      return;
+    }
     if (aroundCenter) {
       final resized = resizeImageAroundCenter(
         element: element,
@@ -4414,10 +4484,11 @@ class _BlankPageState extends State<BlankPage> {
   }
 
   /// Every page currently laid out as a template, by page index.
-  Map<int, TemplateOption> _matchedTemplates(double marginRatio) {
+  Map<int, TemplateOption> _matchedTemplates() {
     return <int, TemplateOption>{
       for (var i = 0; i < _project.pages.length; i++)
-        if (_matchedTemplateForPage(i, marginRatio) case final option?)
+        if (_matchedTemplateForPage(i, _project.pages[i].templateMarginRatio)
+            case final option?)
           i: option,
     };
   }
@@ -4428,34 +4499,30 @@ class _BlankPageState extends State<BlankPage> {
   /// Changing the margin used to move only the icons: the elements kept the
   /// positions the old margin gave them, so the page silently stopped matching
   /// any template and the highlight went out with it.
-  Future<void> _changeTemplateMargin(VoidCallback applyChange) async {
-    // Read the layout against the margin still in force. Afterwards the
-    // positions are measured against the new one and nothing matches.
-    final matched = _matchedTemplates(
-      AppSettingsController.instance.templateMarginRatio,
+  Future<void> _changeTemplateMargin({bool? enabled, String? size}) async {
+    final pageIndex = _currentPageIndex;
+    final matched = _matchedTemplateForPage(
+      pageIndex,
+      _project.pages[pageIndex].templateMarginRatio,
     );
-    applyChange();
-    if (matched.isEmpty) {
-      return;
-    }
-
-    // The margin is a project-wide setting, so every templated page re-flows,
-    // not just the one on screen.
-    final nextMarginRatio = AppSettingsController.instance.templateMarginRatio;
-    var reflowed = _project;
-    for (final entry in matched.entries) {
-      reflowed = reflowed.copyWith(
+    _storeUndoSnapshot();
+    var updated = updatePageTemplateMargin(
+      _project,
+      pageIndex,
+      enabled: enabled,
+      size: size,
+    );
+    if (matched != null) {
+      updated = updated.copyWith(
         elements: _elementsWithTemplateApplied(
-          project: reflowed,
-          pageIndex: entry.key,
-          option: entry.value,
-          marginRatio: nextMarginRatio,
+          project: updated,
+          pageIndex: pageIndex,
+          option: matched,
+          marginRatio: updated.pages[pageIndex].templateMarginRatio,
         ),
       );
     }
-
-    _storeUndoSnapshot();
-    await _saveProject(reflowed);
+    await _saveProject(updated);
   }
 
   Future<void> _applyTemplate(TemplateOption option) async {
@@ -4475,7 +4542,7 @@ class _BlankPageState extends State<BlankPage> {
           project: _project,
           pageIndex: _currentPageIndex,
           option: option,
-          marginRatio: AppSettingsController.instance.templateMarginRatio,
+          marginRatio: _project.pages[_currentPageIndex].templateMarginRatio,
         ),
       ),
     );
@@ -4563,7 +4630,7 @@ class _BlankPageState extends State<BlankPage> {
 
           updatedElements.add(
             element.copyWith(
-              x: fitted.x,
+              x: pageIndex + fitted.x,
               y: fitted.y,
               width: fitted.width,
               height: fitted.height,
@@ -4706,6 +4773,7 @@ class _BlankPageState extends State<BlankPage> {
     if (pageIndex != _currentPageIndex) {
       setState(() {
         _currentPageIndex = pageIndex;
+        _clearSelectionOutsideCurrentPage();
       });
     }
   }
@@ -6224,6 +6292,13 @@ class _BlankPageState extends State<BlankPage> {
                       final fittedCanvasScale = canvasScale > maxFittingScale
                           ? maxFittingScale
                           : canvasScale;
+                      // Cancel the outer scale for the preview's viewport, not
+                      // its pages. Both painting and hit testing then reach the
+                      // screen edges even when the bottom panel shrinks pages.
+                      final previewViewportWidth =
+                          screenWidth / fittedCanvasScale;
+                      final previewSidePadding =
+                          (previewViewportWidth - previewCanvasWidth) / 2;
 
                       final canvasView = Padding(
                         padding: const EdgeInsets.symmetric(
@@ -6233,6 +6308,14 @@ class _BlankPageState extends State<BlankPage> {
                           child: SizedBox(
                             height: canvasViewportHeight * fittedCanvasScale,
                             child: OverflowBox(
+                              minWidth: _displayMode == PageDisplayMode.single
+                                  ? singleCanvasWidth /
+                                        _singlePageViewportFraction
+                                  : previewViewportWidth,
+                              maxWidth: _displayMode == PageDisplayMode.single
+                                  ? singleCanvasWidth /
+                                        _singlePageViewportFraction
+                                  : previewViewportWidth,
                               minHeight: 0,
                               maxHeight: canvasViewportHeight,
                               alignment: Alignment.center,
@@ -6271,10 +6354,16 @@ class _BlankPageState extends State<BlankPage> {
                                               ScrollNotification
                                             >(
                                               onNotification: (notification) {
+                                                if (notification.depth != 0) {
+                                                  return false;
+                                                }
                                                 if (notification
                                                         is ScrollStartNotification ||
-                                                    notification
-                                                        is ScrollUpdateNotification) {
+                                                    (notification
+                                                            is ScrollUpdateNotification &&
+                                                        notification
+                                                                .dragDetails !=
+                                                            null)) {
                                                   _setSinglePageDividerVisible(
                                                     true,
                                                   );
@@ -6292,185 +6381,207 @@ class _BlankPageState extends State<BlankPage> {
                                                 }
                                                 return false;
                                               },
-                                              child: PageView.builder(
-                                                controller: _pageController,
-                                                // Scrollable except while
-                                                // cropping. Selection alone no
-                                                // longer locks it — a swipe
-                                                // simply keeps the selection —
-                                                // but a crop is a drag inside
-                                                // the photo, and a drag that
-                                                // starts anywhere else would
-                                                // turn the page out from under
-                                                // it.
-                                                physics:
-                                                    _croppingElementId == null
-                                                    ? const PageScrollPhysics()
-                                                    : const NeverScrollableScrollPhysics(),
-                                                itemCount: pages.length,
-                                                onPageChanged: (index) {
-                                                  setState(() {
-                                                    _currentPageIndex = index;
-                                                    // Selection survives a
-                                                    // swipe; only the armed
-                                                    // delete does not, because
-                                                    // carrying a pending
-                                                    // confirm onto another
-                                                    // page means the next tap
-                                                    // deletes something that
-                                                    // is no longer on screen.
-                                                    _deleteArmedElementId =
-                                                        null;
-                                                  });
-                                                  WidgetsBinding.instance
-                                                      .addPostFrameCallback(
-                                                        (_) => _syncBottomTab(),
-                                                      );
-                                                },
-                                                itemBuilder: (context, index) {
-                                                  final page = pages[index];
-                                                  return _CanvasViewport(
-                                                    elements:
-                                                        elementsVisibleOnPage(
-                                                          _project,
-                                                          index,
-                                                        ),
-                                                    pageIndex: index,
-                                                    pageCount: pages.length,
-                                                    isCurrentPage:
-                                                        index ==
-                                                        _currentPageIndex,
-                                                    page: page,
-                                                    viewportWidth:
-                                                        singleCanvasWidth,
-                                                    viewportHeight:
-                                                        canvasViewportHeight,
-                                                    showBorder: _showPageBorder,
-                                                    showPageDivider:
-                                                        _showSinglePageDivider,
-                                                    hdrViewEnabled:
-                                                        _hdrViewEnabled,
-                                                    selectedElementId:
-                                                        _selectedElementId,
-                                                    croppingElementId:
-                                                        _croppingElementId,
-                                                    deleteArmedElementId:
-                                                        _deleteArmedElementId,
-                                                    snapGuides:
-                                                        _activeSnapGuides,
-                                                    onTapCanvas:
-                                                        _clearSelectedElement,
-                                                    onTapElement:
-                                                        _selectElement,
-                                                    onDoubleTapElement:
-                                                        (elementId) {
-                                                          _handleElementDoubleTap(
-                                                            elementId:
-                                                                elementId,
-                                                          );
-                                                        },
-                                                    onMoveElement:
-                                                        (
-                                                          elementId,
-                                                          x,
-                                                          y,
-                                                          persist,
-                                                        ) {
-                                                          _updateElementPosition(
-                                                            elementId:
-                                                                elementId,
-                                                            x: x,
-                                                            y: y,
-                                                            persist: persist,
-                                                          );
-                                                        },
-                                                    onResizeElement:
-                                                        (
-                                                          elementId,
-                                                          width,
-                                                          persist,
-                                                        ) {
-                                                          _updateElementSize(
-                                                            aroundCenter: true,
-                                                            elementId:
-                                                                elementId,
-                                                            width: width,
-                                                            persist: persist,
-                                                          );
-                                                        },
-                                                    onCropMove:
-                                                        (
-                                                          elementId,
-                                                          x,
-                                                          y,
-                                                          persist,
-                                                        ) {
-                                                          _updateImageCropOffset(
-                                                            elementId:
-                                                                elementId,
-                                                            x: x,
-                                                            y: y,
-                                                            persist: persist,
-                                                          );
-                                                        },
-                                                    onCropScale:
-                                                        (
-                                                          elementId,
-                                                          scale,
-                                                          persist,
-                                                        ) {
-                                                          _updateImageCropScale(
-                                                            elementId:
-                                                                elementId,
-                                                            scale: scale,
-                                                            persist: persist,
-                                                          );
-                                                        },
-                                                    onCropBoundsChanged:
-                                                        (
-                                                          elementId,
-                                                          x,
-                                                          y,
-                                                          w,
-                                                          h,
-                                                          cx,
-                                                          cy,
-                                                          cs,
-                                                          persist,
-                                                        ) {
-                                                          _updateImageCropBounds(
-                                                            elementId:
-                                                                elementId,
-                                                            x: x,
-                                                            y: y,
-                                                            width: w,
-                                                            height: h,
-                                                            cropOffsetX: cx,
-                                                            cropOffsetY: cy,
-                                                            cropScale: cs,
-                                                            persist: persist,
-                                                          );
-                                                        },
-                                                    onDeleteElement:
-                                                        (elementId) {
-                                                          _requestDeleteElement(
-                                                            elementId:
-                                                                elementId,
-                                                          );
-                                                        },
-                                                    onConfirmDeleteElement:
-                                                        (elementId) {
-                                                          unawaited(
-                                                            _confirmDeleteElement(
-                                                              elementId:
-                                                                  elementId,
+                                              child: Listener(
+                                                onPointerUp: (_) =>
+                                                    _setSinglePageDividerVisible(
+                                                      false,
+                                                    ),
+                                                onPointerCancel: (_) =>
+                                                    _setSinglePageDividerVisible(
+                                                      false,
+                                                    ),
+                                                child: PageView.builder(
+                                                  key: const ValueKey(
+                                                    'single-page-pager',
+                                                  ),
+                                                  controller: _pageController,
+                                                  // Scrollable except while
+                                                  // cropping. Selection alone no
+                                                  // longer locks it — a swipe
+                                                  // keeps visible selections —
+                                                  // but a crop is a drag inside
+                                                  // the photo, and a drag that
+                                                  // starts anywhere else would
+                                                  // turn the page out from under
+                                                  // it.
+                                                  physics:
+                                                      _croppingElementId == null
+                                                      ? const PageScrollPhysics()
+                                                      : const NeverScrollableScrollPhysics(),
+                                                  itemCount: pages.length,
+                                                  onPageChanged: (index) {
+                                                    setState(() {
+                                                      _currentPageIndex = index;
+                                                      _clearSelectionOutsideCurrentPage();
+                                                      _deleteArmedElementId =
+                                                          null;
+                                                    });
+                                                    WidgetsBinding.instance
+                                                        .addPostFrameCallback(
+                                                          (_) =>
+                                                              _syncBottomTab(),
+                                                        );
+                                                  },
+                                                  itemBuilder: (context, index) {
+                                                    final page = pages[index];
+                                                    return IgnorePointer(
+                                                      ignoring:
+                                                          index !=
+                                                          _currentPageIndex,
+                                                      child: _CanvasViewport(
+                                                        elements:
+                                                            elementsVisibleOnPage(
+                                                              _project,
+                                                              index,
                                                             ),
-                                                          );
-                                                        },
-                                                    onCancelDeleteElement:
-                                                        _cancelDeleteElement,
-                                                  );
-                                                },
+                                                        pageIndex: index,
+                                                        pageCount: pages.length,
+                                                        isCurrentPage:
+                                                            index ==
+                                                            _currentPageIndex,
+                                                        page: page,
+                                                        viewportWidth:
+                                                            singleCanvasWidth,
+                                                        viewportHeight:
+                                                            canvasViewportHeight,
+                                                        showBorder:
+                                                            _showPageBorder,
+                                                        showPageDivider:
+                                                            _showSinglePageDivider,
+                                                        hdrViewEnabled:
+                                                            _hdrViewEnabled,
+                                                        selectedElementId:
+                                                            _selectedElementId,
+                                                        croppingElementId:
+                                                            _croppingElementId,
+                                                        deleteArmedElementId:
+                                                            _deleteArmedElementId,
+                                                        snapGuides:
+                                                            _activeSnapGuides,
+                                                        onTapCanvas:
+                                                            _clearSelectedElement,
+                                                        onTapElement:
+                                                            _selectElement,
+                                                        onDoubleTapElement:
+                                                            (elementId) {
+                                                              _handleElementDoubleTap(
+                                                                elementId:
+                                                                    elementId,
+                                                              );
+                                                            },
+                                                        onMoveElement:
+                                                            (
+                                                              elementId,
+                                                              x,
+                                                              y,
+                                                              persist,
+                                                            ) {
+                                                              _updateElementPosition(
+                                                                elementId:
+                                                                    elementId,
+                                                                x: x,
+                                                                y: y,
+                                                                persist:
+                                                                    persist,
+                                                              );
+                                                            },
+                                                        onResizeElement:
+                                                            (
+                                                              elementId,
+                                                              width,
+                                                              persist, {
+                                                              _CornerResizeStart?
+                                                              corner,
+                                                            }) {
+                                                              _updateElementSize(
+                                                                aroundCenter:
+                                                                    true,
+                                                                corner: corner,
+                                                                elementId:
+                                                                    elementId,
+                                                                width: width,
+                                                                persist:
+                                                                    persist,
+                                                              );
+                                                            },
+                                                        onCropMove:
+                                                            (
+                                                              elementId,
+                                                              x,
+                                                              y,
+                                                              persist,
+                                                            ) {
+                                                              _updateImageCropOffset(
+                                                                elementId:
+                                                                    elementId,
+                                                                x: x,
+                                                                y: y,
+                                                                persist:
+                                                                    persist,
+                                                              );
+                                                            },
+                                                        onCropScale:
+                                                            (
+                                                              elementId,
+                                                              scale,
+                                                              persist,
+                                                            ) {
+                                                              _updateImageCropScale(
+                                                                elementId:
+                                                                    elementId,
+                                                                scale: scale,
+                                                                persist:
+                                                                    persist,
+                                                              );
+                                                            },
+                                                        onCropBoundsChanged:
+                                                            (
+                                                              elementId,
+                                                              x,
+                                                              y,
+                                                              w,
+                                                              h,
+                                                              cx,
+                                                              cy,
+                                                              cs,
+                                                              persist,
+                                                            ) {
+                                                              _updateImageCropBounds(
+                                                                elementId:
+                                                                    elementId,
+                                                                x: x,
+                                                                y: y,
+                                                                width: w,
+                                                                height: h,
+                                                                cropOffsetX: cx,
+                                                                cropOffsetY: cy,
+                                                                cropScale: cs,
+                                                                persist:
+                                                                    persist,
+                                                              );
+                                                            },
+                                                        onDeleteElement:
+                                                            (elementId) {
+                                                              _requestDeleteElement(
+                                                                elementId:
+                                                                    elementId,
+                                                              );
+                                                            },
+                                                        onConfirmDeleteElement:
+                                                            (elementId) {
+                                                              unawaited(
+                                                                _confirmDeleteElement(
+                                                                  elementId:
+                                                                      elementId,
+                                                                ),
+                                                              );
+                                                            },
+                                                        onCancelDeleteElement:
+                                                            _cancelDeleteElement,
+                                                      ),
+                                                    );
+                                                  },
+                                                ),
                                               ),
                                             )
                                           : NotificationListener<
@@ -6481,8 +6592,15 @@ class _BlankPageState extends State<BlankPage> {
                                                 return false;
                                               },
                                               child: SingleChildScrollView(
+                                                key: const ValueKey(
+                                                  'preview-page-scroll',
+                                                ),
                                                 controller:
                                                     _previewScrollController,
+                                                padding: EdgeInsets.symmetric(
+                                                  horizontal:
+                                                      previewSidePadding,
+                                                ),
                                                 scrollDirection:
                                                     Axis.horizontal,
                                                 physics:
@@ -6490,6 +6608,12 @@ class _BlankPageState extends State<BlankPage> {
                                                     ? const BouncingScrollPhysics()
                                                     : const NeverScrollableScrollPhysics(),
                                                 child: _PreviewCanvasStrip(
+                                                  visiblePageRadius:
+                                                      (previewViewportWidth /
+                                                              previewCanvasWidth /
+                                                              2)
+                                                          .ceil() +
+                                                      1,
                                                   pages: pages,
                                                   elements: _project.elements,
                                                   currentPageIndex:
@@ -6535,10 +6659,13 @@ class _BlankPageState extends State<BlankPage> {
                                                       (
                                                         elementId,
                                                         width,
-                                                        persist,
-                                                      ) {
+                                                        persist, {
+                                                        _CornerResizeStart?
+                                                        corner,
+                                                      }) {
                                                         _updateElementSize(
                                                           aroundCenter: true,
+                                                          corner: corner,
                                                           elementId: elementId,
                                                           width: width,
                                                           persist: persist,
@@ -6715,33 +6842,22 @@ class _BlankPageState extends State<BlankPage> {
                                           _currentPageIndex,
                                         ),
                                         onApplyTemplate: _applyTemplate,
-                                        marginEnabled: AppSettingsController
-                                            .instance
-                                            .templateMarginEnabled,
-                                        marginSize: AppSettingsController
-                                            .instance
-                                            .templateMarginSize,
-                                        marginRatio: AppSettingsController
-                                            .instance
-                                            .templateMarginRatio,
+                                        marginEnabled:
+                                            currentPage.templateMarginEnabled,
+                                        marginSize:
+                                            currentPage.templateMarginSize,
+                                        marginRatio:
+                                            currentPage.templateMarginRatio,
                                         onMarginEnabledChanged: (enabled) {
                                           unawaited(
                                             _changeTemplateMargin(
-                                              () => AppSettingsController
-                                                  .instance
-                                                  .setTemplateMarginEnabled(
-                                                    enabled,
-                                                  ),
+                                              enabled: enabled,
                                             ),
                                           );
                                         },
                                         onMarginSizeChanged: (size) {
                                           unawaited(
-                                            _changeTemplateMargin(
-                                              () => AppSettingsController
-                                                  .instance
-                                                  .setTemplateMarginSize(size),
-                                            ),
+                                            _changeTemplateMargin(size: size),
                                           );
                                         },
                                       ),
@@ -7020,33 +7136,22 @@ class _BlankPageState extends State<BlankPage> {
                                           _currentPageIndex,
                                         ),
                                         onApplyTemplate: _applyTemplate,
-                                        marginEnabled: AppSettingsController
-                                            .instance
-                                            .templateMarginEnabled,
-                                        marginSize: AppSettingsController
-                                            .instance
-                                            .templateMarginSize,
-                                        marginRatio: AppSettingsController
-                                            .instance
-                                            .templateMarginRatio,
+                                        marginEnabled:
+                                            currentPage.templateMarginEnabled,
+                                        marginSize:
+                                            currentPage.templateMarginSize,
+                                        marginRatio:
+                                            currentPage.templateMarginRatio,
                                         onMarginEnabledChanged: (enabled) {
                                           unawaited(
                                             _changeTemplateMargin(
-                                              () => AppSettingsController
-                                                  .instance
-                                                  .setTemplateMarginEnabled(
-                                                    enabled,
-                                                  ),
+                                              enabled: enabled,
                                             ),
                                           );
                                         },
                                         onMarginSizeChanged: (size) {
                                           unawaited(
-                                            _changeTemplateMargin(
-                                              () => AppSettingsController
-                                                  .instance
-                                                  .setTemplateMarginSize(size),
-                                            ),
+                                            _changeTemplateMargin(size: size),
                                           );
                                         },
                                       ),
@@ -7156,33 +7261,22 @@ class _BlankPageState extends State<BlankPage> {
                                           _currentPageIndex,
                                         ),
                                         onApplyTemplate: _applyTemplate,
-                                        marginEnabled: AppSettingsController
-                                            .instance
-                                            .templateMarginEnabled,
-                                        marginSize: AppSettingsController
-                                            .instance
-                                            .templateMarginSize,
-                                        marginRatio: AppSettingsController
-                                            .instance
-                                            .templateMarginRatio,
+                                        marginEnabled:
+                                            currentPage.templateMarginEnabled,
+                                        marginSize:
+                                            currentPage.templateMarginSize,
+                                        marginRatio:
+                                            currentPage.templateMarginRatio,
                                         onMarginEnabledChanged: (enabled) {
                                           unawaited(
                                             _changeTemplateMargin(
-                                              () => AppSettingsController
-                                                  .instance
-                                                  .setTemplateMarginEnabled(
-                                                    enabled,
-                                                  ),
+                                              enabled: enabled,
                                             ),
                                           );
                                         },
                                         onMarginSizeChanged: (size) {
                                           unawaited(
-                                            _changeTemplateMargin(
-                                              () => AppSettingsController
-                                                  .instance
-                                                  .setTemplateMarginSize(size),
-                                            ),
+                                            _changeTemplateMargin(size: size),
                                           );
                                         },
                                       ),
@@ -7339,7 +7433,12 @@ class _CanvasViewport extends StatelessWidget {
   final ValueChanged<String> onDoubleTapElement;
   final void Function(String elementId, double x, double y, bool persist)
   onMoveElement;
-  final void Function(String elementId, double width, bool persist)
+  final void Function(
+    String elementId,
+    double width,
+    bool persist, {
+    _CornerResizeStart? corner,
+  })
   onResizeElement;
   final void Function(String elementId, double x, double y, bool persist)
   onCropMove;
@@ -7380,7 +7479,9 @@ class _CanvasViewport extends StatelessWidget {
       // page is the only thing on screen, so the ones on either side stay
       // invisible and fade up as the swipe reveals them.
       opacity: isCurrentPage || showPageDivider ? 1 : 0,
-      duration: const Duration(milliseconds: 160),
+      duration: showPageDivider
+          ? Duration.zero
+          : const Duration(milliseconds: 160),
       curve: Curves.easeOut,
       child: Align(
         alignment: Alignment.center,
@@ -7448,11 +7549,12 @@ class _CanvasViewport extends StatelessWidget {
                                     onMove: (x, y, persist) {
                                       onMoveElement(element.id, x, y, persist);
                                     },
-                                    onResize: (width, persist) {
+                                    onResize: (width, persist, {corner}) {
                                       onResizeElement(
                                         element.id,
                                         width,
                                         persist,
+                                        corner: corner,
                                       );
                                     },
                                     onCropMove: (x, y, persist) {
@@ -7570,6 +7672,7 @@ class _CanvasViewport extends StatelessWidget {
 
 class _PreviewCanvasStrip extends StatelessWidget {
   const _PreviewCanvasStrip({
+    required this.visiblePageRadius,
     required this.pages,
     required this.elements,
     required this.currentPageIndex,
@@ -7595,6 +7698,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
   });
 
   final List<ProjectPage> pages;
+  final int visiblePageRadius;
 
   /// Every element in the project, back to front.
   final List<CanvasElement> elements;
@@ -7613,7 +7717,12 @@ class _PreviewCanvasStrip extends StatelessWidget {
   final ValueChanged<String> onDoubleTapElement;
   final void Function(String elementId, double x, double y, bool persist)
   onMoveElement;
-  final void Function(String elementId, double width, bool persist)
+  final void Function(
+    String elementId,
+    double width,
+    bool persist, {
+    _CornerResizeStart? corner,
+  })
   onResizeElement;
   final void Function(String elementId, double x, double y, bool persist)
   onCropMove;
@@ -7659,6 +7768,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
             if (_shouldBuildPreviewPage(
               pageIndex: i,
               currentPageIndex: currentPageIndex,
+              visiblePageRadius: visiblePageRadius,
             ))
               Positioned(
                 left: viewportWidth * i,
@@ -7697,6 +7807,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
             if (_shouldBuildPreviewPage(
               pageIndex: anchorPageIndexOf(element),
               currentPageIndex: currentPageIndex,
+              visiblePageRadius: visiblePageRadius,
             )) ...[
               if (element.type == 'image')
                 _ImageElementWidget(
@@ -7715,8 +7826,8 @@ class _PreviewCanvasStrip extends StatelessWidget {
                   onMove: (x, y, persist) {
                     onMoveElement(element.id, x, y, persist);
                   },
-                  onResize: (width, persist) {
-                    onResizeElement(element.id, width, persist);
+                  onResize: (width, persist, {corner}) {
+                    onResizeElement(element.id, width, persist, corner: corner);
                   },
                   onCropMove: (x, y, persist) {
                     onCropMove(element.id, x, y, persist);
@@ -7769,6 +7880,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
               if (_shouldBuildPreviewPage(
                 pageIndex: i,
                 currentPageIndex: currentPageIndex,
+                visiblePageRadius: visiblePageRadius,
               ))
                 Positioned(
                   left: viewportWidth * i,
@@ -7796,6 +7908,7 @@ class _PreviewCanvasStrip extends StatelessWidget {
             if (_shouldBuildPreviewPage(
               pageIndex: i,
               currentPageIndex: currentPageIndex,
+              visiblePageRadius: visiblePageRadius,
             ))
               _SnapGuideOverlay(
                 guides: snapGuides,
@@ -8180,7 +8293,8 @@ class _ImageElementWidget extends StatefulWidget {
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
   final void Function(double x, double y, bool persist) onMove;
-  final void Function(double width, bool persist) onResize;
+  final void Function(double width, bool persist, {_CornerResizeStart? corner})
+  onResize;
   final void Function(double x, double y, bool persist) onCropMove;
   final void Function(double scale, bool persist) onCropScale;
   final void Function(
@@ -8212,6 +8326,7 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
   late double _resizeStartCropScale;
   bool _isResizing = false;
   late double _resizeStartWidth;
+  late _CornerResizeStart _cornerResizeStart;
 
   bool _isEdgeDragging = false;
   late CanvasElement _edgeDragStartElement;
@@ -8652,6 +8767,10 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                   color: _selectionChromeColor,
                   onStart: () {
                     _isResizing = true;
+                    _cornerResizeStart = _CornerResizeStart(
+                      widget.element,
+                      direction,
+                    );
                     _currentWidth = _resizeStartWidth = widget.element.width;
                     _currentCropScale = _resizeStartCropScale =
                         _cropScaleFromData(widget.element.data);
@@ -8662,7 +8781,11 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                       widget.onCropScale(_currentCropScale, false);
                     } else {
                       _currentWidth = _resizeStartWidth * scale;
-                      widget.onResize(_currentWidth, false);
+                      widget.onResize(
+                        _currentWidth,
+                        false,
+                        corner: _cornerResizeStart,
+                      );
                     }
                   },
                   onEnd: () {
@@ -8670,7 +8793,11 @@ class _ImageElementWidgetState extends State<_ImageElementWidget> {
                     if (widget.isCropMode) {
                       widget.onCropScale(_currentCropScale, true);
                     } else {
-                      widget.onResize(_currentWidth, true);
+                      widget.onResize(
+                        _currentWidth,
+                        true,
+                        corner: _cornerResizeStart,
+                      );
                     }
                   },
                 ),

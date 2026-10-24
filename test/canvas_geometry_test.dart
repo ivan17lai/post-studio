@@ -55,6 +55,92 @@ ProjectPage _page({double aspectWidth = 4, double aspectHeight = 5}) {
 }
 
 void main() {
+  group('corner image resize', () {
+    for (final fromLeft in [false, true]) {
+      for (final fromTop in [false, true]) {
+        for (final aspect in [null, 0.75, 1.0, 2.0]) {
+          test(
+            'fixed opposite corner left=$fromLeft top=$fromTop aspect=$aspect',
+            () {
+              final page = _page();
+              final image = _image(
+                x: 1.3,
+                y: 0.3,
+                width: 0.3,
+                height: 0.2,
+                aspectRatio: aspect,
+                allowCrossPage: false,
+              );
+              final fixedX = image.x + (fromLeft ? image.width : 0);
+              final fixedY =
+                  image.y + (fromTop ? elementHeightRatio(image, page) : 0);
+              for (final width in [0.4, 0.2, 10.0, 0.001, 0.3]) {
+                final resized = resizeImageFromCorner(
+                  element: image,
+                  page: page,
+                  width: width,
+                  fromLeft: fromLeft,
+                  fromTop: fromTop,
+                  anchorPageIndex: 1,
+                  pageCount: 3,
+                );
+                expect(
+                  resized.x + (fromLeft ? resized.width : 0),
+                  closeTo(fixedX, 1e-10),
+                );
+                expect(
+                  resized.y + (fromTop ? resized.height : 0),
+                  closeTo(fixedY, 1e-10),
+                );
+                expect(
+                  resized.height / resized.width,
+                  closeTo(elementHeightRatio(image, page) / image.width, 1e-10),
+                );
+                expect(resized.x, greaterThanOrEqualTo(1 - 1e-10));
+                expect(resized.y, greaterThanOrEqualTo(-1e-10));
+                expect(resized.x + resized.width, lessThanOrEqualTo(2 + 1e-10));
+                expect(
+                  resized.y + resized.height,
+                  lessThanOrEqualTo(1 + 1e-10),
+                );
+              }
+            },
+          );
+        }
+      }
+    }
+    test(
+      'left corner crosses page seam without moving the opposite corner',
+      () {
+        final page = _page();
+        final image = _image(x: 1.1, y: 0.1, width: 0.3, aspectRatio: 2);
+        final result = resizeImageFromCorner(
+          element: image,
+          page: page,
+          width: 0.8,
+          fromLeft: true,
+          fromTop: false,
+          anchorPageIndex: 1,
+          pageCount: 3,
+        );
+        expect(result.x, closeTo(0.6, 1e-10));
+        expect(result.x + result.width, closeTo(1.4, 1e-10));
+        expect(result.y, image.y);
+        final confined = resizeImageFromCorner(
+          element: image,
+          page: page,
+          width: 0.8,
+          fromLeft: true,
+          fromTop: false,
+          anchorPageIndex: 1,
+          pageCount: 3,
+          confineToAnchorPage: true,
+        );
+        expect(confined.x, closeTo(1, 1e-10));
+        expect(confined.x + confined.width, closeTo(1.4, 1e-10));
+      },
+    );
+  });
   group('centered image resize', () {
     test('preserves center through enlargement, shrink and edge clamping', () {
       final page = _page();
