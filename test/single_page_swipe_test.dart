@@ -124,55 +124,66 @@ void main() {
 
         final blankStart = center.topCenter + const Offset(0, 20);
 
-        // A slow drag must reveal both neighbours beyond the central page slot.
+        // Every page freezes while the finger is held still.
         final drag = await tester.startGesture(blankStart);
         await drag.moveBy(const Offset(-20, 0));
         await drag.moveBy(const Offset(-8, 0));
         await tester.pump();
         await tester.pump();
-        expect(await _pixels(tester, capture, samples), [
-          _colors[0],
-          _colors[2],
-        ]);
-        await drag.up();
-        await tester.pump();
-        await tester.pump();
-        // Start hiding on release, before the snapping animation settles.
-        for (final color in [_colors[0], _colors[2]]) {
-          final opacity = tester.widget<AnimatedOpacity>(
-            find
-                .ancestor(
-                  of: _page(color),
-                  matching: find.byType(AnimatedOpacity),
-                )
-                .first,
+        final held = [
+          for (final color in _colors) _screenRect(tester, _page(color)),
+        ];
+        await tester.pump(const Duration(milliseconds: 400));
+        for (var i = 0; i < 3; i++) {
+          expect(
+            _screenRect(tester, _page(_colors[i])).left,
+            closeTo(held[i].left, 0.1),
           );
-          expect(opacity.opacity, 0);
         }
-        await tester.pumpAndSettle();
-        expect(controller.page, 1);
-        expect(await _pixels(tester, capture, samples), [
-          const Color(0xFFEAEAEA),
-          const Color(0xFFEAEAEA),
-        ]);
-
-        // A swipe starting in the grey margin also turns the page; the invisible
-        // neighbouring canvas must not swallow it.
-        final cancel = await tester.startGesture(samples.first);
-        await cancel.moveBy(const Offset(20, 0));
-        await cancel.moveBy(const Offset(8, 0));
+        // Halfway joins the strip immediately, without waiting for an animation.
+        await drag.moveBy(Offset(-(1.5 - controller.page!) * center.width, 0));
         await tester.pump();
+        expect(controller.page, closeTo(1.5, 0.001));
+        final left = _screenRect(tester, _page(_colors[0]));
+        final middle = _screenRect(tester, _page(_colors[1]));
+        final right = _screenRect(tester, _page(_colors[2]));
+        expect(middle.left - left.right, closeTo(8, 0.1));
+        expect(right.left - middle.right, closeTo(8, 0.1));
+        // Reversing returns to the exact same arrangement at the same progress.
+        await drag.moveBy(Offset(center.width * 0.25, 0));
         await tester.pump();
-        expect(await _pixels(tester, capture, samples), [
-          _colors[0],
-          _colors[2],
-        ]);
-        await cancel.cancel();
+        final quarter = _screenRect(tester, _page(_colors[2]));
+        await drag.moveBy(Offset(-center.width * 0.1, 0));
+        await tester.pump();
+        await drag.moveBy(Offset(center.width * 0.1, 0));
+        await tester.pump();
+        expect(
+          _screenRect(tester, _page(_colors[2])).left,
+          closeTo(quarter.left, 0.1),
+        );
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(
+          _screenRect(tester, _page(_colors[2])).left,
+          closeTo(quarter.left, 0.1),
+        );
+        await drag.cancel();
+        await tester.pumpAndSettle();
+        controller.jumpToPage(1);
         await tester.pumpAndSettle();
         expect(await _pixels(tester, capture, samples), [
           const Color(0xFFEAEAEA),
           const Color(0xFFEAEAEA),
         ]);
+        // Grey-margin gestures still reach the pager.
+        final marginDrag = await tester.startGesture(samples.first);
+        await marginDrag.moveBy(const Offset(20, 0));
+        await marginDrag.moveBy(const Offset(8, 0));
+        await tester.pump();
+        expect(controller.page, lessThan(1));
+        await marginDrag.cancel();
+        await tester.pumpAndSettle();
+        controller.jumpToPage(1);
+        await tester.pumpAndSettle();
 
         await tester.dragFrom(blankStart, Offset(-center.width * 0.75, 0));
         await tester.pumpAndSettle();
@@ -187,6 +198,40 @@ void main() {
         ]);
         // Photo gestures must not reveal neighbours or turn the page, even
         // though the expanded viewport includes those pages for painting.
+        controller.jumpToPage(1);
+        await tester.pumpAndSettle();
+        // The main page snaps quickly; its neighbours keep retreating after
+        // it has reached its exact resting position.
+        await tester.flingFrom(
+          blankStart,
+          Offset(-center.width * 0.15, 0),
+          1200,
+        );
+        await tester.pump(const Duration(milliseconds: 80));
+        expect(controller.page, greaterThan(1));
+        for (
+          var frame = 0;
+          frame < 90 && controller.position.isScrollingNotifier.value;
+          frame++
+        ) {
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+        expect(controller.page, 2);
+        expect(
+          _screenRect(tester, _page(_colors[2])).center.dx,
+          closeTo(screen.width / 2, 0.1),
+        );
+        final retreatStart = _screenRect(tester, _page(_colors[1])).left;
+        await tester.pump(const Duration(milliseconds: 120));
+        expect(
+          _screenRect(tester, _page(_colors[1])).left,
+          lessThan(retreatStart),
+        );
+        expect(
+          _screenRect(tester, _page(_colors[2])).center.dx,
+          closeTo(screen.width / 2, 0.1),
+        );
+        await tester.pumpAndSettle();
         controller.jumpToPage(1);
         await tester.pumpAndSettle();
         final photo = find.byType(PhotoGestureSurface);

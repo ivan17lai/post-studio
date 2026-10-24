@@ -17,6 +17,7 @@ import 'app_strings.dart';
 import 'canvas_geometry.dart';
 import 'canvas_corner_handle.dart';
 import 'photo_gesture_surface.dart';
+import 'single_page_reveal.dart';
 import 'hdr/hdr_image_view.dart';
 import 'hdr/lossless_passthrough.dart';
 import 'hdr/ultra_hdr.dart';
@@ -799,6 +800,7 @@ class _BlankPageState extends State<BlankPage> {
   late PageController _pageController;
   late final PageController _bottomTabPageController;
   final ScrollController _previewScrollController = ScrollController();
+  final ValueNotifier<bool> _singlePageTouchActive = ValueNotifier(false);
   final ImagePicker _imagePicker = ImagePicker();
   final Map<String, Uint8List> _exportImageBytesCache = <String, Uint8List>{};
   final Map<String, Color> _customPageColorDrafts = <String, Color>{};
@@ -6033,6 +6035,7 @@ class _BlankPageState extends State<BlankPage> {
 
   @override
   void dispose() {
+    _singlePageTouchActive.dispose();
     AppSettingsController.instance.removeListener(_handleSettingsChanged);
     _pageController.dispose();
     _bottomTabPageController.dispose();
@@ -6299,6 +6302,11 @@ class _BlankPageState extends State<BlankPage> {
                           screenWidth / fittedCanvasScale;
                       final previewSidePadding =
                           (previewViewportWidth - previewCanvasWidth) / 2;
+                      final singleReveal = singlePageRevealGeometry(
+                        screenWidth: screenWidth,
+                        pageWidth: singleCanvasWidth,
+                        scale: fittedCanvasScale,
+                      );
 
                       final canvasView = Padding(
                         padding: const EdgeInsets.symmetric(
@@ -6382,14 +6390,20 @@ class _BlankPageState extends State<BlankPage> {
                                                 return false;
                                               },
                                               child: Listener(
+                                                onPointerDown: (_) =>
+                                                    _singlePageTouchActive
+                                                            .value =
+                                                        true,
                                                 onPointerUp: (_) =>
-                                                    _setSinglePageDividerVisible(
-                                                      false,
-                                                    ),
+                                                    _singlePageTouchActive
+                                                            .value =
+                                                        false,
                                                 onPointerCancel: (_) =>
-                                                    _setSinglePageDividerVisible(
-                                                      false,
-                                                    ),
+                                                    _singlePageTouchActive
+                                                            .value =
+                                                        false,
+                                                // Dragging stays direct; after release,
+                                                // only neighbouring pages ease outward.
                                                 child: PageView.builder(
                                                   key: const ValueKey(
                                                     'single-page-pager',
@@ -6429,6 +6443,15 @@ class _BlankPageState extends State<BlankPage> {
                                                           index !=
                                                           _currentPageIndex,
                                                       child: _CanvasViewport(
+                                                        touchActive:
+                                                            _singlePageTouchActive,
+                                                        pageController:
+                                                            _pageController,
+                                                        motionGap:
+                                                            singleReveal.gap,
+                                                        hiddenDistance:
+                                                            singleReveal
+                                                                .hiddenDistance,
                                                         elements:
                                                             elementsVisibleOnPage(
                                                               _project,
@@ -7365,6 +7388,10 @@ class _BlankPageState extends State<BlankPage> {
 
 class _CanvasViewport extends StatelessWidget {
   const _CanvasViewport({
+    required this.touchActive,
+    required this.pageController,
+    required this.motionGap,
+    required this.hiddenDistance,
     required this.elements,
     required this.pageIndex,
     required this.pageCount,
@@ -7412,9 +7439,13 @@ class _CanvasViewport extends StatelessWidget {
   /// selection frame against an element starting off to its left, leaving just
   /// the sliver hugging the page edge visible.
   ///
-  /// And visibility: a neighbour is only ever on screen mid-swipe, so it stays
-  /// transparent until [showPageDivider] says a scroll is under way.
+  /// Neighbours move outside the screen when the page strip is at rest.
   final bool isCurrentPage;
+
+  final PageController pageController;
+  final ValueListenable<bool> touchActive;
+  final double motionGap;
+  final double hiddenDistance;
 
   final ProjectPage page;
   final double viewportWidth;
@@ -7461,28 +7492,19 @@ class _CanvasViewport extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Flush: the page fills its slot, so consecutive pages meet with no gap
-    // when you swipe between them.
-    //
-    // The page used to be inset by _canvasControlChromePadding on each side to
-    // leave room for selection handles, which put 18dp of dead space between
-    // any two pages. It also meant element x — laid out against pageWidth —
-    // ran on a different pitch from the PageView, which steps by the full
-    // viewport, so a cross-page photo's two halves drifted 18dp apart for
-    // every page seam they crossed. One width fixes both.
+    // Keep document geometry and scroll pitch unchanged. SinglePageReveal adds
+    // the small visual gap by translating whole pages (including their photos),
+    // so changing the animation never resizes or repositions document elements.
     final pageWidth = viewportWidth;
     final pageHeight = pageWidth * (page.aspectHeight / page.aspectWidth);
     final canvasTop = (viewportHeight - pageHeight) / 2;
 
-    return AnimatedOpacity(
-      // Neighbours only exist while you are moving between pages. At rest a
-      // page is the only thing on screen, so the ones on either side stay
-      // invisible and fade up as the swipe reveals them.
-      opacity: isCurrentPage || showPageDivider ? 1 : 0,
-      duration: showPageDivider
-          ? Duration.zero
-          : const Duration(milliseconds: 160),
-      curve: Curves.easeOut,
+    return SinglePageReveal(
+      touchActive: touchActive,
+      controller: pageController,
+      pageIndex: pageIndex,
+      gap: motionGap,
+      hiddenDistance: hiddenDistance,
       child: Align(
         alignment: Alignment.center,
         child: SizedBox(
@@ -7647,18 +7669,6 @@ class _CanvasViewport extends StatelessWidget {
                       fontWeight: FontWeight.w600,
                       color: Color(0xFF6B6F75),
                       height: 1.35,
-                    ),
-                  ),
-                ),
-              if (showPageDivider && pageIndex < pageCount - 1)
-                Positioned(
-                  right: -1,
-                  top: canvasTop,
-                  child: IgnorePointer(
-                    child: Container(
-                      width: 2,
-                      height: pageHeight,
-                      color: const Color(0xFFBDBDBD),
                     ),
                   ),
                 ),
