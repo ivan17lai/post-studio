@@ -8,7 +8,7 @@ import 'hdr/ultra_hdr.dart';
 /// [PackageInfo] instead, so a channel suffix here cannot reach
 /// `_isVersionNewer`, which parses its input as three integers and would read
 /// "Beta" as a zero.
-const String kAppDisplayVersion = '1.9.3';
+const String kAppDisplayVersion = '1.9.4';
 const String kGeminiSortModel = 'gemini-3.5-flash';
 
 /// Whether the AI features are offered anywhere in the UI.
