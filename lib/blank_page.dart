@@ -1300,6 +1300,9 @@ class _BlankPageState extends State<BlankPage> {
     return element?.type == 'image' ? element : null;
   }
 
+  bool get _canSwipePages =>
+      _croppingElementId == null && _selectedImageElement == null;
+
   CanvasElement? get _selectedTextElement {
     final element = _selectedElement;
     return element?.type == 'text' ? element : null;
@@ -4935,7 +4938,7 @@ class _BlankPageState extends State<BlankPage> {
     for (var i = 0; i < missingPaths.length; i++) {
       final path = missingPaths[i];
       _setExportProgress(
-        progress: missingPaths.isEmpty ? 0 : (i / missingPaths.length) * 0.2,
+        progress: 0,
         label: strings.t(
           'prepareImages',
           args: <String, String>{
@@ -4957,7 +4960,7 @@ class _BlankPageState extends State<BlankPage> {
     }
 
     _setExportProgress(
-      progress: 0.2,
+      progress: 0,
       label: strings.t('prepareImagesDone'),
       onProgress: onProgress,
     );
@@ -5470,7 +5473,7 @@ class _BlankPageState extends State<BlankPage> {
         final pageIndex = pageIndexes[listIndex];
         final exportIndex = listIndex + 1;
         _setExportProgress(
-          progress: 0.25 + ((exportIndex - 1) / totalPages) * 0.3,
+          progress: successCount / totalPages,
           label: strings.t('renderPages'),
           onProgress: onProgress,
         );
@@ -5507,7 +5510,7 @@ class _BlankPageState extends State<BlankPage> {
           );
 
           _setExportProgress(
-            progress: 0.55 + ((exportIndex - 1) / totalPages) * 0.45,
+            progress: successCount / totalPages,
             label: strings.t(
               'exportPageProgress',
               args: <String, String>{
@@ -5538,11 +5541,11 @@ class _BlankPageState extends State<BlankPage> {
         }
 
         _setExportProgress(
-          progress: 0.55 + (exportIndex / totalPages) * 0.45,
+          progress: successCount / totalPages,
           label: strings.t(
             'exportPageDone',
             args: <String, String>{
-              'current': '$exportIndex',
+              'current': '$successCount',
               'total': '$totalPages',
             },
           ),
@@ -5679,8 +5682,8 @@ class _BlankPageState extends State<BlankPage> {
 
           setDialogState(() {
             dialogCompletedPages = <_CompletedExportPage>[
-              ...dialogCompletedPages,
               page,
+              ...dialogCompletedPages,
             ];
           });
         },
@@ -5693,9 +5696,6 @@ class _BlankPageState extends State<BlankPage> {
       setDialogState(() {
         exportRunning = false;
         exportDone = true;
-        if (dialogProgress <= 0) {
-          dialogProgress = 1;
-        }
       });
     }
 
@@ -5748,7 +5748,39 @@ class _BlankPageState extends State<BlankPage> {
                                   selectedIndexes: selectedExportPageIndexes,
                                   reverseOrder: reverseOrder,
                                 ),
-                                const SizedBox(height: 10),
+                                const SizedBox(height: 2),
+                                Wrap(
+                                  spacing: 8,
+                                  children: [
+                                    _ExportSelectionAction(
+                                      label: strings.t('selectAllPages'),
+                                      onTap:
+                                          selectedExportPageIndexes.length ==
+                                              _project.pages.length
+                                          ? null
+                                          : () => setDialogState(() {
+                                              selectedExportPageIndexes = {
+                                                for (
+                                                  var i = 0;
+                                                  i < _project.pages.length;
+                                                  i++
+                                                )
+                                                  i,
+                                              };
+                                            }),
+                                    ),
+                                    _ExportSelectionAction(
+                                      label: strings.t('deselectAllPages'),
+                                      onTap: selectedExportPageIndexes.isEmpty
+                                          ? null
+                                          : () => setDialogState(() {
+                                              selectedExportPageIndexes =
+                                                  <int>{};
+                                            }),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 2),
                                 _ExportPageSelectionStrip(
                                   pages: _project.pages,
                                   elements: _project.elements,
@@ -6409,17 +6441,7 @@ class _BlankPageState extends State<BlankPage> {
                                                     'single-page-pager',
                                                   ),
                                                   controller: _pageController,
-                                                  // Scrollable except while
-                                                  // cropping. Selection alone no
-                                                  // longer locks it — a swipe
-                                                  // keeps visible selections —
-                                                  // but a crop is a drag inside
-                                                  // the photo, and a drag that
-                                                  // starts anywhere else would
-                                                  // turn the page out from under
-                                                  // it.
-                                                  physics:
-                                                      _croppingElementId == null
+                                                  physics: _canSwipePages
                                                       ? const PageScrollPhysics()
                                                       : const NeverScrollableScrollPhysics(),
                                                   itemCount: pages.length,
@@ -6626,8 +6648,7 @@ class _BlankPageState extends State<BlankPage> {
                                                 ),
                                                 scrollDirection:
                                                     Axis.horizontal,
-                                                physics:
-                                                    _croppingElementId == null
+                                                physics: _canSwipePages
                                                     ? const BouncingScrollPhysics()
                                                     : const NeverScrollableScrollPhysics(),
                                                 child: _PreviewCanvasStrip(
@@ -9364,7 +9385,7 @@ class _ExportProgressPanel extends StatelessWidget {
             borderRadius: BorderRadius.circular(999),
             child: LinearProgressIndicator(
               minHeight: 6,
-              value: progress <= 0 ? null : progress,
+              value: progress,
               backgroundColor: const Color(0xFFE1E1E1),
               valueColor: const AlwaysStoppedAnimation<Color>(
                 Color(0xFF8F8F8F),
@@ -9590,6 +9611,34 @@ class _ToolbarIconButton extends StatelessWidget {
   }
 }
 
+class _ExportSelectionAction extends StatelessWidget {
+  const _ExportSelectionAction({required this.label, required this.onTap});
+
+  final String label;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextButton(
+      onPressed: onTap,
+      style: TextButton.styleFrom(
+        minimumSize: const Size(48, 28),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        tapTargetSize: MaterialTapTargetSize.padded,
+        visualDensity: VisualDensity.standard,
+        backgroundColor: const Color(0xFFE7E7E7),
+        disabledBackgroundColor: const Color(0xFFE7E7E7),
+        foregroundColor: const Color(0xFF505050),
+        disabledForegroundColor: const Color(0xFF898989),
+        overlayColor: Colors.black54,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+      ),
+      child: Text(label),
+    );
+  }
+}
+
 class _DialogActionButton extends StatelessWidget {
   const _DialogActionButton({
     required this.label,
@@ -9598,28 +9647,39 @@ class _DialogActionButton extends StatelessWidget {
   });
 
   final String label;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final bool isPrimary;
 
   @override
   Widget build(BuildContext context) {
-    return _PressableScale(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        curve: Curves.easeInOut,
-        height: 42,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: isPrimary ? kPrimaryAccentColor : Colors.white,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: const Color(0xFF1F1F1F),
+    return Semantics(
+      button: true,
+      enabled: onTap != null,
+      child: _PressableScale(
+        enabled: onTap != null,
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeInOut,
+          height: 42,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: isPrimary && onTap != null
+                ? kPrimaryAccentColor
+                : Colors.white,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: onTap == null
+                  ? Colors.black38
+                  : isPrimary
+                  ? accentForeground(kPrimaryAccentColor)
+                  : const Color(0xFF1F1F1F),
+            ),
           ),
         ),
       ),

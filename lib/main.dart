@@ -831,229 +831,173 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
-  Widget _buildHeader(BuildContext context, Color primary, AppStrings strings) {
-    final statusBarHeight = MediaQuery.of(context).padding.top;
-    final horizontalPadding = MediaQuery.of(context).size.width * 0.05;
-    return Container(
-      padding: EdgeInsets.fromLTRB(
-        horizontalPadding + 4,
-        statusBarHeight + 18,
-        horizontalPadding + 4,
-        22,
-      ),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            primary.withValues(alpha: 0.22),
-            primary.withValues(alpha: 0.02),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: const BorderRadius.only(
-          bottomLeft: Radius.circular(32),
-          bottomRight: Radius.circular(32),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(14),
-                      boxShadow: [
-                        BoxShadow(
-                          color: primary.withValues(alpha: 0.16),
-                          blurRadius: 8,
-                          offset: const Offset(0, 3),
-                        ),
-                      ],
-                    ),
-                    child: Icon(
-                      Icons.auto_awesome_mosaic_rounded,
-                      color: primary,
-                      size: 22,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.baseline,
-                        textBaseline: TextBaseline.alphabetic,
-                        children: [
-                          const Text(
-                            'Post Studio',
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w900,
-                              color: Color(0xFF222222),
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            'v$_appVersion',
-                            style: const TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w700,
-                              color: Color(0xFF9A9A9A),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 1),
-                      Text(
-                        strings.t('appTagline'),
-                        style: const TextStyle(
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w700,
-                          color: Color(0xFF7B7D82),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  GestureDetector(
-                    onTap: _openSettingsPage,
-                    child: Container(
-                      width: 42,
-                      height: 42,
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(14),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.04),
-                            blurRadius: 6,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: const Icon(
-                        Icons.settings_rounded,
-                        color: Color(0xFF4A4D54),
-                        size: 22,
-                      ),
-                    ),
-                  ),
-                  if (_hasUpdate)
-                    Positioned(
-                      top: -2,
-                      right: -2,
-                      child: Container(
-                        width: 10,
-                        height: 10,
-                        decoration: BoxDecoration(
-                          color: primary,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white, width: 2),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ),
-          if (kIsWeb) ...[const SizedBox(height: 12), const InstallAppButton()],
-          const SizedBox(height: 26),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Text(
-                strings.t('allProjects'),
-                style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w900,
-                  color: Color(0xFF222222),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: primary.withValues(alpha: 0.16),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  '${_projects.length}',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                    color:
-                        primary.toARGB32() == const Color(0xFFC3AEFF).toARGB32()
-                        ? const Color(0xFF6B4EE6)
-                        : primary,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final width = MediaQuery.of(context).size.width;
     final strings = AppStrings.of(context);
-    final primary = AppSettingsController.instance.primaryColor;
-
+    const ink = Color(0xFF222222);
+    final accent = kPrimaryAccentColor;
+    const rule = Color(0xFFE2E2E2);
     return Stack(
       children: [
         Scaffold(
           backgroundColor: const Color(0xFFF1F2F4),
-          floatingActionButton: FloatingActionButton(
-            onPressed: _showCreateProjectDialog,
-            backgroundColor: primary,
-            foregroundColor: Colors.white,
-            shape: const CircleBorder(),
-            child: const Icon(Icons.add),
-          ),
-          body: Column(
-            children: [
-              _buildHeader(context, primary, strings),
-              Expanded(
-                child: _isLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : ListView.separated(
-                        padding: const EdgeInsets.only(top: 16, bottom: 100),
-                        itemCount: _projects.length,
-                        separatorBuilder: (_, _) => const SizedBox(height: 12),
-                        itemBuilder: (context, index) {
-                          final project = _projects[index];
-                          return _ProjectCard(
-                            key: ValueKey(project.id),
-                            width: width,
-                            project: project,
-                            onPressed: () => _openProject(project),
-                            onLongPress: () => _deleteProject(project),
-                          );
-                        },
+          body: SafeArea(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: CustomScrollView(
+                  slivers: [
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(24, 12, 24, 0),
+                      sliver: SliverToBoxAdapter(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.crop_free, size: 21, color: accent),
+                                const SizedBox(width: 9),
+                                const Expanded(
+                                  child: Text(
+                                    'Post Studio',
+                                    style: TextStyle(
+                                      fontSize: 19,
+                                      letterSpacing: -0.6,
+                                      fontWeight: FontWeight.w700,
+                                      color: ink,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  'v$_appVersion',
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.black54,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: strings.t('settingsTitle'),
+                                  onPressed: _openSettingsPage,
+                                  icon: Badge(
+                                    isLabelVisible: _hasUpdate,
+                                    backgroundColor: accent,
+                                    child: const Icon(
+                                      Icons.tune,
+                                      size: 21,
+                                      color: ink,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const Divider(height: 1, color: rule),
+                            if (kIsWeb) const InstallAppButton(),
+                            const SizedBox(height: 30),
+                            Wrap(
+                              spacing: 16,
+                              runSpacing: 8,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                Text(
+                                  strings.t('allProjects'),
+                                  style: const TextStyle(
+                                    fontSize: 32,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: -1.2,
+                                    color: ink,
+                                  ),
+                                ),
+                                if (!_isLoading)
+                                  Text(
+                                    _projects.length.toString().padLeft(2, '0'),
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.black54,
+                                      fontFeatures: [
+                                        ui.FontFeature.tabularFigures(),
+                                      ],
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 14),
+                            FilledButton.icon(
+                              onPressed: _showCreateProjectDialog,
+                              style: FilledButton.styleFrom(
+                                backgroundColor: accent,
+                                foregroundColor: accentForeground(accent),
+                                minimumSize: const Size(0, 44),
+                              ),
+                              icon: const Icon(Icons.add, size: 18),
+                              label: Text(strings.t('createProject')),
+                            ),
+                            const SizedBox(height: 22),
+                            const Divider(height: 1, color: rule),
+                          ],
+                        ),
                       ),
+                    ),
+                    if (_isLoading || _projects.isEmpty)
+                      SliverFillRemaining(
+                        hasScrollBody: false,
+                        child: Center(
+                          child: _isLoading
+                              ? const CircularProgressIndicator()
+                              : Padding(
+                                  padding: const EdgeInsets.all(24),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(
+                                        Icons.filter_none_outlined,
+                                        color: Color(0xFF8F8F8F),
+                                        size: 34,
+                                      ),
+                                      const SizedBox(height: 14),
+                                      Text(
+                                        strings.t('emptyProjects'),
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w600,
+                                          color: ink,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        strings.t('emptyProjectsHint'),
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(
+                                          color: Colors.black54,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                        ),
+                      )
+                    else
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(24, 14, 24, 32),
+                        sliver: SliverList.separated(
+                          separatorBuilder: (_, _) =>
+                              const SizedBox(height: 12),
+                          itemCount: _projects.length,
+                          itemBuilder: (context, index) {
+                            final project = _projects[index];
+                            return _ProjectCard(
+                              key: ValueKey(project.id),
+                              project: project,
+                              onPressed: () => _openProject(project),
+                              onLongPress: () => _deleteProject(project),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
               ),
-            ],
+            ),
           ),
         ),
         if (_isAiCreating)
@@ -1114,85 +1058,98 @@ class _MainPageState extends State<MainPage> {
 class _ProjectCard extends StatelessWidget {
   const _ProjectCard({
     required super.key,
-    required this.width,
     required this.project,
     required this.onPressed,
     required this.onLongPress,
   });
-
-  final double width;
   final ProjectRecord project;
   final VoidCallback onPressed;
   final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
-    final strings = AppStrings.of(context);
-    final primary = AppSettingsController.instance.primaryColor;
-
-    return Center(
-      child: SizedBox(
-        width: width * 0.9,
-        height: 80,
-        child: Material(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(24),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(24),
-            onTap: onPressed,
-            onLongPress: onLongPress,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-              child: Row(
-                children: [
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: primary,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(
-                      Icons.folder_outlined,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          project.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          strings.t(
-                            'projectMeta',
-                            args: <String, String>{
-                              'date': formatProjectDate(project.createdAt),
-                              'count': '${project.pageCount}',
-                            },
-                          ),
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: Colors.black54,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+    String? cover;
+    for (final element in project.elements) {
+      final src = element.data['src'];
+      if (element.type == 'image' && src is String && src.isNotEmpty) {
+        cover = src;
+        break;
+      }
+    }
+    const placeholder = Center(
+      child: Icon(
+        Icons.photo_library_outlined,
+        color: Color(0xFF8F8F8F),
+        size: 22,
+      ),
+    );
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(24),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onPressed,
+        onLongPress: onLongPress,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+          child: Row(
+            children: [
+              Container(
+                width: 52,
+                height: 62,
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  border: Border.all(color: const Color(0xFFE2E2E2)),
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                child: cover == null
+                    ? placeholder
+                    : media.storedImage(
+                        cover,
+                        fit: BoxFit.cover,
+                        cacheWidth: 168,
+                        errorBuilder: (_, _, _) => placeholder,
+                      ),
               ),
-            ),
+              const SizedBox(width: 15),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      project.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF222222),
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      AppStrings.of(context).t(
+                        'projectMeta',
+                        args: {
+                          'date': formatProjectDate(project.createdAt),
+                          'count': '${project.pageCount}',
+                        },
+                      ),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(
+                Icons.chevron_right,
+                size: 19,
+                color: Color(0xFF8F8F8F),
+              ),
+            ],
           ),
         ),
       ),

@@ -252,6 +252,20 @@ void main() {
         );
         await photoDrag.up();
         await tester.pumpAndSettle();
+        final settledPage = _screenRect(tester, _page(_colors[1]));
+        final selectedBlank = settledPage.topRight + const Offset(-4, 4);
+        await tester.dragFrom(selectedBlank, Offset(-selectedPage.width, 0));
+        await tester.pumpAndSettle();
+        expect(controller.page, 1);
+        await tester.tapAt(selectedBlank);
+        await tester.pumpAndSettle();
+        final clearedPage = _screenRect(tester, _page(_colors[1]));
+        await tester.dragFrom(
+          clearedPage.topRight + const Offset(-4, 4),
+          Offset(-clearedPage.width, 0),
+        );
+        await tester.pumpAndSettle();
+        expect(controller.page, 2);
         expect(tester.takeException(), isNull);
       },
     );
